@@ -12,9 +12,11 @@ int Program_ArrayTest(void);
 void Program_ObjectTest(void);
 int Program_CalculateTest(void);
 void Program_BranchTest(void);
+int Program_StaticFieldTest(void);
 
 int main()
 {
+	printf("Return value: %d\n", Program_StaticFieldTest());
 	Program_Main_Array(NULL);
 	printf("Return value: %d\n", Program_ForTest());
 	printf("Return value: %d\n", Program_ArrayTest());

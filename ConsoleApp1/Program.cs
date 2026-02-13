@@ -1,5 +1,17 @@
 ﻿internal class Program
 {
+    static string s_message;
+    static int s_value;
+
+    public static int StaticFieldTest()
+    {
+        s_message = "Static Field Test";
+        Console.WriteLine(s_message);
+
+        s_value = 777;
+        return s_value;
+    }
+
     public static int ForTest()
     {
         int i = 0;

@@ -29,6 +29,7 @@ LLVMTypeRef sizeType = LLVMTypeRef.CreateIntPtr(machine.CreateTargetDataLayout()
 
 Dictionary<string, Tuple<LLVMValueRef, LLVMTypeRef, MethodReference, Collection<Instruction>?>> moduleMethods = new();
 Dictionary<RuntimeMethod, Tuple<LLVMValueRef, LLVMTypeRef>> runtimeMethods = new();
+Dictionary<string, Tuple<LLVMValueRef, LLVMTypeRef>> staticFields = new();
 
 {
     var funcType = LLVMTypeRef.CreateFunction(LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0), [sizeType]);
@@ -49,6 +50,23 @@ Dictionary<RuntimeMethod, Tuple<LLVMValueRef, LLVMTypeRef>> runtimeMethods = new
     // 遍历所有类型和方法
     foreach (TypeDefinition type in assembly.MainModule.Types)
     {
+        var fields = type.Fields;
+        if (fields.Any())
+        {
+            foreach (var field in fields)
+            {
+                if (field.IsStatic)
+                {
+                    string fieldName = GetFriendlyFieldName(field);
+                    var fieldType = GetLLVMTypeRefFromMetadataType(field.DeclaringType.MetadataType);
+                    var fieldValue = module.AddGlobal(LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0), fieldName);
+                    fieldValue.Initializer = LLVMValueRef.CreateConstNull(LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0));
+
+                    staticFields.Add(fieldName, new(fieldValue, fieldType));
+                }
+            }
+        }
+
         foreach (MethodDefinition method in type.Methods)
         {
             if (!method.HasBody) continue;
@@ -64,6 +82,7 @@ Dictionary<RuntimeMethod, Tuple<LLVMValueRef, LLVMTypeRef>> runtimeMethods = new
                     case Code.Newobj:
                         MethodReference targetMethod = (MethodReference)instr.Operand;
                         var resolved = targetMethod.Resolve();
+                        // Shallow method resolve
                         // Methods from other modules are considered external methods.
                         RegisterMethodFunction(module, targetMethod, resolved.Module != assembly.MainModule ? new() : resolved.Body.Instructions);
                         break;
@@ -264,6 +283,23 @@ Dictionary<RuntimeMethod, Tuple<LLVMValueRef, LLVMTypeRef>> runtimeMethods = new
                                 builder.BuildStore(value, builder.BuildGEP2(type, array, [index]));
                             }
                             break;
+                        case Code.Stsfld:
+                            {
+                                FieldReference field = (FieldReference)instr.Operand;
+
+                                var ptr = staticFields[GetFriendlyFieldName(field)];
+                                var value = stack.Pop();
+                                builder.BuildStore(value, ptr.Item1);
+                            }
+                            break;
+                        case Code.Ldsfld:
+                            {
+                                FieldReference field = (FieldReference)instr.Operand;
+                                var ptr = staticFields[GetFriendlyFieldName(field)];
+                                var value = builder.BuildLoad2(ptr.Item2, ptr.Item1);
+                                stack.Push(value);
+                            }
+                            break;
                         case Code.Ldstr:
                             {
                                 var str = builder.BuildGlobalStringPtr((string)instr.Operand);
@@ -365,6 +401,12 @@ Dictionary<RuntimeMethod, Tuple<LLVMValueRef, LLVMTypeRef>> runtimeMethods = new
                                     Code.Ldc_I4_S => (sbyte)instr.Operand
                                 }));
                                 stack.Push(value);
+                            }
+                            break;
+                        case Code.Ldnull:
+                            {
+                                var nullptr = LLVMValueRef.CreateConstNull(LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0));
+                                stack.Push(nullptr);
                             }
                             break;
                         case Code.Beq:
@@ -528,8 +570,10 @@ Dictionary<RuntimeMethod, Tuple<LLVMValueRef, LLVMTypeRef>> runtimeMethods = new
         MetadataType.Int32 => 4,
         MetadataType.UInt32 => 4,
         MetadataType.Single => 4,
+        MetadataType.Array => pointerSize,
         MetadataType.Class => pointerSize,
         MetadataType.String => pointerSize,
+        MetadataType.ValueType => pointerSize,
         _ => throw new NotImplementedException()
     };
 
@@ -585,25 +629,42 @@ Dictionary<RuntimeMethod, Tuple<LLVMValueRef, LLVMTypeRef>> runtimeMethods = new
         return func;
     }
 
-    string GetFriendlyMethodName(MethodReference method)
+    string GetFriendlyMethodName(MethodReference method, TypeReference? methodDeclareType = null)
     {
         const string member_access_operator = ".";
         const string separator = "_";
+        TypeReference declareType = methodDeclareType ?? method.DeclaringType;
 
         List<string> names = new List<string>();
-        if (method.DeclaringType.Namespace != string.Empty) names.Add(method.DeclaringType.Namespace.Replace(member_access_operator, separator));
-        if (method.DeclaringType.Name != string.Empty) names.Add(method.DeclaringType.Name.Replace(member_access_operator, separator));
+        if (declareType.Namespace != string.Empty) names.Add(declareType.Namespace.Replace(member_access_operator, separator));
+        if (declareType.Name != string.Empty) names.Add(declareType.Name.Replace(member_access_operator, separator));
         if (method.Name != string.Empty) names.Add(method.Name.Replace(member_access_operator, separator));
         method.Parameters.ToList().ForEach(p => names.Add(p.ParameterType.MetadataType.ToString()));
         string friendlyMethodName = string.Join(separator, names);
         return friendlyMethodName;
     }
 
+    string GetFriendlyFieldName(FieldReference field)
+    {
+        const string member_access_operator = ".";
+        const string separator = "_";
+        TypeReference declareType = field.DeclaringType;
+
+        List<string> names = new List<string>();
+        if (declareType.Namespace != string.Empty) names.Add(declareType.Namespace.Replace(member_access_operator, separator));
+        if (declareType.Name != string.Empty) names.Add(declareType.Name.Replace(member_access_operator, separator));
+        if (field.Name != string.Empty) names.Add(field.Name.Replace(member_access_operator, separator));
+        string friendlyFieldName = string.Join(separator, names);
+        return friendlyFieldName;
+    }
+
     void RegisterMethodFunction(LLVMModuleRef module, MethodReference method, Collection<Instruction>? instructions)
     {
+        TypeReference declareType = method.DeclaringType;
+
         var funcType = CreateLLVMFunction(module, method);
-        var funcValue = module.AddFunction(GetFriendlyMethodName(method), funcType);
-        moduleMethods.TryAdd(GetFriendlyMethodName(method), new(funcValue, funcType, method, instructions));
+        var funcValue = module.AddFunction(GetFriendlyMethodName(method, declareType), funcType);
+        moduleMethods.TryAdd(GetFriendlyMethodName(method, declareType), new(funcValue, funcType, method, instructions));
     }
 }
 
