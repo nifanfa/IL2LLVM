@@ -4,49 +4,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
-#include <stdbool.h>
 
-void Program_Main_Array(void* args);
-int Program_ForTest(void);
-int Program_ArrayTest(void);
-void Program_ObjectTest(void);
-int Program_CalculateTest(void);
-void Program_BranchTest(void);
-int Program_StaticFieldTest(void);
+void Program_Main(void);
 
 int main()
 {
-	printf("Return value: %d\n", Program_StaticFieldTest());
-	Program_Main_Array(NULL);
-	printf("Return value: %d\n", Program_ForTest());
-	printf("Return value: %d\n", Program_ArrayTest());
-	Program_ObjectTest();
-	printf("Return value: %d\n", Program_CalculateTest());
-	Program_BranchTest();
+	Program_Main();
 }
 
-void System_Console_Write_String(const char* str)
-{
-	printf("%s", str);
-}
-
-void System_Console_WriteLine_String(const char* str)
-{
-	printf("%s\n", str);
-}
-
-void System_Object__ctor(void* ptr)
-{
-	// do nothing
-}
-
-void* Newobj(size_t size) {
-	return calloc(1, size);
-}
-
-void* Newarr(size_t count, size_t size) {
-	return calloc(count, size);
-}
 
 // 运行程序: Ctrl + F5 或调试 >“开始执行(不调试)”菜单
 // 调试程序: F5 或调试 >“开始调试”菜单

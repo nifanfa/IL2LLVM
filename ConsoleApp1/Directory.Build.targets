@@ -1,0 +1,18 @@
+<Project>
+  <PropertyGroup>
+    <NoStdLib>true</NoStdLib>
+    <NoConfig>true</NoConfig>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <RuntimeMetadataVersion>v4.0.30319</RuntimeMetadataVersion>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
+    <IlcSystemModule>CoreLib</IlcSystemModule>
+  </PropertyGroup>
+
+  <Target Name="CustomizeReferences" BeforeTargets="BeforeCompile" AfterTargets="FindReferenceAssembliesForReferences">
+    <ItemGroup>
+      <ReferencePathWithRefAssemblies Remove="@(ReferencePathWithRefAssemblies)" />
+      <ReferencePath Remove="@(ReferencePath)" />
+    </ItemGroup>
+  </Target>
+</Project>

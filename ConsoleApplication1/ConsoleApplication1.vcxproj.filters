@@ -18,5 +18,8 @@
     <ClCompile Include="ConsoleApplication1.c">
       <Filter>源文件</Filter>
     </ClCompile>
+    <ClCompile Include="CoreLib.c">
+      <Filter>源文件</Filter>
+    </ClCompile>
   </ItemGroup>
 </Project>
