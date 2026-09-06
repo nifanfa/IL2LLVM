@@ -27,9 +27,10 @@ LLVMTypeRef sizeType = LLVMTypeRef.CreateIntPtr(machine.CreateTargetDataLayout()
 Dictionary<string, Tuple<LLVMValueRef, LLVMTypeRef, MethodReference, Collection<Instruction>?>> moduleMethods = new();
 Dictionary<RuntimeMethod, Tuple<LLVMValueRef, LLVMTypeRef>> runtimeMethods = new();
 Dictionary<string, Tuple<LLVMValueRef, LLVMTypeRef>> staticFields = new();
-Dictionary<string, LLVMValueRef> stringConstants = new(StringComparer.Ordinal);
+Dictionary<string, (LLVMValueRef Function, LLVMValueRef State)> cctorGuards = new(StringComparer.Ordinal);
 Dictionary<string, TypeDefinition> localTypes = new(StringComparer.Ordinal);
 Dictionary<string, ulong> runtimeTypeIds = new(StringComparer.Ordinal);
+Dictionary<string, LLVMValueRef> gcDescriptors = new(StringComparer.Ordinal);
 ulong nextRuntimeTypeId = 1;
 int nextVirtualDispatchId = 0;
 var exceptionPointerType = LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0);
@@ -63,20 +64,27 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
     Dictionary<string, MethodDefinition> localMethods = GetAllTypes(assembly.MainModule.Types)
         .SelectMany(t => t.Methods)
         .ToDictionary(m => m.FullName, StringComparer.Ordinal);
-    Dictionary<string, MethodDefinition> localMethodsByFriendlyName = localMethods.Values
-        .ToDictionary(m => GetFriendlyMethodName(m), StringComparer.Ordinal);
     localTypes = GetAllTypes(assembly.MainModule.Types)
         .ToDictionary(t => t.FullName, StringComparer.Ordinal);
+    var arrayEnumeratorTypes = localTypes.Values.Where(IsArrayEnumeratorDefinition).ToList();
+    var stringConstructor = GetRequiredConstructor(localTypes["System.String"],
+        new ArrayType(localTypes["System.Char"]));
+    var typeGetTypeFromHandleMethod = GetRequiredMethod(localTypes["System.Type"], "GetTypeFromHandle", false,
+        localTypes["System.Type"], localTypes["System.RuntimeTypeHandle"]);
+    var arrayRankMethod = GetRequiredMethod(localTypes["System.Array"], "get_Rank", true,
+        localTypes["System.Int32"]);
+    var arrayGetLengthMethod = GetRequiredMethod(localTypes["System.Array"], "GetLength", true,
+        localTypes["System.Int32"], localTypes["System.Int32"]);
+    var arrayGetLowerBoundMethod = GetRequiredMethod(localTypes["System.Array"], "GetLowerBound", true,
+        localTypes["System.Int32"], localTypes["System.Int32"]);
+    var arrayGetUpperBoundMethod = GetRequiredMethod(localTypes["System.Array"], "GetUpperBound", true,
+        localTypes["System.Int32"], localTypes["System.Int32"]);
 
     HashSet<string> reachableMethods = new(StringComparer.Ordinal);
     Queue<MethodDefinition> pendingMethods = new();
     HashSet<string> rootMethods = new(StringComparer.Ordinal);
     if (assembly.EntryPoint is not null)
         rootMethods.Add(assembly.EntryPoint.FullName);
-    foreach (var method in localMethods.Values.Where(method =>
-        method.IsPublic && method.IsStatic && method.Parameters.Count == 0 &&
-        method.ReturnType.MetadataType == MetadataType.Void))
-        rootMethods.Add(method.FullName);
 
     foreach (var rootMethod in localMethods.Values.Where(method => rootMethods.Contains(method.FullName)))
     {
@@ -144,15 +152,16 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                     case Code.Ldvirtftn:
                         if (instr.OpCode.Code == Code.Calli)
                             break;
-                        MethodReference targetMethod = (MethodReference)instr.Operand;
+                        MethodReference targetMethod = SpecializeMethodReference((MethodReference)instr.Operand, method);
                         MethodReference callTarget = ResolveCallTarget(targetMethod);
                         var localTarget = FindLocalMethod(targetMethod, localMethods);
                         var instructions = localTarget?.HasBody == true ? localTarget.Body.Instructions : new();
                         RegisterMethodFunction(module, targetMethod, instructions);
                         if (!ReferenceEquals(callTarget, targetMethod))
                         {
-                            var targetInstructions = localMethods.TryGetValue(callTarget.FullName, out var implementation) && implementation.HasBody
-                                ? implementation.Body.Instructions
+                            var targetDefinition = FindLocalMethod(callTarget, localMethods);
+                            var targetInstructions = targetDefinition?.HasBody == true
+                                ? targetDefinition.Body.Instructions
                                 : new();
                             RegisterMethodFunction(module, callTarget, targetInstructions);
                         }
@@ -162,7 +171,7 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                             {
                                 var implementation = FindMethodImplementation(candidateType, targetMethod);
                                 if (implementation is not null)
-                                    RegisterMethodFunction(module, implementation, implementation.Body?.Instructions);
+                                    RegisterMethodFunction(module, implementation, FindLocalMethod(implementation, localMethods)?.Body?.Instructions);
                             }
                         }
                         break;
@@ -172,9 +181,9 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
     }
 
     Queue<MethodReference> pendingReferences = new(moduleMethods.Values
-        .SelectMany(method => method.Item4 ?? [])
-        .Where(instruction => instruction.OpCode.Code is Code.Call or Code.Callvirt or Code.Newobj or Code.Ldftn or Code.Ldvirtftn)
-        .Select(instruction => (MethodReference)instruction.Operand));
+        .SelectMany(method => (method.Item4 ?? [])
+            .Where(instruction => instruction.OpCode.Code is Code.Call or Code.Callvirt or Code.Newobj or Code.Ldftn or Code.Ldvirtftn)
+            .Select(instruction => SpecializeMethodReference((MethodReference)instruction.Operand, method.Item3))));
     HashSet<string> processedReferences = new(StringComparer.Ordinal);
     while (pendingReferences.Count != 0)
     {
@@ -189,13 +198,13 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
         RegisterMethodFunction(module, reference, instructions);
         var callTarget = ResolveCallTarget(reference);
         if (!ReferenceEquals(callTarget, reference))
-            RegisterMethodFunction(module, callTarget, localMethods.TryGetValue(callTarget.FullName, out var implementation) && implementation.HasBody
-                ? implementation.Body.Instructions
+            RegisterMethodFunction(module, callTarget, FindLocalMethod(callTarget, localMethods)?.HasBody == true
+                ? FindLocalMethod(callTarget, localMethods)!.Body.Instructions
                 : new());
         if (moduleMethods.Count != before || localTarget.HasBody)
         {
             foreach (var instruction in instructions.Where(instruction => instruction.OpCode.Code is Code.Call or Code.Callvirt or Code.Newobj or Code.Ldftn or Code.Ldvirtftn))
-                pendingReferences.Enqueue((MethodReference)instruction.Operand);
+                pendingReferences.Enqueue(SpecializeMethodReference((MethodReference)instruction.Operand, reference));
         }
         if (reference.Resolve()?.IsVirtual == true || reference.Resolve()?.IsAbstract == true)
         {
@@ -204,22 +213,23 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                 var implementation = FindMethodImplementation(candidateType, reference);
                 if (implementation is null)
                     continue;
-                RegisterMethodFunction(module, implementation, implementation.Body?.Instructions);
-                foreach (var instruction in implementation.Body?.Instructions ?? [])
+                var implementationDefinition = FindLocalMethod(implementation, localMethods);
+                RegisterMethodFunction(module, implementation, implementationDefinition?.Body?.Instructions);
+                foreach (var instruction in implementationDefinition?.Body?.Instructions ?? [])
                     if (instruction.OpCode.Code is Code.Call or Code.Callvirt or Code.Newobj or Code.Ldftn or Code.Ldvirtftn)
-                        pendingReferences.Enqueue((MethodReference)instruction.Operand);
+                        pendingReferences.Enqueue(SpecializeMethodReference((MethodReference)instruction.Operand, implementation));
             }
         }
     }
 
-    foreach (var arrayEnumeratorType in localTypes.Values.Where(type => type.Name.StartsWith("ArrayEnumerator`", StringComparison.Ordinal)))
+    foreach (var arrayEnumeratorType in arrayEnumeratorTypes)
         foreach (var method in arrayEnumeratorType.Methods.Where(method => method.HasBody))
             RegisterMethodFunction(module, method, method.Body.Instructions);
 
     LLVMBuilderRef entryBuilder = default;
     foreach (var method in moduleMethods)
     {
-        if (method.Value.Item4.Any())
+        if (method.Value.Item4?.Any() == true)
         {
             Console.WriteLine($"Method: {method.Value.Item3}, FriendlyMethodName: {GetFriendlyMethodName(method.Value.Item3)}");
             var allocaBlock = method.Value.Item1.AppendBasicBlock("alloca");
@@ -228,6 +238,12 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
             entryBuilder = context.CreateBuilder();
             entryBuilder.PositionAtEnd(allocaBlock);
             builder.PositionAtEnd(entry);
+            if (method.Value.Item3.Resolve() is not { IsConstructor: true } && !method.Value.Item3.HasThis)
+            {
+                var guard = GetCctorGuard(method.Value.Item3.DeclaringType);
+                if (guard is not null)
+                    builder.BuildCall2(LLVMTypeRef.CreateFunction(LLVMTypeRef.Void, []), guard.Value.Function, []);
+            }
             {
                 Stack<LLVMValueRef> stack = new();
                 Dictionary<LLVMBasicBlockRef, List<(LLVMBasicBlockRef Source, List<LLVMValueRef> Values)>> incomingStacks = new();
@@ -244,6 +260,7 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                 SortedDictionary<int, LLVMBasicBlockRef> label = new();
                 int nextFinallyContinuation = 1;
                 TypeReference? constrainedType = null;
+                var methodDefinition = FindLocalMethod(method.Value.Item3, localMethods) ?? method.Value.Item3.Resolve();
 
                 void TrackType(LLVMValueRef value, TypeReference type)
                 {
@@ -255,16 +272,15 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                     LLVMTypeRef targetFunctionType, LLVMValueRef targetFunction, List<(TypeDefinition RuntimeType, MethodReference Implementation)> implementations,
                     bool allowArraySpecial = true)
                 {
-                    if (allowArraySpecial && targetMethod.Name == "GetEnumerator" && targetMethod.DeclaringType is GenericInstanceType enumerableType &&
-                        enumerableType.ElementType.FullName == "System.Collections.Generic.IEnumerable`1")
+                    if (allowArraySpecial && TryGetArrayEnumerator(targetMethod, out var enumerableElementType,
+                            out var arrayEnumeratorDefinition, out var constructor))
                     {
-                        var arrayEnumeratorDefinition = localTypes.Values.First(type => type.Name.StartsWith("ArrayEnumerator`", StringComparison.Ordinal));
-                        var constructor = arrayEnumeratorDefinition.Methods.First(methodDefinition => methodDefinition.Name == ".ctor" && methodDefinition.Parameters.Count == 1);
-                        var constructorMethod = moduleMethods[GetFriendlyMethodName(constructor)];
+                        var constructorMethod = GetRegisteredMethod(constructor) ??
+                            throw new NotSupportedException($"Method is not defined in the input module: {constructor.FullName}");
                         var arrayReceiverValue = targetArgs[0];
                         var arrayMethodTable = builder.BuildLoad2(sizeType,
                             GetFieldAddress(builder, arrayReceiverValue, GetObjectMethodTableField()));
-                        var arrayType = new ArrayType(SubstituteGenericParameter(enumerableType.GenericArguments[0], method.Value.Item3));
+                        var arrayType = new ArrayType(enumerableElementType);
                         var arrayId = LLVMValueRef.CreateConstInt(sizeType, GetRuntimeTypeId(arrayType), false);
                         var arrayBlock = method.Value.Item1.AppendBasicBlock($"array.enum.{nextVirtualDispatchId++}");
                         var fallbackBlock = method.Value.Item1.AppendBasicBlock($"array.enum.next.{nextVirtualDispatchId++}");
@@ -273,12 +289,12 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                         builder.BuildCondBr(builder.BuildICmp(LLVMIntPredicate.LLVMIntEQ, arrayMethodTable, arrayId), arrayBlock, fallbackBlock);
                         terminatedBlocks.Add(arraySourceBlock);
                         builder.PositionAtEnd(arrayBlock);
+                        var enumeratorType = new GenericInstanceType(arrayEnumeratorDefinition);
+                        enumeratorType.GenericArguments.Add(enumerableElementType);
                         var enumerator = builder.BuildCall2(runtimeMethods[RuntimeMethod.Newobj].Item2,
                             runtimeMethods[RuntimeMethod.Newobj].Item1,
-                            [LLVMValueRef.CreateConstInt(sizeType, (ulong)GetTypeDefinitionSize(arrayEnumeratorDefinition), false)]);
-                        var enumeratorType = new GenericInstanceType(arrayEnumeratorDefinition);
-                        enumeratorType.GenericArguments.Add(enumerableType.GenericArguments[0]);
-                        InitializeRuntimeType(builder, enumerator, arrayEnumeratorDefinition);
+                            [LLVMValueRef.CreateConstInt(sizeType, (ulong)GetObjectSize(enumeratorType), false)]);
+                        InitializeRuntimeType(builder, enumerator, enumeratorType);
                         builder.BuildCall2(constructorMethod.Item2, constructorMethod.Item1, [enumerator, arrayReceiverValue]);
                         builder.BuildBr(arrayContinuation);
                         builder.PositionAtEnd(fallbackBlock);
@@ -292,8 +308,9 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                     }
 
                     var distinctImplementations = implementations
-                        .Select(candidate => GetFriendlyMethodName(candidate.Implementation))
-                        .Distinct(StringComparer.Ordinal)
+                        .Select(candidate => GetRegisteredMethod(candidate.Implementation)?.Item1 ?? default)
+                        .Where(function => function != default)
+                        .Distinct()
                         .ToList();
                     if (implementations.Count == 0 || distinctImplementations.Count <= 1)
                         return builder.BuildCall2(targetFunctionType, targetFunction, targetArgs);
@@ -310,8 +327,8 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                     for (int i = 0; i < implementations.Count; i++)
                     {
                         var candidate = implementations[i];
-                        var implementationName = GetFriendlyMethodName(candidate.Implementation);
-                        if (!moduleMethods.TryGetValue(implementationName, out var implementationMethod))
+                        var implementationMethod = GetRegisteredMethod(candidate.Implementation);
+                        if (implementationMethod is null)
                             continue;
                         var callBlock = method.Value.Item1.AppendBasicBlock($"virt.call.{nextVirtualDispatchId++}");
                         var nextBlock = method.Value.Item1.AppendBasicBlock($"virt.next.{nextVirtualDispatchId++}");
@@ -482,8 +499,8 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                             terminatedBlocks.Add(chain);
                             var endfilter = region.Handlers[index].FilterStart is null
                                 ? null
-                                : method.Value.Item3 is MethodDefinition filterMethod
-                                    ? filterMethod.Body.Instructions.FirstOrDefault(instruction =>
+                                : methodDefinition is not null
+                                    ? methodDefinition.Body.Instructions.FirstOrDefault(instruction =>
                                         instruction.OpCode.Code == Code.Endfilter &&
                                         instruction.Offset >= handler.FilterStart.Offset && instruction.Offset < handler.HandlerStart.Offset)
                                     : null;
@@ -529,7 +546,6 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                 bool CanFallThrough(Instruction instruction) => instruction.OpCode.Code is not
                     (Code.Br or Code.Br_S or Code.Leave or Code.Leave_S or Code.Ret or Code.Throw or Code.Rethrow or Code.Endfinally or Code.Endfilter or Code.Switch);
 
-                var methodDefinition = method.Value.Item3.Resolve();
                 if (methodDefinition?.HasBody == true)
                 {
                     for (int i = 0; i < methodDefinition.Body.Variables.Count; i++)
@@ -555,15 +571,6 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                     entryBuilder.BuildStore(argument, local[-1 - i].Item1);
                 }
                 label.Add(method.Value.Item4.First().Offset, entry);
-
-                if (rootMethods.Contains(method.Value.Item3.FullName))
-                {
-                    var cctor = moduleMethods.Values.FirstOrDefault(candidate =>
-                        candidate.Item3.Name == ".cctor" &&
-                        candidate.Item3.DeclaringType.FullName == method.Value.Item3.DeclaringType.FullName);
-                    if (cctor is not null && cctor.Item1 != default)
-                        builder.BuildCall2(cctor.Item2, cctor.Item1, Array.Empty<LLVMValueRef>());
-                }
 
                 // Scan for branches
                 Instruction? previousInstruction = null;
@@ -606,7 +613,7 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                                 {
                                     label.TryAdd(branchStart.Offset, method.Value.Item1.AppendBasicBlock(GetLabelName(branchStart)));
                                 }
-                                if (!label.ContainsKey(next.Offset))
+                                if (next is not null && !label.ContainsKey(next.Offset))
                                 {
                                     label.TryAdd(next.Offset, method.Value.Item1.AppendBasicBlock(GetLabelName(next))); // fallthrough
                                 }
@@ -624,9 +631,9 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                     }
                 }
 
-                if (method.Value.Item3 is MethodDefinition bodyWithHandlers)
+                if (methodDefinition?.HasBody == true)
                 {
-                    foreach (var handler in bodyWithHandlers.Body.ExceptionHandlers)
+                    foreach (var handler in methodDefinition.Body.ExceptionHandlers)
                     {
                         if (!label.ContainsKey(handler.HandlerStart.Offset))
                             label.TryAdd(handler.HandlerStart.Offset, method.Value.Item1.AppendBasicBlock(GetLabelName(handler.HandlerStart)));
@@ -634,7 +641,7 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                             label.TryAdd(handler.FilterStart.Offset, method.Value.Item1.AppendBasicBlock(GetLabelName(handler.FilterStart)));
                     }
 
-                    foreach (var regionGroup in bodyWithHandlers.Body.ExceptionHandlers
+                    foreach (var regionGroup in methodDefinition.Body.ExceptionHandlers
                                  .GroupBy(handler => (handler.TryStart.Offset, handler.TryEnd.Offset)))
                     {
                         var frame = BuildEntryAlloca(LLVMTypeRef.CreateArray(LLVMTypeRef.Int8, (uint)(pointerSize * 2)));
@@ -727,22 +734,23 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                         case Code.Callvirt:
                         case Code.Newobj:
                             {
-                                MethodReference targetMethod = (MethodReference)instr.Operand;
-                                if (instr.OpCode.Code == Code.Callvirt && targetMethod.Name == "GetEnumerator" &&
+                                MethodReference targetMethod = SpecializeMethodReference((MethodReference)instr.Operand, method.Value.Item3);
+                                if (instr.OpCode.Code == Code.Callvirt &&
                                     stack.Count != 0 && trackedTypes.TryGetValue(stack.Peek(), out var enumerableReceiver) &&
-                                    enumerableReceiver is ArrayType arrayReceiver)
+                                    enumerableReceiver is ArrayType arrayReceiver &&
+                                    TryGetArrayEnumerator(targetMethod, out var enumerableElementType,
+                                        out var arrayEnumeratorDefinition, out var constructor) &&
+                                    GetRuntimeTypeKey(arrayReceiver.ElementType) == GetRuntimeTypeKey(enumerableElementType))
                                 {
-                                    var arrayEnumeratorDefinition = localTypes.Values.First(type => type.Name.StartsWith("ArrayEnumerator`", StringComparison.Ordinal));
-                                    var constructor = arrayEnumeratorDefinition.Methods.First(methodDefinition => methodDefinition.Name == ".ctor" && methodDefinition.Parameters.Count == 1);
-                                    var constructorName = GetFriendlyMethodName(constructor);
-                                    var constructorMethod = moduleMethods[constructorName];
+                                    var constructorMethod = GetRegisteredMethod(constructor) ??
+                                        throw new NotSupportedException($"Method is not defined in the input module: {constructor.FullName}");
                                     var array = stack.Pop();
-                                    var enumerator = builder.BuildCall2(runtimeMethods[RuntimeMethod.Newobj].Item2,
-                                        runtimeMethods[RuntimeMethod.Newobj].Item1,
-                                        [LLVMValueRef.CreateConstInt(sizeType, (ulong)GetTypeDefinitionSize(arrayEnumeratorDefinition), false)]);
                                     var enumeratorType = new GenericInstanceType(arrayEnumeratorDefinition);
                                     enumeratorType.GenericArguments.Add(arrayReceiver.ElementType);
-                                    InitializeRuntimeType(builder, enumerator, arrayEnumeratorDefinition);
+                                    var enumerator = builder.BuildCall2(runtimeMethods[RuntimeMethod.Newobj].Item2,
+                                        runtimeMethods[RuntimeMethod.Newobj].Item1,
+                                        [LLVMValueRef.CreateConstInt(sizeType, (ulong)GetObjectSize(enumeratorType), false)]);
+                                    InitializeRuntimeType(builder, enumerator, enumeratorType);
                                     builder.BuildCall2(constructorMethod.Item2, constructorMethod.Item1, [enumerator, array]);
                                     stack.Push(enumerator);
                                     TrackType(enumerator, enumeratorType);
@@ -750,6 +758,7 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                                 }
                                 MethodReference callTarget = ResolveCallTarget(targetMethod);
                                 bool useRuntimeDispatch = false;
+                                TypeReference? virtualContractType = null;
                                 var callConstrainedType = constrainedType;
                                 constrainedType = null;
                                 if (instr.OpCode.Code == Code.Callvirt && callConstrainedType is not null)
@@ -764,6 +773,7 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                                         trackedTypes.TryGetValue(stackValues[targetMethod.Parameters.Count], out var receiverType))
                                     {
                                         callTarget = ResolveVirtualTarget(targetMethod, receiverType);
+                                        virtualContractType = receiverType;
                                         useRuntimeDispatch = IsKnownRuntimeType(receiverType) && receiverType.Resolve()?.IsSealed != true;
                                     }
                                     else
@@ -800,25 +810,28 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                                     }
                                     break;
                                 }
-                                if (targetMethod.DeclaringType.FullName == "System.Type" && targetMethod.Name == "GetTypeFromHandle")
+                                if (SameMethodDefinition(targetMethod, typeGetTypeFromHandleMethod))
                                 {
                                     stack.Push(stack.Count == 0
                                         ? LLVMValueRef.CreateConstNull(LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0))
                                         : stack.Pop());
                                     break;
                                 }
-                                if (targetMethod.DeclaringType.FullName == "System.Array" && targetMethod.HasThis &&
-                                    targetMethod.Name is "get_Rank" or "GetLength" or "GetLowerBound" or "GetUpperBound")
+                                var isArrayRank = SameMethodDefinition(targetMethod, arrayRankMethod);
+                                var isArrayGetLength = SameMethodDefinition(targetMethod, arrayGetLengthMethod);
+                                var isArrayGetLowerBound = SameMethodDefinition(targetMethod, arrayGetLowerBoundMethod);
+                                var isArrayGetUpperBound = SameMethodDefinition(targetMethod, arrayGetUpperBoundMethod);
+                                if (isArrayRank || isArrayGetLength || isArrayGetLowerBound || isArrayGetUpperBound)
                                 {
                                     var dimension = targetMethod.Parameters.Count == 0
                                         ? default
                                         : stack.Pop();
                                     var array = stack.Pop();
                                     LLVMValueRef arrayResult;
-                                    if (targetMethod.Name == "get_Rank")
+                                    if (isArrayRank)
                                         arrayResult = builder.BuildLoad2(GetLLVMTypeRef(targetMethod.ReturnType),
                                             GetFieldAddress(builder, array, localTypes["System.Array"].Fields.First(field => field.Name == "_rank")));
-                                    else if (targetMethod.Name == "GetLowerBound")
+                                    else if (isArrayGetLowerBound)
                                         arrayResult = LLVMValueRef.CreateConstInt(GetLLVMTypeRef(targetMethod.ReturnType), 0, false);
                                     else
                                     {
@@ -832,7 +845,7 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                                             LLVMValueRef.CreateConstInt(nativeDimension.TypeOf, 0, false)), lengths[0], arrayResult);
                                         arrayResult = builder.BuildSelect(builder.BuildICmp(LLVMIntPredicate.LLVMIntEQ, nativeDimension,
                                             LLVMValueRef.CreateConstInt(nativeDimension.TypeOf, 1, false)), lengths[1], arrayResult);
-                                        if (targetMethod.Name == "GetUpperBound")
+                                        if (isArrayGetUpperBound)
                                             arrayResult = builder.BuildSub(arrayResult, LLVMValueRef.CreateConstInt(arrayResult.TypeOf, 1, false));
                                     }
                                     stack.Push(arrayResult);
@@ -881,21 +894,6 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                                         break;
                                     }
                                 }
-                                if (callTarget.Name == "GetValue" && targetMethod.DeclaringType is GenericInstanceType getValueInterface &&
-                                    getValueInterface.GenericArguments.Count != 0)
-                                {
-                                    var receiver = stack.Pop();
-                                    var valueType = getValueInterface.GenericArguments[0];
-                                    var genericDefinition = localTypes.Values.First(type => type.Name.StartsWith("GenericFeature`1", StringComparison.Ordinal));
-                                    var valueField = genericDefinition.Fields.First(field => field.Name == "_value");
-                                    var valueAddress = GetFieldAddress(builder, receiver, valueField);
-                                    var value = IsValueType(valueType)
-                                        ? valueAddress
-                                        : builder.BuildLoad2(GetLLVMTypeRef(valueType), valueAddress);
-                                    stack.Push(value);
-                                    TrackType(value, valueType);
-                                    break;
-                                }
                                 LLVMValueRef ptr = default;
 
                                 if (instr.OpCode.Code == Code.Newobj)
@@ -910,7 +908,7 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                                             : stack.Pop();
                                         var delegateType = targetMethod.DeclaringType.Resolve() ?? throw new NotSupportedException($"Delegate type is not defined: {targetMethod.DeclaringType.FullName}");
                                         ptr = builder.BuildCall2(runtimeMethods[RuntimeMethod.Newobj].Item2, runtimeMethods[RuntimeMethod.Newobj].Item1,
-                                            [LLVMValueRef.CreateConstInt(sizeType, (ulong)GetTypeDefinitionSize(delegateType), false)]);
+                                            [LLVMValueRef.CreateConstInt(sizeType, (ulong)GetObjectSize(targetMethod.DeclaringType), false)]);
                                         InitializeRuntimeType(builder, ptr, targetMethod.DeclaringType);
                                         builder.BuildStore(delegateFunction, GetFieldAddress(builder, ptr, GetDelegateField(targetMethod.DeclaringType, "_function")));
                                         StoreField(builder, ptr, GetDelegateField(targetMethod.DeclaringType, "_target"), delegateTarget);
@@ -919,52 +917,16 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                                         break;
                                     }
                                     var function = runtimeMethods[RuntimeMethod.Newobj];
-                                    int size = targetMethod.DeclaringType is GenericInstanceType
-                                        ? GetTypeSize(targetMethod.DeclaringType)
-                                        : localTypes.TryGetValue(targetMethod.DeclaringType.FullName, out var targetType)
-                                            ? GetTypeDefinitionSize(targetType)
-                                            : pointerSize;
+                                    var targetType = targetMethod.DeclaringType.Resolve();
+                                    int size = targetType is not null && localTypes.ContainsKey(targetType.FullName)
+                                        ? GetObjectSize(targetMethod.DeclaringType)
+                                        : pointerSize;
                                     ptr = builder.BuildCall2(function.Item2, function.Item1, [LLVMValueRef.CreateConstInt(sizeType, (ulong)size)]);
                                     InitializeRuntimeType(builder, ptr, targetMethod.DeclaringType);
                                 }
 
-                                var targetName = GetFriendlyMethodName(callTarget);
-                                if (targetMethod.DeclaringType is GenericInstanceType requestedGeneric)
-                                {
-                                    var requestedElement = requestedGeneric.ElementType.FullName;
-                                    var requestedArguments = requestedGeneric.GenericArguments.Select(GetRuntimeTypeKey).ToArray();
-                                    var specialized = moduleMethods.Values.FirstOrDefault(candidate =>
-                                    {
-                                        if (candidate.Item3.DeclaringType is not GenericInstanceType candidateGeneric ||
-                                            candidateGeneric.ElementType.FullName != requestedElement ||
-                                            candidateGeneric.GenericArguments.Count != requestedArguments.Length ||
-                                            !candidateGeneric.GenericArguments.Select(GetRuntimeTypeKey).SequenceEqual(requestedArguments))
-                                            return false;
-                                        return candidate.Item3.Name == callTarget.Name &&
-                                            candidate.Item3.Parameters.Count == callTarget.Parameters.Count;
-                                    });
-                                    if (specialized is not null)
-                                        targetName = GetFriendlyMethodName(specialized.Item3);
-                                }
-                                if (targetMethod.DeclaringType is GenericInstanceType genericDeclaringType &&
-                                    genericDeclaringType.GenericArguments.Any(argument => IsValueType(argument)))
-                                {
-                                    var genericArguments = string.Join("_", genericDeclaringType.GenericArguments.Select(GetFriendlyTypeName));
-                                    var specializedName = moduleMethods.Keys.FirstOrDefault(name =>
-                                        name.Contains("_" + genericArguments + "_", StringComparison.Ordinal) &&
-                                        name.Contains("_" + callTarget.Name.Replace('.', '_') + "_", StringComparison.Ordinal));
-                                    if (specializedName is not null)
-                                        targetName = specializedName;
-                                }
-                                if (!moduleMethods.TryGetValue(targetName, out var m))
-                                {
-                                    var fallback = moduleMethods.Keys.FirstOrDefault(name =>
-                                        name.EndsWith("_" + callTarget.Name, StringComparison.Ordinal) ||
-                                        name.Contains("_" + callTarget.Name + "_", StringComparison.Ordinal));
-                                    if (fallback is null)
-                                        throw new NotSupportedException($"Method is not defined in the input module: {callTarget.FullName}");
-                                    m = moduleMethods[fallback];
-                                }
+                                var m = GetRegisteredMethod(callTarget) ??
+                                    throw new NotSupportedException($"Method is not defined in the input module: {callTarget.FullName}");
 
                                 var targetFuncCreated = m.Item2;
                                 var targetFunc = m.Item1;
@@ -993,9 +955,15 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                                 }
                                 for (int i = 0; i < targetArgs.Length; i++)
                                 {
-                                    var expectedType = instr.OpCode.Code != Code.Newobj && i == 0 && targetMethod.HasThis
+                                    var parameterIndex = i - (instr.OpCode.Code == Code.Newobj ? 0 : targetMethod.HasThis ? 1 : 0);
+                                    if (parameterIndex >= 0 && IsLPWStrParameter(targetMethod, parameterIndex))
+                                    {
+                                        targetArgs[i] = GetStringDataPointer(builder, targetArgs[i]);
+                                        continue;
+                                    }
+                                    var expectedType = parameterIndex < 0
                                         ? LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0)
-                                        : GetLLVMTypeRef(SubstituteGenericParameter(targetMethod.Parameters[i - (instr.OpCode.Code == Code.Newobj ? 0 : targetMethod.HasThis ? 1 : 0)].ParameterType, targetMethod));
+                                        : GetLLVMTypeRef(SubstituteGenericParameter(targetMethod.Parameters[parameterIndex].ParameterType, targetMethod));
                                     targetArgs[i] = ConvertValue(builder, targetArgs[i], expectedType);
                                 }
                                 if (ptr != default)
@@ -1006,7 +974,8 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                                 }
 
                                 var result = instr.OpCode.Code == Code.Callvirt && targetMethod.HasThis && useRuntimeDispatch
-                                    ? BuildVirtualDispatch(targetMethod, targetArgs, targetFuncCreated, targetFunc, GetVirtualImplementations(targetMethod))
+                                    ? BuildVirtualDispatch(targetMethod, targetArgs, targetFuncCreated, targetFunc,
+                                        GetVirtualImplementations(targetMethod, virtualContractType ?? targetMethod.DeclaringType))
                                     : builder.BuildCall2(targetFuncCreated, targetFunc, targetArgs);
                                 if (result != default && targetMethod.ReturnType is GenericParameter returnParameter &&
                                     targetMethod.DeclaringType is GenericInstanceType returnDeclaringType &&
@@ -1051,7 +1020,7 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                         case Code.Ldftn:
                         case Code.Ldvirtftn:
                             {
-                                MethodReference targetMethod = (MethodReference)instr.Operand;
+                                MethodReference targetMethod = SpecializeMethodReference((MethodReference)instr.Operand, method.Value.Item3);
                                 MethodReference callTarget = ResolveCallTarget(targetMethod);
                                 if (instr.OpCode.Code == Code.Ldvirtftn && stack.Count != 0)
                                 {
@@ -1059,7 +1028,9 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                                     if (trackedTypes.TryGetValue(receiver, out var receiverType))
                                         callTarget = ResolveVirtualTarget(targetMethod, receiverType);
                                 }
-                                stack.Push(moduleMethods[GetFriendlyMethodName(callTarget)].Item1);
+                                var registeredMethod = GetRegisteredMethod(callTarget) ??
+                                    throw new NotSupportedException($"Method is not defined in the input module: {callTarget.FullName}");
+                                stack.Push(registeredMethod.Item1);
                             }
                             break;
                         case Code.Castclass:
@@ -1093,12 +1064,13 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                                 var fieldReference = (FieldReference)instr.Operand;
                                 FieldDefinition field = GetLocalField(fieldReference);
                                 var fieldType = SubstituteFieldType(fieldReference, method.Value.Item3);
+                                var fieldDeclaringType = ResolveGenericType(fieldReference.DeclaringType, method.Value.Item3);
                                 var val = stack.Pop();
                                 var obj = stack.Pop();
                                 if (IsValueType(fieldType))
-                                    CopyValue(builder, GetFieldAddress(builder, obj, field), val, GetTypeSize(fieldType));
+                                    CopyValue(builder, GetFieldAddress(builder, obj, field, fieldDeclaringType), val, GetTypeSize(fieldType));
                                 else
-                                    builder.BuildStore(ConvertValue(builder, val, GetLLVMTypeRef(fieldType)), GetFieldAddress(builder, obj, field));
+                                    builder.BuildStore(ConvertValue(builder, val, GetLLVMTypeRef(fieldType)), GetFieldAddress(builder, obj, field, fieldDeclaringType));
                             }
                             break;
                         case Code.Stloc_0:
@@ -1116,6 +1088,7 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                                     Code.Stloc_3 => 3,
                                     Code.Stloc => ((VariableDefinition)instr.Operand).Index,
                                     Code.Stloc_S => ((VariableDefinition)instr.Operand).Index,
+                                    _ => throw new InvalidOperationException(instr.OpCode.Code.ToString())
                                 };
 
                                 var variableType = GetMethodVariableType(method.Value.Item3, offset);
@@ -1164,7 +1137,8 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                                     Code.Stelem_R4 => LLVMTypeRef.Float,
                                     Code.Stelem_R8 => LLVMTypeRef.Double,
                                     Code.Stelem_Ref => LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0),
-                                     Code.Stelem_Any => GetLLVMTypeRef(SubstituteGenericParameter((TypeReference)instr.Operand, method.Value.Item3))
+                                    Code.Stelem_Any => GetLLVMTypeRef(SubstituteGenericParameter((TypeReference)instr.Operand, method.Value.Item3)),
+                                    _ => throw new InvalidOperationException(instr.OpCode.Code.ToString())
                                 };
                                 builder.BuildStore(ConvertValue(builder, value, type), GetArrayElementAddress(builder, array, index, type));
                             }
@@ -1207,8 +1181,9 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                                 var fieldReference = (FieldReference)instr.Operand;
                                 FieldDefinition field = GetLocalField(fieldReference);
                                 var fieldType = SubstituteFieldType(fieldReference, method.Value.Item3);
+                                var fieldDeclaringType = ResolveGenericType(fieldReference.DeclaringType, method.Value.Item3);
                                 var obj = stack.Pop();
-                                var gep = GetFieldAddress(builder, obj, field);
+                                var gep = GetFieldAddress(builder, obj, field, fieldDeclaringType);
                                 if (instr.OpCode.Code == Code.Ldflda)
                                 {
                                     stack.Push(gep);
@@ -1237,7 +1212,8 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                                     Code.Ldarg_0 => 0,
                                     Code.Ldarg_1 => 1,
                                     Code.Ldarg_2 => 2,
-                                    Code.Ldarg_3 => 3
+                                    Code.Ldarg_3 => 3,
+                                    _ => throw new InvalidOperationException(instr.OpCode.Code.ToString())
                                 });
                                 stack.Push(param);
                                 var argumentIndex = instr.OpCode.Code switch
@@ -1245,7 +1221,8 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                                     Code.Ldarg_0 => 0,
                                     Code.Ldarg_1 => 1,
                                     Code.Ldarg_2 => 2,
-                                    Code.Ldarg_3 => 3
+                                    Code.Ldarg_3 => 3,
+                                    _ => throw new InvalidOperationException(instr.OpCode.Code.ToString())
                                 };
                                 if (method.Value.Item3.HasThis && argumentIndex == 0)
                                     TrackType(param, method.Value.Item3.DeclaringType);
@@ -1253,7 +1230,8 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                                 {
                                     var parameterIndex = argumentIndex - (method.Value.Item3.HasThis ? 1 : 0);
                                     if (parameterIndex >= 0 && parameterIndex < method.Value.Item3.Parameters.Count)
-                                        TrackType(param, method.Value.Item3.Parameters[parameterIndex].ParameterType);
+                                        TrackType(param, SubstituteGenericParameter(
+                                            method.Value.Item3.Parameters[parameterIndex].ParameterType, method.Value.Item3));
                                 }
                             }
                             break;
@@ -1273,7 +1251,8 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                                 {
                                     var parameterIndex = index - (method.Value.Item3.HasThis ? 1 : 0);
                                     if (parameterIndex >= 0 && parameterIndex < method.Value.Item3.Parameters.Count)
-                                        TrackType(argument, method.Value.Item3.Parameters[parameterIndex].ParameterType);
+                                        TrackType(argument, SubstituteGenericParameter(
+                                            method.Value.Item3.Parameters[parameterIndex].ParameterType, method.Value.Item3));
                                 }
                             }
                             break;
@@ -1318,7 +1297,8 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                                     Code.Ldelem_R4 => LLVMTypeRef.Float,
                                     Code.Ldelem_R8 => LLVMTypeRef.Double,
                                     Code.Ldelem_Ref => LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0),
-                                    Code.Ldelem_Any => GetLLVMTypeRef(SubstituteGenericParameter((TypeReference)instr.Operand, method.Value.Item3))
+                                    Code.Ldelem_Any => GetLLVMTypeRef(SubstituteGenericParameter((TypeReference)instr.Operand, method.Value.Item3)),
+                                    _ => throw new InvalidOperationException(instr.OpCode.Code.ToString())
                                 };
                                 var gep = GetArrayElementAddress(builder, array, index, type);
                                 var element = builder.BuildLoad2(type, gep);
@@ -1344,6 +1324,7 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                                     Code.Ldloc_3 => 3,
                                     Code.Ldloc => ((VariableDefinition)instr.Operand).Index,
                                     Code.Ldloc_S => ((VariableDefinition)instr.Operand).Index,
+                                    _ => throw new InvalidOperationException(instr.OpCode.Code.ToString())
                                 };
                                 var load = builder.BuildLoad2(local[offset].Item2, local[offset].Item1);
                                 stack.Push(load);
@@ -1381,7 +1362,8 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                                     Code.Ldc_I4_7 => 7,
                                     Code.Ldc_I4_8 => 8,
                                     Code.Ldc_I4 => (int)instr.Operand,
-                                    Code.Ldc_I4_S => (sbyte)instr.Operand
+                                    Code.Ldc_I4_S => (sbyte)instr.Operand,
+                                    _ => throw new InvalidOperationException(instr.OpCode.Code.ToString())
                                 }));
                                 stack.Push(value);
                             }
@@ -1464,6 +1446,7 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                                     Code.Ldind_R8 => LLVMTypeRef.Double,
                                     Code.Ldind_I => sizeType,
                                     Code.Ldind_Ref => LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0),
+                                    _ => throw new InvalidOperationException(instr.OpCode.Code.ToString())
                                 };
                                 stack.Push(builder.BuildLoad2(type, address));
                             }
@@ -1489,6 +1472,7 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                                     Code.Stind_R8 => LLVMTypeRef.Double,
                                     Code.Stind_I => sizeType,
                                     Code.Stind_Ref => LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0),
+                                    _ => throw new InvalidOperationException(instr.OpCode.Code.ToString())
                                 };
                                 builder.BuildStore(ConvertValue(builder, value, type), address);
                             }
@@ -1562,8 +1546,8 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                             terminatedBlocks.Add(builder.InsertBlock);
                             break;
                         case Code.Rethrow:
-                            var activeCatch = method.Value.Item3 is MethodDefinition rethrowMethod
-                                ? rethrowMethod.Body.ExceptionHandlers
+                            var activeCatch = methodDefinition is not null
+                                ? methodDefinition.Body.ExceptionHandlers
                                     .Where(handler => handler.HandlerType is ExceptionHandlerType.Catch or ExceptionHandlerType.Filter &&
                                         handler.HandlerStart.Offset <= instr.Offset &&
                                         (handler.HandlerEnd is null || instr.Offset < handler.HandlerEnd.Offset))
@@ -1578,8 +1562,8 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                             terminatedBlocks.Add(builder.InsertBlock);
                             break;
                         case Code.Endfinally:
-                            var finallyHandler = method.Value.Item3 is MethodDefinition finallyMethod
-                                ? finallyMethod.Body.ExceptionHandlers.FirstOrDefault(handler =>
+                            var finallyHandler = methodDefinition is not null
+                                ? methodDefinition.Body.ExceptionHandlers.FirstOrDefault(handler =>
                                     handler.HandlerType is ExceptionHandlerType.Finally or ExceptionHandlerType.Fault &&
                                     handler.HandlerStart.Offset <= instr.Offset &&
                                     (handler.HandlerEnd is null || instr.Offset < handler.HandlerEnd.Offset))
@@ -1627,8 +1611,8 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                                     .ToList();
                                 foreach (var exitedRegion in exitedRegions)
                                     builder.BuildCall2(exceptionPopType, exceptionPopFunction, [exitedRegion.Frame]);
-                                var leaveHandler = method.Value.Item3 is MethodDefinition leaveMethod
-                                    ? leaveMethod.Body.ExceptionHandlers.FirstOrDefault(handler =>
+                                var leaveHandler = methodDefinition is not null
+                                    ? methodDefinition.Body.ExceptionHandlers.FirstOrDefault(handler =>
                                         handler.HandlerType == ExceptionHandlerType.Finally &&
                                         handler.TryStart.Offset <= instr.Offset && instr.Offset < handler.TryEnd.Offset &&
                                         !(((Instruction)instr.Operand).Offset >= handler.TryStart.Offset && ((Instruction)instr.Operand).Offset < handler.TryEnd.Offset))
@@ -2050,6 +2034,50 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
         }
     }
 
+    bool IsArrayEnumeratorDefinition(TypeDefinition type)
+    {
+        if (!type.HasGenericParameters || type.Interfaces.Count == 0)
+            return false;
+        return type.Methods.Any(method => method.IsConstructor && !method.IsStatic && method.Parameters.Count == 1 &&
+            method.Parameters[0].ParameterType is ArrayType array &&
+            array.ElementType is GenericParameter parameter && parameter.Type == GenericParameterType.Type &&
+            parameter.Owner is TypeReference owner && SameTypeDefinition(owner, type));
+    }
+
+    bool TryGetArrayEnumerator(MethodReference targetMethod, out TypeReference elementType,
+        out TypeDefinition definition, out MethodDefinition constructor)
+    {
+        elementType = null!;
+        definition = null!;
+        constructor = null!;
+        if (!targetMethod.HasThis || targetMethod.Parameters.Count != 0 ||
+            targetMethod.DeclaringType.Resolve()?.IsInterface != true)
+            return false;
+        var returnType = SubstituteGenericParameter(targetMethod.ReturnType, targetMethod);
+        if (returnType.Resolve()?.IsInterface != true)
+            return false;
+        foreach (var candidate in arrayEnumeratorTypes)
+        {
+            if (!TryCloseRuntimeType(candidate, returnType, out var closedType) ||
+                closedType is not GenericInstanceType genericType)
+                continue;
+            var candidateConstructor = candidate.Methods.FirstOrDefault(method =>
+                method.IsConstructor && !method.IsStatic && method.Parameters.Count == 1 &&
+                method.Parameters[0].ParameterType is ArrayType array &&
+                array.ElementType is GenericParameter parameter && parameter.Type == GenericParameterType.Type &&
+                parameter.Owner is TypeReference owner && SameTypeDefinition(owner, candidate));
+            if (candidateConstructor?.Parameters[0].ParameterType is not ArrayType constructorArray ||
+                constructorArray.ElementType is not GenericParameter elementParameter ||
+                elementParameter.Position >= genericType.GenericArguments.Count)
+                continue;
+            elementType = genericType.GenericArguments[elementParameter.Position];
+            definition = candidate;
+            constructor = candidateConstructor;
+            return true;
+        }
+        return false;
+    }
+
     LLVMValueRef GetArrayElementAddress(LLVMBuilderRef builder, LLVMValueRef array, LLVMValueRef index, LLVMTypeRef elementType)
     {
         var nativeIndex = ConvertValue(builder, index, sizeType, false);
@@ -2073,16 +2101,6 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
         return builder.BuildGEP2(LLVMTypeRef.Int8, array, [builder.BuildAdd(dataOffset, elementOffset)]);
     }
 
-    LLVMValueRef GetStringConstant(LLVMBuilderRef builder, string value)
-    {
-        if (!stringConstants.TryGetValue(value, out var constant))
-        {
-            constant = builder.BuildGlobalStringPtr(value);
-            stringConstants.Add(value, constant);
-        }
-        return constant;
-    }
-
     LLVMValueRef BuildStringValue(LLVMBuilderRef builder, string value)
     {
         var array = builder.BuildCall2(runtimeMethods[RuntimeMethod.Newarr].Item2,
@@ -2101,15 +2119,39 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
             runtimeMethods[RuntimeMethod.Newobj].Item1,
             [LLVMValueRef.CreateConstInt(sizeType, (ulong)GetTypeDefinitionSize(stringType), false)]);
         InitializeRuntimeType(builder, stringObject, stringType);
-        var constructor = moduleMethods.Values.First(method =>
-            method.Item3.DeclaringType.FullName == "System.String" && method.Item3.Name == ".ctor" && method.Item3.Parameters.Count == 1);
+        var constructor = GetRegisteredMethod(stringConstructor) ??
+            throw new NotSupportedException($"Method is not defined in the input module: {stringConstructor.FullName}");
         builder.BuildCall2(constructor.Item2, constructor.Item1, [stringObject, array]);
         return stringObject;
     }
 
-    LLVMValueRef GetFieldAddress(LLVMBuilderRef builder, LLVMValueRef obj, FieldDefinition field)
+    bool IsLPWStrParameter(MethodReference method, int parameterIndex)
     {
-        var offset = LLVMValueRef.CreateConstInt(sizeType, (ulong)GetFieldOffset(field), false);
+        var definition = FindLocalMethod(method, localMethods);
+        if (definition is null || parameterIndex >= definition.Parameters.Count)
+            return false;
+        return definition.Parameters[parameterIndex].MarshalInfo?.NativeType == NativeType.LPWStr;
+    }
+
+    FieldDefinition GetStringCharsField()
+    {
+        return localTypes["System.String"].Fields.First(field => field.Name == "_chars");
+    }
+
+    LLVMValueRef GetStringDataPointer(LLVMBuilderRef builder, LLVMValueRef value)
+    {
+        var chars = builder.BuildLoad2(LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0),
+            GetFieldAddress(builder, value, GetStringCharsField()));
+        return builder.BuildGEP2(LLVMTypeRef.Int8, chars,
+            [LLVMValueRef.CreateConstInt(sizeType, (ulong)GetTypeDefinitionSize(GetArrayLengthField().DeclaringType), false)]);
+    }
+
+    LLVMValueRef GetFieldAddress(LLVMBuilderRef builder, LLVMValueRef obj, FieldDefinition field,
+        TypeReference? declaringType = null)
+    {
+        var offset = LLVMValueRef.CreateConstInt(sizeType, (ulong)(declaringType is null
+            ? GetFieldOffset(field)
+            : GetFieldOffsetForType(field, declaringType)), false);
         return builder.BuildGEP2(LLVMTypeRef.Int8, obj, [offset]);
     }
 
@@ -2192,6 +2234,175 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
             return;
         StoreField(builder, obj, GetObjectMethodTableField(),
             LLVMValueRef.CreateConstInt(sizeType, GetRuntimeTypeId(type), false));
+        StoreField(builder, obj, GetObjectGCDescriptorField(),
+            LLVMValueRef.CreateConstPtrToInt(GetGCDescriptor(type), sizeType));
+    }
+
+    (LLVMValueRef Function, LLVMValueRef State)? GetCctorGuard(TypeReference type)
+    {
+        var definition = type.Resolve();
+        if (definition is null)
+            return null;
+        var key = definition.FullName;
+        if (cctorGuards.TryGetValue(key, out var existing))
+            return existing;
+        var cctor = moduleMethods.Values.FirstOrDefault(candidate =>
+            candidate.Item3.Name == ".cctor" && SameTypeDefinition(candidate.Item3.DeclaringType, definition));
+        if (cctor is null || cctor.Item1 == default)
+            return null;
+
+        var suffix = $"{SanitizeSymbolPart(GetRuntimeTypeKey(type))}_{cctorGuards.Count}";
+        var state = module.AddGlobal(LLVMTypeRef.Int8, $"__cctor_state_{suffix}");
+        state.Initializer = LLVMValueRef.CreateConstNull(LLVMTypeRef.Int8);
+        var guardType = LLVMTypeRef.CreateFunction(LLVMTypeRef.Void, []);
+        var guard = module.AddFunction($"__cctor_guard_{suffix}", guardType);
+        cctorGuards.Add(key, (guard, state));
+
+        var guardBuilder = context.CreateBuilder();
+        var entry = guard.AppendBasicBlock("entry");
+        var initialize = guard.AppendBasicBlock("initialize");
+        var done = guard.AppendBasicBlock("done");
+        guardBuilder.PositionAtEnd(entry);
+        var currentState = guardBuilder.BuildLoad2(LLVMTypeRef.Int8, state);
+        var alreadyInitialized = guardBuilder.BuildICmp(LLVMIntPredicate.LLVMIntNE, currentState,
+            LLVMValueRef.CreateConstInt(LLVMTypeRef.Int8, 0, false));
+        guardBuilder.BuildCondBr(alreadyInitialized, done, initialize);
+        guardBuilder.PositionAtEnd(initialize);
+        guardBuilder.BuildStore(LLVMValueRef.CreateConstInt(LLVMTypeRef.Int8, 1, false), state);
+        guardBuilder.BuildCall2(cctor.Item2, cctor.Item1, []);
+        guardBuilder.BuildStore(LLVMValueRef.CreateConstInt(LLVMTypeRef.Int8, 2, false), state);
+        guardBuilder.BuildBr(done);
+        guardBuilder.PositionAtEnd(done);
+        guardBuilder.BuildRetVoid();
+        return (guard, state);
+    }
+
+    LLVMValueRef GetGCDescriptor(TypeReference type)
+    {
+        var key = GetRuntimeTypeKey(type);
+        if (gcDescriptors.TryGetValue(key, out var descriptor))
+            return descriptor;
+
+        var fixedReferences = GetGCReferenceOffsets(type).Distinct().Order().ToArray();
+        var elementReferences = Array.Empty<int>();
+        var elementSize = 0;
+        var arrayLengthOffset = 0;
+        var baseSize = type is ArrayType array
+            ? GetTypeDefinitionSize(GetArrayLengthField().DeclaringType)
+            : type.Resolve() is { } definition && localTypes.ContainsKey(definition.FullName)
+                ? GetObjectSize(type)
+                : GetTypeSize(type);
+        if (type is ArrayType arrayType)
+        {
+            elementSize = GetTypeSize(arrayType.ElementType);
+            arrayLengthOffset = GetFieldOffset(GetArrayLengthField());
+            elementReferences = IsManagedReferenceType(arrayType.ElementType)
+                ? [0]
+                : IsValueType(arrayType.ElementType)
+                    ? GetGCReferenceOffsets(arrayType.ElementType).Distinct().Order().ToArray()
+                    : [];
+        }
+
+        ValidateGCReferenceOffsets(type, fixedReferences, "object");
+        ValidateGCReferenceOffsets(type, elementReferences, "array element");
+
+        var gcDescType = localTypes.TryGetValue("System.GCDesc", out var localGCDescType)
+            ? localGCDescType
+            : throw new NotSupportedException("System.GCDesc is not defined in the input module.");
+        var headerValues = new Dictionary<string, ulong>(StringComparer.Ordinal)
+        {
+            ["TotalSlotCount"] = 0,
+            ["BaseSize"] = (ulong)baseSize,
+            ["FixedReferenceCount"] = (ulong)fixedReferences.Length,
+            ["ArrayLengthOffset"] = (ulong)arrayLengthOffset,
+            ["ArrayElementSize"] = (ulong)elementSize,
+            ["ArrayElementReferenceCount"] = (ulong)elementReferences.Length
+        };
+        var allGCDescFields = gcDescType.Fields.Where(field => !field.IsStatic).ToArray();
+        var gcDescFields = allGCDescFields.Where(field => headerValues.ContainsKey(field.Name)).ToArray();
+        headerValues["TotalSlotCount"] = (ulong)(gcDescFields.Length + fixedReferences.Length + elementReferences.Length);
+        if (gcDescFields.Length != headerValues.Count ||
+            !allGCDescFields.Any(field => field.Name == "FixedReferenceOffsets") ||
+            allGCDescFields.Any(field => !headerValues.ContainsKey(field.Name) && field.Name != "FixedReferenceOffsets") ||
+            gcDescFields.Any(field => GetTypeSize(field.FieldType) != pointerSize) ||
+            gcDescFields.Any(field => !headerValues.ContainsKey(field.Name)))
+            throw new InvalidOperationException("System.GCDesc must contain exactly six pointer-sized instance fields: TotalSlotCount, BaseSize, FixedReferenceCount, ArrayLengthOffset, ArrayElementSize, ArrayElementReferenceCount.");
+        var values = new List<LLVMValueRef>();
+        var fieldTypes = new List<LLVMTypeRef>();
+        foreach (var field in gcDescFields)
+        {
+            fieldTypes.Add(sizeType);
+            values.Add(LLVMValueRef.CreateConstInt(sizeType, headerValues[field.Name], false));
+        }
+        if (fixedReferences.Length != 0)
+        {
+            var offsetType = LLVMTypeRef.CreateArray(LLVMTypeRef.Int16, (uint)fixedReferences.Length);
+            fieldTypes.Add(offsetType);
+            values.Add(LLVMValueRef.CreateConstArray(LLVMTypeRef.Int16,
+                fixedReferences.Select(offset => LLVMValueRef.CreateConstInt(LLVMTypeRef.Int16, (ulong)offset, false)).ToArray()));
+        }
+        if (elementReferences.Length != 0)
+        {
+            var offsetType = LLVMTypeRef.CreateArray(LLVMTypeRef.Int16, (uint)elementReferences.Length);
+            fieldTypes.Add(offsetType);
+            values.Add(LLVMValueRef.CreateConstArray(LLVMTypeRef.Int16,
+                elementReferences.Select(offset => LLVMValueRef.CreateConstInt(LLVMTypeRef.Int16, (ulong)offset, false)).ToArray()));
+        }
+        var descriptorType = LLVMTypeRef.CreateStruct(fieldTypes.ToArray(), false);
+        descriptor = module.AddGlobal(descriptorType, $"__gc_desc_{gcDescriptors.Count}");
+        descriptor.Initializer = LLVMValueRef.CreateConstStruct(values.ToArray(), false);
+        gcDescriptors.Add(key, descriptor);
+        return descriptor;
+    }
+
+    void ValidateGCReferenceOffsets(TypeReference type, IEnumerable<int> offsets, string region)
+    {
+        foreach (var offset in offsets)
+        {
+            if ((uint)offset > ushort.MaxValue)
+                throw new InvalidOperationException($"GC {region} reference offset for {type.FullName} does not fit in ushort: {offset}.");
+        }
+    }
+
+    IEnumerable<int> GetGCReferenceOffsets(TypeReference type)
+    {
+        var references = new List<int>();
+        Collect(type, 0, true);
+        return references;
+
+        void Collect(TypeReference currentType, int baseOffset, bool includeBaseType)
+        {
+            var definition = currentType.Resolve();
+            if (definition is null)
+                return;
+            if (includeBaseType && !IsValueType(currentType))
+            {
+                var baseType = GetClosedBaseType(currentType);
+                if (baseType is not null)
+                    Collect(baseType, baseOffset, true);
+            }
+            foreach (var field in definition.Fields.Where(field => !field.IsStatic))
+            {
+                var fieldType = currentType is GenericInstanceType genericType
+                    ? SubstituteGenericTypeArguments(field.FieldType, genericType)
+                    : field.FieldType;
+                var fieldOffset = baseOffset + GetFieldOffsetForType(field, currentType);
+                if (IsManagedReferenceType(fieldType))
+                    references.Add(fieldOffset);
+                else if (IsValueType(fieldType))
+                    Collect(fieldType, fieldOffset, false);
+            }
+        }
+    }
+
+    TypeReference? GetClosedBaseType(TypeReference type)
+    {
+        var definition = type.Resolve();
+        if (definition?.BaseType is null)
+            return null;
+        return type is GenericInstanceType genericType
+            ? SubstituteGenericTypeArguments(definition.BaseType, genericType)
+            : definition.BaseType;
     }
 
     bool IsRuntimeTypeCompatible(TypeDefinition runtimeType, TypeReference targetType)
@@ -2200,28 +2411,28 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
         if (targetDefinition is null)
             return false;
         if (targetDefinition.IsInterface)
-            return ImplementsInterface(runtimeType, targetDefinition);
-        for (var current = runtimeType; current is not null;)
+            return ImplementsInterface(runtimeType, targetType);
+        for (TypeReference? current = runtimeType; current is not null; current = GetClosedBaseType(current))
         {
-            if (SameTypeName(current, targetType))
+            if (SameType(current, targetType))
                 return true;
-            if (current.BaseType is null || !localTypes.TryGetValue(current.BaseType.FullName, out current))
-                break;
         }
         return false;
     }
 
-    List<(TypeDefinition RuntimeType, MethodReference Implementation)> GetVirtualImplementations(MethodReference targetMethod)
+    List<(TypeDefinition RuntimeType, MethodReference Implementation)> GetVirtualImplementations(
+        MethodReference targetMethod, TypeReference contractType)
     {
         var implementations = new List<(TypeDefinition RuntimeType, MethodReference Implementation)>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
         foreach (var type in localTypes.Values.Where(candidate => !candidate.IsInterface && !candidate.IsValueType)
                      .OrderByDescending(GetTypeDepth))
         {
-            if (!IsRuntimeTypeCompatible(type, targetMethod.DeclaringType))
+            if (!IsRuntimeTypeCompatible(type, contractType))
                 continue;
             var implementation = FindMethodImplementation(type, targetMethod);
-            if (implementation is null || !implementation.HasBody || !seen.Add(GetRuntimeTypeKey(type)))
+            if (implementation is null || FindLocalMethod(implementation, localMethods)?.HasBody != true ||
+                !seen.Add(GetRuntimeTypeKey(type)))
                 continue;
             implementations.Add((type, implementation));
         }
@@ -2236,14 +2447,9 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
     int GetTypeDepth(TypeDefinition type)
     {
         int depth = 0;
-        for (var current = type; current.BaseType is not null && localTypes.ContainsKey(current.BaseType.FullName); current = localTypes[current.BaseType.FullName])
+        for (TypeReference? current = type; GetClosedBaseType(current) is not null; current = GetClosedBaseType(current)!)
             depth++;
         return depth;
-    }
-
-    FieldDefinition GetLocalFieldByName(string name, string typeName)
-    {
-        return localTypes[typeName].Fields.First(field => field.Name == name);
     }
 
     FieldDefinition GetDelegateField(TypeReference type, string name)
@@ -2311,17 +2517,70 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
         return last?.OpCode.Code is Code.Throw or Code.Rethrow;
     }
 
+    MethodDefinition GetRequiredConstructor(TypeDefinition type, params TypeReference[] parameterTypes)
+    {
+        var matches = type.Methods.Where(method => method.IsConstructor && !method.IsStatic &&
+            method.Parameters.Count == parameterTypes.Length &&
+            method.Parameters.Select(parameter => parameter.ParameterType).Zip(parameterTypes)
+                .All(pair => SameType(pair.First, pair.Second))).ToList();
+        return matches.Count == 1
+            ? matches[0]
+            : throw new InvalidOperationException($"Expected one matching constructor on {type.FullName}, found {matches.Count}.");
+    }
+
+    MethodDefinition GetRequiredMethod(TypeDefinition type, string name, bool hasThis,
+        TypeReference returnType, params TypeReference[] parameterTypes)
+    {
+        var matches = type.Methods.Where(method => method.Name == name && method.HasThis == hasThis &&
+            SameType(method.ReturnType, returnType) && method.Parameters.Count == parameterTypes.Length &&
+            method.Parameters.Select(parameter => parameter.ParameterType).Zip(parameterTypes)
+                .All(pair => SameType(pair.First, pair.Second))).ToList();
+        return matches.Count == 1
+            ? matches[0]
+            : throw new InvalidOperationException($"Expected one matching method named {name} on {type.FullName}, found {matches.Count}.");
+    }
+
     MethodDefinition? FindLocalMethod(MethodReference reference, Dictionary<string, MethodDefinition> methods)
     {
         if (methods.TryGetValue(reference.FullName, out var exact))
             return exact;
-        var declaringName = reference.DeclaringType is GenericInstanceType generic
-            ? generic.ElementType.FullName
-            : reference.DeclaringType.FullName;
+        var resolved = reference.Resolve();
+        if (resolved is not null && methods.TryGetValue(resolved.FullName, out exact))
+            return exact;
         return methods.Values.FirstOrDefault(candidate =>
-            candidate.DeclaringType.FullName == declaringName &&
-            candidate.Name == reference.Name &&
-            candidate.Parameters.Count == reference.Parameters.Count);
+        {
+            if (!SameTypeDefinition(candidate.DeclaringType, reference.DeclaringType))
+                return false;
+            var bound = reference.DeclaringType is GenericInstanceType
+                ? BindMethodToDeclaringType(candidate, reference.DeclaringType, reference)
+                : candidate;
+            return SameMethodSignature(bound, reference);
+        });
+    }
+
+    MethodReference SpecializeMethodReference(MethodReference reference, MethodReference context)
+    {
+        var elementMethod = reference is GenericInstanceMethod genericReference
+            ? genericReference.ElementMethod
+            : reference;
+        var declaringType = ResolveGenericType(elementMethod.DeclaringType, context);
+        var specialized = new MethodReference(elementMethod.Name,
+            ResolveGenericType(elementMethod.ReturnType, context), declaringType)
+        {
+            HasThis = elementMethod.HasThis,
+            ExplicitThis = elementMethod.ExplicitThis,
+            CallingConvention = elementMethod.CallingConvention
+        };
+        foreach (var parameter in elementMethod.Parameters)
+            specialized.Parameters.Add(new ParameterDefinition(ResolveGenericType(parameter.ParameterType, context)));
+        foreach (var parameter in elementMethod.GenericParameters)
+            specialized.GenericParameters.Add(new GenericParameter(parameter.Name, specialized));
+        if (reference is not GenericInstanceMethod genericMethod)
+            return specialized;
+        var genericInstance = new GenericInstanceMethod(specialized);
+        foreach (var argument in genericMethod.GenericArguments)
+            genericInstance.GenericArguments.Add(ResolveGenericType(argument, context));
+        return genericInstance;
     }
 
     TypeReference SubstituteGenericParameter(TypeReference type, MethodReference method)
@@ -2348,10 +2607,15 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
         return localTypes["System.Object"].Fields.First(field => field.Name == "m_pMethodTable");
     }
 
+    FieldDefinition GetObjectGCDescriptorField()
+    {
+        return localTypes["System.Object"].Fields.First(field => field.Name == "m_pGCDesc");
+    }
+
     int GetObjectHeaderSize()
     {
-        var field = GetObjectMethodTableField();
-        return GetFieldOffset(field) + GetTypeSize(field.FieldType);
+        return localTypes["System.Object"].Fields.Where(field => !field.IsStatic)
+            .Max(field => GetFieldOffset(field) + GetTypeSize(field.FieldType));
     }
 
     FieldDefinition GetLocalField(FieldReference field)
@@ -2405,9 +2669,13 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
     {
         if (type is GenericParameter parameter)
         {
-            if (parameter.Type == GenericParameterType.Type && context.DeclaringType is GenericInstanceType declaring && parameter.Position < declaring.GenericArguments.Count)
+            if (parameter.Type == GenericParameterType.Type && parameter.Owner is TypeReference parameterType &&
+                context.DeclaringType is GenericInstanceType declaring &&
+                SameTypeDefinition(parameterType, declaring.ElementType) && parameter.Position < declaring.GenericArguments.Count)
                 return declaring.GenericArguments[parameter.Position];
-            if (parameter.Type == GenericParameterType.Method && context is GenericInstanceMethod method && parameter.Position < method.GenericArguments.Count)
+            if (parameter.Type == GenericParameterType.Method && parameter.Owner is MethodReference parameterMethod &&
+                context is GenericInstanceMethod method && SameMethodDefinition(parameterMethod, method.ElementMethod) &&
+                parameter.Position < method.GenericArguments.Count)
                 return method.GenericArguments[parameter.Position];
         }
         if (type is GenericInstanceType generic)
@@ -2417,6 +2685,18 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                 result.GenericArguments.Add(ResolveGenericType(argument, context));
             return result;
         }
+        if (type is ArrayType array)
+            return new ArrayType(ResolveGenericType(array.ElementType, context), array.Rank);
+        if (type is ByReferenceType byReference)
+            return new ByReferenceType(ResolveGenericType(byReference.ElementType, context));
+        if (type is PointerType pointer)
+            return new PointerType(ResolveGenericType(pointer.ElementType, context));
+        if (type is RequiredModifierType requiredModifier)
+            return new RequiredModifierType(requiredModifier.ModifierType, ResolveGenericType(requiredModifier.ElementType, context));
+        if (type is OptionalModifierType optionalModifier)
+            return new OptionalModifierType(optionalModifier.ModifierType, ResolveGenericType(optionalModifier.ElementType, context));
+        if (type is PinnedType pinned)
+            return new PinnedType(ResolveGenericType(pinned.ElementType, context));
         return type;
     }
 
@@ -2443,24 +2723,63 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
 
     int GetFieldOffset(FieldDefinition field)
     {
-        var offset = IsValueType(field.DeclaringType) || field.DeclaringType.BaseType is null
+        return GetFieldOffsetForType(field, field.DeclaringType);
+    }
+
+    int GetFieldOffsetForType(FieldDefinition field, TypeReference declaringType)
+    {
+        var definition = declaringType.Resolve() ?? field.DeclaringType;
+        var baseType = GetClosedBaseType(declaringType);
+        var offset = IsValueType(definition) || baseType is null
             ? 0
-            : GetBaseTypeSize(field.DeclaringType.BaseType);
-        foreach (var candidate in field.DeclaringType.Fields.TakeWhile(candidate => candidate.Name != field.Name).Where(candidate => !candidate.IsStatic))
+            : GetObjectSize(baseType);
+        foreach (var candidate in definition.Fields.TakeWhile(candidate => candidate.Name != field.Name).Where(candidate => !candidate.IsStatic))
         {
-            offset = AlignUp(offset, GetTypeAlignment(candidate.FieldType));
-            offset += GetTypeSize(candidate.FieldType);
+            var candidateType = declaringType is GenericInstanceType genericType
+                ? SubstituteGenericTypeArguments(candidate.FieldType, genericType)
+                : candidate.FieldType;
+            offset = AlignUp(offset, GetTypeAlignment(candidateType));
+            offset += GetTypeSize(candidateType);
         }
-        return AlignUp(offset, GetTypeAlignment(field.FieldType));
+        var fieldType = declaringType is GenericInstanceType genericDeclaringType
+            ? SubstituteGenericTypeArguments(field.FieldType, genericDeclaringType)
+            : field.FieldType;
+        return AlignUp(offset, GetTypeAlignment(fieldType));
     }
 
     int GetBaseTypeSize(TypeReference? type)
     {
         if (type is null)
             return 0;
-        return localTypes.TryGetValue(type.FullName, out var definition)
+        var definition = type.Resolve();
+        if (definition is not null && localTypes.ContainsKey(definition.FullName) && !IsValueType(type))
+            return GetObjectSize(type);
+        return definition is not null && localTypes.ContainsKey(definition.FullName)
             ? GetTypeDefinitionSize(definition)
             : GetMetadataTypeSize(type.MetadataType);
+    }
+
+    int GetObjectSize(TypeReference type)
+    {
+        var definition = type.Resolve();
+        if (definition is null || definition.IsInterface || IsValueType(type))
+            return GetTypeSize(type);
+
+        var baseType = GetClosedBaseType(type);
+        var offset = baseType is null ? 0 : GetObjectSize(baseType);
+        var alignment = baseType is null ? 1 : GetTypeAlignment(baseType);
+        foreach (var field in definition.Fields.Where(field => !field.IsStatic))
+        {
+            var fieldType = type is GenericInstanceType genericType
+                ? SubstituteGenericTypeArguments(field.FieldType, genericType)
+                : field.FieldType;
+            offset = AlignUp(offset, GetTypeAlignment(fieldType));
+            offset += GetTypeSize(fieldType);
+            alignment = Math.Max(alignment, GetTypeAlignment(fieldType));
+        }
+        if (SameTypeDefinition(definition, GetObjectMethodTableField().DeclaringType))
+            offset = Math.Max(offset, GetObjectHeaderSize());
+        return AlignUp(offset, alignment);
     }
 
     int GetTypeSize(TypeReference type)
@@ -2514,7 +2833,7 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
             offset += GetTypeSize(field.FieldType);
             alignment = Math.Max(alignment, fieldAlignment);
         }
-        if (type.FullName == "System.Object")
+        if (SameTypeDefinition(type, GetObjectMethodTableField().DeclaringType))
             offset = Math.Max(offset, GetObjectHeaderSize());
         return AlignUp(offset, alignment);
     }
@@ -2750,15 +3069,13 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
 
     MethodReference ResolveCallTarget(MethodReference targetMethod)
     {
-        var declaringTypeName = targetMethod.DeclaringType is GenericInstanceType genericDeclaringType
-            ? genericDeclaringType.ElementType.FullName
-            : targetMethod.DeclaringType.FullName;
-        if (!localTypes.TryGetValue(declaringTypeName, out var declaringType) || !declaringType.IsInterface)
+        var declaringType = targetMethod.DeclaringType.Resolve();
+        if (declaringType is null || !declaringType.IsInterface)
             return targetMethod;
 
         foreach (var type in localTypes.Values.Where(type => !type.IsInterface))
         {
-            if (!ImplementsInterface(type, declaringType))
+            if (!ImplementsInterface(type, targetMethod.DeclaringType))
                 continue;
 
             var implementation = FindMethodImplementation(type, targetMethod);
@@ -2780,43 +3097,287 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
         return implementation ?? ResolveCallTarget(targetMethod);
     }
 
-    bool ImplementsInterface(TypeDefinition type, TypeDefinition interfaceType)
+    bool ImplementsInterface(TypeDefinition type, TypeReference interfaceType)
     {
-        for (var current = type; current is not null;)
+        return TryCloseRuntimeType(type, interfaceType, out _);
+    }
+
+    bool TryCloseRuntimeType(TypeDefinition type, TypeReference contractType, out TypeReference runtimeType)
+    {
+        runtimeType = type;
+        if (contractType.Resolve()?.IsInterface != true)
+            return SameType(type, contractType);
+
+        foreach (var implementedInterface in GetImplementedInterfaces(type))
         {
-            if (current.Interfaces.Any(@interface => SameTypeName(@interface.InterfaceType, interfaceType)))
+            var bindings = new Dictionary<int, TypeReference>();
+            if (!TryBindTypePattern(implementedInterface, contractType, type, bindings))
+                continue;
+            if (!type.HasGenericParameters)
                 return true;
-
-            if (current.BaseType is null || !localTypes.TryGetValue(current.BaseType.FullName, out current))
-                break;
+            if (type.GenericParameters.Any(parameter => !bindings.ContainsKey(parameter.Position)))
+                continue;
+            var genericType = new GenericInstanceType(type);
+            foreach (var parameter in type.GenericParameters)
+                genericType.GenericArguments.Add(bindings[parameter.Position]);
+            runtimeType = genericType;
+            return true;
         }
-
         return false;
     }
 
-    bool SameTypeName(TypeReference left, TypeReference right)
+    IEnumerable<TypeReference> GetImplementedInterfaces(TypeReference type)
     {
-        static string ElementName(TypeReference type) => type is GenericInstanceType generic
-            ? generic.ElementType.FullName
-            : type.FullName;
-        return ElementName(left) == ElementName(right);
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        return Visit(type);
+
+        IEnumerable<TypeReference> Visit(TypeReference currentType)
+        {
+            var definition = currentType.Resolve();
+            if (definition is null)
+                yield break;
+            foreach (var implementation in definition.Interfaces)
+            {
+                var interfaceType = currentType is GenericInstanceType genericType
+                    ? SubstituteGenericTypeArguments(implementation.InterfaceType, genericType)
+                    : implementation.InterfaceType;
+                if (seen.Add(GetRuntimeTypeKey(interfaceType)))
+                    yield return interfaceType;
+                foreach (var inherited in Visit(interfaceType))
+                    yield return inherited;
+            }
+            if (definition.BaseType is null)
+                yield break;
+            var baseType = currentType is GenericInstanceType genericCurrent
+                ? SubstituteGenericTypeArguments(definition.BaseType, genericCurrent)
+                : definition.BaseType;
+            foreach (var inherited in Visit(baseType))
+                yield return inherited;
+        }
     }
 
-    MethodDefinition? FindMethodImplementation(TypeDefinition type, MethodReference targetMethod)
+    bool TryBindTypePattern(TypeReference pattern, TypeReference actual, TypeDefinition owner,
+        Dictionary<int, TypeReference> bindings)
     {
-        for (var current = type; current is not null;)
+        if (pattern is GenericParameter parameter && parameter.Type == GenericParameterType.Type &&
+            parameter.Owner is TypeReference parameterOwner && SameTypeDefinition(parameterOwner, owner))
         {
-            var implementation = current.Methods.FirstOrDefault(method =>
-                !method.IsStatic &&
-                (method.Name == targetMethod.Name || method.Name.EndsWith("." + targetMethod.Name, StringComparison.Ordinal)) &&
-                method.Parameters.Count == targetMethod.Parameters.Count);
-            if (implementation is not null)
-                return implementation;
-
-            if (current.BaseType is null || !localTypes.TryGetValue(current.BaseType.FullName, out current))
-                break;
+            if (bindings.TryGetValue(parameter.Position, out var bound))
+                return SameType(bound, actual);
+            bindings.Add(parameter.Position, actual);
+            return true;
         }
+        if (pattern is GenericInstanceType patternGeneric && actual is GenericInstanceType actualGeneric)
+        {
+            if (!SameType(patternGeneric.ElementType, actualGeneric.ElementType) ||
+                patternGeneric.GenericArguments.Count != actualGeneric.GenericArguments.Count)
+                return false;
+            for (int i = 0; i < patternGeneric.GenericArguments.Count; i++)
+                if (!TryBindTypePattern(patternGeneric.GenericArguments[i], actualGeneric.GenericArguments[i], owner, bindings))
+                    return false;
+            return true;
+        }
+        if (pattern is ArrayType patternArray && actual is ArrayType actualArray)
+            return patternArray.Rank == actualArray.Rank &&
+                TryBindTypePattern(patternArray.ElementType, actualArray.ElementType, owner, bindings);
+        if (pattern is ByReferenceType patternByReference && actual is ByReferenceType actualByReference)
+            return TryBindTypePattern(patternByReference.ElementType, actualByReference.ElementType, owner, bindings);
+        if (pattern is PointerType patternPointer && actual is PointerType actualPointer)
+            return TryBindTypePattern(patternPointer.ElementType, actualPointer.ElementType, owner, bindings);
+        return SameType(pattern, actual);
+    }
 
+    bool SameType(TypeReference left, TypeReference right)
+    {
+        if (ReferenceEquals(left, right))
+            return true;
+        if (left is RequiredModifierType leftRequired)
+            return SameType(leftRequired.ElementType, right);
+        if (right is RequiredModifierType rightRequired)
+            return SameType(left, rightRequired.ElementType);
+        if (left is OptionalModifierType leftOptional)
+            return SameType(leftOptional.ElementType, right);
+        if (right is OptionalModifierType rightOptional)
+            return SameType(left, rightOptional.ElementType);
+        if (left is PinnedType leftPinned)
+            return SameType(leftPinned.ElementType, right);
+        if (right is PinnedType rightPinned)
+            return SameType(left, rightPinned.ElementType);
+        if (left is GenericParameter leftParameter && right is GenericParameter rightParameter)
+            return leftParameter.Type == rightParameter.Type && leftParameter.Position == rightParameter.Position;
+        if (left is GenericInstanceType leftGeneric && right is GenericInstanceType rightGeneric)
+            return SameType(leftGeneric.ElementType, rightGeneric.ElementType) &&
+                leftGeneric.GenericArguments.Count == rightGeneric.GenericArguments.Count &&
+                leftGeneric.GenericArguments.Zip(rightGeneric.GenericArguments).All(pair => SameType(pair.First, pair.Second));
+        if (left is GenericInstanceType leftOpen && IsOpenSelfInstantiation(leftOpen))
+            return SameType(leftOpen.ElementType, right);
+        if (right is GenericInstanceType rightOpen && IsOpenSelfInstantiation(rightOpen))
+            return SameType(left, rightOpen.ElementType);
+        if (left is GenericInstanceType || right is GenericInstanceType)
+            return false;
+        if (left is ArrayType leftArray && right is ArrayType rightArray)
+            return leftArray.Rank == rightArray.Rank && SameType(leftArray.ElementType, rightArray.ElementType);
+        if (left is ArrayType || right is ArrayType)
+            return false;
+        if (left is ByReferenceType leftByReference && right is ByReferenceType rightByReference)
+            return SameType(leftByReference.ElementType, rightByReference.ElementType);
+        if (left is ByReferenceType || right is ByReferenceType)
+            return false;
+        if (left is PointerType leftPointer && right is PointerType rightPointer)
+            return SameType(leftPointer.ElementType, rightPointer.ElementType);
+        if (left is PointerType || right is PointerType)
+            return false;
+        return SameTypeDefinition(left, right);
+    }
+
+    bool IsOpenSelfInstantiation(GenericInstanceType type)
+    {
+        var definition = type.ElementType.Resolve();
+        if (definition is null || definition.GenericParameters.Count != type.GenericArguments.Count)
+            return false;
+        for (int i = 0; i < type.GenericArguments.Count; i++)
+            if (type.GenericArguments[i] is not GenericParameter parameter ||
+                parameter.Type != GenericParameterType.Type || parameter.Position != i ||
+                parameter.Owner is not TypeReference owner || !SameTypeDefinition(owner, definition))
+                return false;
+        return true;
+    }
+
+    bool SameTypeDefinition(TypeReference left, TypeReference right)
+    {
+        if (localTypes.TryGetValue(left.FullName, out var leftLocal) &&
+            localTypes.TryGetValue(right.FullName, out var rightLocal))
+            return leftLocal.MetadataToken == rightLocal.MetadataToken && leftLocal.Module.Mvid == rightLocal.Module.Mvid;
+        var leftDefinition = left.Resolve();
+        var rightDefinition = right.Resolve();
+        if (leftDefinition is not null && rightDefinition is not null)
+            return leftDefinition.MetadataToken == rightDefinition.MetadataToken &&
+                leftDefinition.Module.Mvid == rightDefinition.Module.Mvid;
+        return left.Namespace == right.Namespace && left.Name == right.Name && left.Scope?.Name == right.Scope?.Name;
+    }
+
+    bool SameMethodDefinition(MethodReference left, MethodReference right)
+    {
+        if (SameTypeDefinition(left.DeclaringType, right.DeclaringType) &&
+            localTypes.ContainsKey(left.DeclaringType.FullName) && SameMethodDeclarationSignature(left, right))
+            return true;
+        var leftDefinition = left.Resolve();
+        var rightDefinition = right.Resolve();
+        return leftDefinition is not null && rightDefinition is not null &&
+            leftDefinition.MetadataToken == rightDefinition.MetadataToken &&
+            leftDefinition.Module.Mvid == rightDefinition.Module.Mvid;
+    }
+
+    bool SameMethodDeclarationSignature(MethodReference left, MethodReference right)
+    {
+        if (left.Name != right.Name || left.HasThis != right.HasThis ||
+            left.Parameters.Count != right.Parameters.Count || GetGenericMethodArity(left) != GetGenericMethodArity(right) ||
+            !SameType(left.ReturnType, right.ReturnType))
+            return false;
+        for (int i = 0; i < left.Parameters.Count; i++)
+            if (!SameType(left.Parameters[i].ParameterType, right.Parameters[i].ParameterType))
+                return false;
+        return true;
+    }
+
+    bool SameMethodSignature(MethodReference left, MethodReference right)
+    {
+        if (left.Name != right.Name || left.Parameters.Count != right.Parameters.Count ||
+            GetGenericMethodArity(left) != GetGenericMethodArity(right))
+            return false;
+        for (int i = 0; i < left.Parameters.Count; i++)
+            if (!SameType(SubstituteGenericParameter(left.Parameters[i].ParameterType, left),
+                    SubstituteGenericParameter(right.Parameters[i].ParameterType, right)))
+                return false;
+        return SameType(SubstituteGenericParameter(left.ReturnType, left),
+            SubstituteGenericParameter(right.ReturnType, right));
+    }
+
+    bool SameMethodInstantiation(MethodReference left, MethodReference right)
+    {
+        if (!SameMethodDefinition(left, right) && !SameMethodSignature(left, right))
+            return false;
+        if (!SameType(left.DeclaringType, right.DeclaringType))
+            return false;
+        var leftArguments = left is GenericInstanceMethod leftGeneric
+            ? leftGeneric.GenericArguments
+            : [];
+        var rightArguments = right is GenericInstanceMethod rightGeneric
+            ? rightGeneric.GenericArguments
+            : [];
+        return leftArguments.Count == rightArguments.Count &&
+            leftArguments.Zip(rightArguments).All(pair => SameType(pair.First, pair.Second));
+    }
+
+    Tuple<LLVMValueRef, LLVMTypeRef, MethodReference, Collection<Instruction>?>? GetRegisteredMethod(MethodReference method)
+    {
+        return moduleMethods.Values.FirstOrDefault(candidate => SameMethodInstantiation(candidate.Item3, method));
+    }
+
+    int GetGenericMethodArity(MethodReference method)
+    {
+        return method is GenericInstanceMethod genericMethod
+            ? genericMethod.GenericArguments.Count
+            : method.GenericParameters.Count;
+    }
+
+    MethodReference BindMethodToDeclaringType(MethodDefinition method, TypeReference declaringType,
+        MethodReference? requestedMethod = null)
+    {
+        var reference = new MethodReference(method.Name,
+            declaringType is GenericInstanceType genericType
+                ? SubstituteGenericTypeArguments(method.ReturnType, genericType)
+                : method.ReturnType,
+            declaringType)
+        {
+            HasThis = method.HasThis,
+            ExplicitThis = method.ExplicitThis,
+            CallingConvention = method.CallingConvention
+        };
+        foreach (var parameter in method.Parameters)
+            reference.Parameters.Add(new ParameterDefinition(declaringType is GenericInstanceType genericDeclaringType
+                ? SubstituteGenericTypeArguments(parameter.ParameterType, genericDeclaringType)
+                : parameter.ParameterType));
+        foreach (var parameter in method.GenericParameters)
+            reference.GenericParameters.Add(new GenericParameter(parameter.Name, reference));
+        if (requestedMethod is GenericInstanceMethod requestedGeneric && method.HasGenericParameters)
+        {
+            var genericMethod = new GenericInstanceMethod(reference);
+            foreach (var argument in requestedGeneric.GenericArguments)
+                genericMethod.GenericArguments.Add(argument);
+            return genericMethod;
+        }
+        return reference;
+    }
+
+    MethodReference? FindMethodImplementation(TypeReference type, MethodReference targetMethod)
+    {
+        var currentType = type;
+        if (type is TypeDefinition typeDefinition && typeDefinition.HasGenericParameters &&
+            TryCloseRuntimeType(typeDefinition, targetMethod.DeclaringType, out var closedType))
+            currentType = closedType;
+
+        while (currentType.Resolve() is { } current)
+        {
+            foreach (var method in current.Methods.Where(method => !method.IsStatic))
+            {
+                if (!method.Overrides.Any(@override => SameMethodDefinition(@override, targetMethod)))
+                    continue;
+                return BindMethodToDeclaringType(method, currentType, targetMethod);
+            }
+            foreach (var method in current.Methods.Where(method => !method.IsStatic && method.Name == targetMethod.Name))
+            {
+                var implementation = BindMethodToDeclaringType(method, currentType, targetMethod);
+                if (SameMethodSignature(implementation, targetMethod))
+                    return implementation;
+            }
+
+            if (current.BaseType is null)
+                break;
+            currentType = currentType is GenericInstanceType genericCurrent
+                ? SubstituteGenericTypeArguments(current.BaseType, genericCurrent)
+                : current.BaseType;
+        }
         return null;
     }
 
@@ -2839,54 +3400,62 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
 
     string GetFriendlyMethodName(MethodReference method, TypeReference? methodDeclareType = null)
     {
-        const string member_access_operator = ".";
-        const string separator = "_";
         TypeReference declareType = methodDeclareType ?? method.DeclaringType;
-
-        List<string> names = new List<string>();
-        if (declareType.Namespace != string.Empty) names.Add(declareType.Namespace.Replace(member_access_operator, separator));
-        if (declareType.Name != string.Empty)
-        {
-            var typeName = declareType.Name.Replace(member_access_operator, separator)
-                .Replace('/', separator[0])
-                .Replace('[', separator[0])
-                .Replace(']', separator[0])
-                .Replace(',', separator[0]);
-            if (declareType is GenericInstanceType genericType)
-            {
-                typeName += separator + string.Join(separator, genericType.GenericArguments.Select(GetFriendlyTypeName));
-            }
-            names.Add(typeName);
-        }
-        if (method.Name != string.Empty) names.Add(method.Name.Replace(member_access_operator, separator));
+        List<string> names = [GetFriendlyTypeName(declareType), SanitizeSymbolPart(method.Name)];
         if (method is GenericInstanceMethod genericMethod)
             names.AddRange(genericMethod.GenericArguments.Select(GetFriendlyTypeName));
-        method.Parameters.ToList().ForEach(p => names.Add(p.ParameterType.MetadataType.ToString()));
-        string friendlyMethodName = string.Join(separator, names);
-        return friendlyMethodName;
+        else if (method.GenericParameters.Count != 0)
+            names.Add($"G{method.GenericParameters.Count}");
+        names.AddRange(method.Parameters.Select(parameter =>
+            GetFriendlyParameterTypeName(SubstituteGenericParameter(parameter.ParameterType, method))));
+        return string.Join("_", names);
     }
 
     string GetFriendlyTypeName(TypeReference type)
     {
+        if (type is RequiredModifierType requiredModifier)
+            return GetFriendlyTypeName(requiredModifier.ElementType);
+        if (type is OptionalModifierType optionalModifier)
+            return GetFriendlyTypeName(optionalModifier.ElementType);
+        if (type is PinnedType pinned)
+            return GetFriendlyTypeName(pinned.ElementType);
         if (type is GenericInstanceType generic)
-            return generic.ElementType.Name + "_" + string.Join("_", generic.GenericArguments.Select(GetFriendlyTypeName));
+            return GetFriendlyTypeName(generic.ElementType) + "_" + string.Join("_", generic.GenericArguments.Select(GetFriendlyTypeName));
         if (type is ArrayType array)
-            return GetFriendlyTypeName(array.ElementType) + "_Array";
-        return type.FullName.Replace('.', '_').Replace('/', '_').Replace('`', '_');
+            return $"{GetFriendlyTypeName(array.ElementType)}_Array{array.Rank}";
+        if (type is ByReferenceType byReference)
+            return GetFriendlyTypeName(byReference.ElementType) + "_ByReference";
+        if (type is PointerType pointer)
+            return GetFriendlyTypeName(pointer.ElementType) + "_Pointer";
+        if (type is GenericParameter parameter)
+            return $"{parameter.Type}{parameter.Position}";
+        return SanitizeSymbolPart(type.FullName);
+    }
+
+    string GetFriendlyParameterTypeName(TypeReference type)
+    {
+        if (type is RequiredModifierType requiredModifier)
+            return GetFriendlyParameterTypeName(requiredModifier.ElementType);
+        if (type is OptionalModifierType optionalModifier)
+            return GetFriendlyParameterTypeName(optionalModifier.ElementType);
+        if (type is PinnedType pinned)
+            return GetFriendlyParameterTypeName(pinned.ElementType);
+        return type.MetadataType is MetadataType.Class or MetadataType.ValueType or MetadataType.GenericInstance or
+            MetadataType.Array or MetadataType.ByReference or MetadataType.Pointer or MetadataType.Var or MetadataType.MVar
+            ? GetFriendlyTypeName(type)
+            : type.MetadataType.ToString();
+    }
+
+    string SanitizeSymbolPart(string value)
+    {
+        return new string(value.Select(character => char.IsLetterOrDigit(character) || character == '_'
+            ? character
+            : '_').ToArray());
     }
 
     string GetFriendlyFieldName(FieldReference field)
     {
-        const string member_access_operator = ".";
-        const string separator = "_";
-        TypeReference declareType = field.DeclaringType;
-
-        List<string> names = new List<string>();
-        if (declareType.Namespace != string.Empty) names.Add(declareType.Namespace.Replace(member_access_operator, separator));
-        if (declareType.Name != string.Empty) names.Add(declareType.Name.Replace(member_access_operator, separator));
-        if (field.Name != string.Empty) names.Add(field.Name.Replace(member_access_operator, separator));
-        string friendlyFieldName = string.Join(separator, names);
-        return friendlyFieldName;
+        return $"{GetFriendlyTypeName(field.DeclaringType)}_{SanitizeSymbolPart(field.Name)}";
     }
 
     void RegisterMethodFunction(LLVMModuleRef module, MethodReference method, Collection<Instruction>? instructions)
@@ -2901,7 +3470,12 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
 
         TypeReference declareType = method.DeclaringType;
         string friendlyName = GetFriendlyMethodName(method, declareType);
-        if (moduleMethods.ContainsKey(friendlyName)) return;
+        if (moduleMethods.TryGetValue(friendlyName, out var existing))
+        {
+            if (SameMethodInstantiation(existing.Item3, method))
+                return;
+            throw new InvalidOperationException($"LLVM method symbol collision: {existing.Item3.FullName} and {method.FullName}.");
+        }
 
         var funcType = CreateLLVMFunction(module, method);
         var funcValue = module.AddFunction(friendlyName, funcType);

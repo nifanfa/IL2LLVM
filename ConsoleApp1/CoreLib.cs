@@ -5,6 +5,7 @@ namespace System
     public class Object
     {
         private IntPtr m_pMethodTable;
+        private unsafe GCDesc* m_pGCDesc;
 
         public Object() { }
 
@@ -14,6 +15,17 @@ namespace System
         public virtual int GetHashCode() => 1;
         public virtual string ToString() => GetType().FullName;
         public Type GetType() => Type.GetTypeFromHandle(default);
+    }
+
+    public unsafe struct GCDesc
+    {
+        public IntPtr TotalSlotCount;
+        public IntPtr BaseSize;
+        public IntPtr FixedReferenceCount;
+        public IntPtr ArrayLengthOffset;
+        public IntPtr ArrayElementSize;
+        public IntPtr ArrayElementReferenceCount;
+        public fixed ushort FixedReferenceOffsets[1];
     }
 
     public struct Void { }
@@ -106,7 +118,19 @@ namespace System
         }
         public static bool operator ==(string left, string right) => Equals(left, right);
         public static bool operator !=(string left, string right) => !Equals(left, right);
-        public static string Concat(string left, string right) => left;
+        public static string Concat(string left, string right)
+        {
+            if (ReferenceEquals(left, null))
+                return right;
+            if (ReferenceEquals(right, null))
+                return left;
+            char[] value = new char[left.Length + right.Length];
+            for (int index = 0; index < left.Length; index++)
+                value[index] = left[index];
+            for (int index = 0; index < right.Length; index++)
+                value[left.Length + index] = right[index];
+            return new string(value);
+        }
     }
 
     public class Exception : Object
@@ -230,9 +254,9 @@ namespace System
     public sealed class Console
     {
         [DllImport("*")]
-        public static extern void Write(string value);
+        public static extern void Write([MarshalAs(UnmanagedType.LPWStr)] string value);
         [DllImport("*")]
-        public static extern void WriteLine(string value);
+        public static extern void WriteLine([MarshalAs(UnmanagedType.LPWStr)] string value);
         [DllImport("*")]
         public static extern void WriteLine(int value);
         [DllImport("*")]
@@ -242,9 +266,24 @@ namespace System
 
 namespace System.Runtime.InteropServices
 {
+    public enum UnmanagedType
+    {
+        LPWStr = 21
+    }
+
     public sealed class DllImportAttribute : Attribute
     {
         public DllImportAttribute(string dllName) { }
+    }
+
+    public sealed class MarshalAsAttribute : Attribute
+    {
+        public MarshalAsAttribute(UnmanagedType unmanagedType)
+        {
+            Value = unmanagedType;
+        }
+
+        public UnmanagedType Value { get; }
     }
 }
 

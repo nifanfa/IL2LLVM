@@ -3,18 +3,14 @@
 #include <wchar.h>
 #include <setjmp.h>
 
-void System_Console_Write_String(const char* str)
+void System_Console_Write_String(const wchar_t* str)
 {
     if (str == NULL)
         return;
-    const unsigned short* chars = *(const unsigned short**)(str + 2 * sizeof(size_t));
-    if (chars == NULL)
-        return;
-    chars = (const unsigned short*)((const unsigned char*)chars + 6 * sizeof(size_t));
-    wprintf(L"%ls", (const wchar_t*)chars);
+    wprintf(L"%ls", str);
 }
 
-void System_Console_WriteLine_String(const char* str)
+void System_Console_WriteLine_String(const wchar_t* str)
 {
     System_Console_Write_String(str);
     wprintf(L"\n");
@@ -32,7 +28,7 @@ void System_Console_WriteLine_IntPtr(size_t value)
 
 void* Newobj(size_t size)
 {
-    return calloc(1, size < 4096 ? 4096 : size);
+    return calloc(1, size);
 }
 
 void* Newarr(size_t count, size_t size, size_t baseSize)
