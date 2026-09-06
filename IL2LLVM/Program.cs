@@ -268,6 +268,18 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                         trackedTypes[value] = type;
                 }
 
+                TypeReference? GetIndirectType(LLVMValueRef address)
+                {
+                    if (!trackedTypes.TryGetValue(address, out var addressType))
+                        return null;
+                    return addressType switch
+                    {
+                        ByReferenceType byReference => byReference.ElementType,
+                        PointerType pointer => pointer.ElementType,
+                        _ => null
+                    };
+                }
+
                 LLVMValueRef BuildVirtualDispatch(MethodReference targetMethod, LLVMValueRef[] targetArgs,
                     LLVMTypeRef targetFunctionType, LLVMValueRef targetFunction, List<(TypeDefinition RuntimeType, MethodReference Implementation)> implementations,
                     bool allowArraySpecial = true)
@@ -1372,8 +1384,10 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                             {
                                 var index = stack.Pop();
                                 var array = stack.Pop();
-                                stack.Push(GetArrayElementAddress(builder, array, index,
-                                    GetLLVMTypeRef(SubstituteGenericParameter((TypeReference)instr.Operand, method.Value.Item3))));
+                                var elementType = SubstituteGenericParameter((TypeReference)instr.Operand, method.Value.Item3);
+                                var address = GetArrayElementAddress(builder, array, index, GetLLVMTypeRef(elementType));
+                                stack.Push(address);
+                                TrackType(address, new ByReferenceType(elementType));
                             }
                             break;
                         case Code.Ldlen:
@@ -1418,7 +1432,12 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                                 }
                                 var argumentValue = method.Value.Item1.GetParam((uint)index);
                                 if (argumentValue.TypeOf.Kind == LLVMTypeKind.LLVMPointerTypeKind)
+                                {
                                     stack.Push(argumentValue);
+                                    TrackType(argumentValue, SubstituteGenericParameter(
+                                        method.Value.Item3.Parameters[index - (method.Value.Item3.HasThis ? 1 : 0)].ParameterType,
+                                        method.Value.Item3));
+                                }
                                 else
                                     stack.Push(argumentStorage.Item1);
                             }
@@ -1436,6 +1455,7 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                         case Code.Ldind_Ref:
                             {
                                 var address = stack.Pop();
+                                var indirectType = GetIndirectType(address);
                                 var type = instr.OpCode.Code switch
                                 {
                                     Code.Ldind_I1 or Code.Ldind_U1 => LLVMTypeRef.Int8,
@@ -1444,11 +1464,15 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                                     Code.Ldind_I8 => LLVMTypeRef.Int64,
                                     Code.Ldind_R4 => LLVMTypeRef.Float,
                                     Code.Ldind_R8 => LLVMTypeRef.Double,
+                                    Code.Ldind_I when indirectType is PointerType => GetLLVMTypeRef(indirectType),
                                     Code.Ldind_I => sizeType,
                                     Code.Ldind_Ref => LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0),
                                     _ => throw new InvalidOperationException(instr.OpCode.Code.ToString())
                                 };
-                                stack.Push(builder.BuildLoad2(type, address));
+                                var value = builder.BuildLoad2(type, address);
+                                stack.Push(value);
+                                if (indirectType is not null)
+                                    TrackType(value, indirectType);
                             }
                             break;
                         case Code.Stind_I1:
@@ -1462,6 +1486,7 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                             {
                                 var value = stack.Pop();
                                 var address = stack.Pop();
+                                var indirectType = GetIndirectType(address);
                                 var type = instr.OpCode.Code switch
                                 {
                                     Code.Stind_I1 => LLVMTypeRef.Int8,
@@ -1470,6 +1495,7 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                                     Code.Stind_I8 => LLVMTypeRef.Int64,
                                     Code.Stind_R4 => LLVMTypeRef.Float,
                                     Code.Stind_R8 => LLVMTypeRef.Double,
+                                    Code.Stind_I when indirectType is PointerType => GetLLVMTypeRef(indirectType),
                                     Code.Stind_I => sizeType,
                                     Code.Stind_Ref => LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0),
                                     _ => throw new InvalidOperationException(instr.OpCode.Code.ToString())
@@ -1632,6 +1658,12 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                             break;
                         case Code.Localloc:
                             stack.Push(builder.BuildArrayAlloca(LLVMTypeRef.Int8, ConvertValue(builder, stack.Pop(), sizeType, false)));
+                            break;
+                        case Code.Sizeof:
+                            {
+                                var type = SubstituteGenericParameter((TypeReference)instr.Operand, method.Value.Item3);
+                                stack.Push(LLVMValueRef.CreateConstInt(sizeType, (ulong)GetTypeSize(type), false));
+                            }
                             break;
                         case Code.Ldtoken:
                             {
@@ -1815,7 +1847,8 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                                 var val2 = stack.Pop();
                                 var val1 = stack.Pop();
                                 var result = val1.TypeOf.Kind == LLVMTypeKind.LLVMPointerTypeKind
-                                    ? builder.BuildGEP2(LLVMTypeRef.Int8, val1, [ConvertValue(builder, val2, sizeType, true)])
+                                    ? builder.BuildGEP2(LLVMTypeRef.Int8, val1,
+                                        [builder.BuildNeg(ConvertValue(builder, val2, sizeType, true))])
                                     : builder.BuildSub(val1, val2);
                                 stack.Push(result);
                             }

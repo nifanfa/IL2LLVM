@@ -62,6 +62,12 @@ public static partial class LanguageFeatureValidation
             => new FeatureValue(left._value + right._value);
     }
 
+    private struct PointerValues
+    {
+        public int Integer;
+        public short Short;
+    }
+
     private abstract class FeatureBase
     {
         protected FeatureBase(int seed)
@@ -493,6 +499,96 @@ public static partial class LanguageFeatureValidation
                 Fail("fixed or sizeof");
         }
 
+        int localFirst = 1;
+        int localSecond = 2;
+        int* firstPointer = &localFirst;
+        int* secondPointer = &localSecond;
+        if (*firstPointer != 1 || *secondPointer != 2)
+            Fail("local pointer load");
+
+        *firstPointer = 3;
+        WritePointer(secondPointer, 4);
+        if (localFirst != 3 || localSecond != 4 || ReadPointer(firstPointer) != 3)
+            Fail("local pointer store or parameter");
+
+        int* returnedPointer = ReturnPointer(firstPointer);
+        if (returnedPointer != firstPointer || *returnedPointer != 3)
+            Fail("pointer return or equality");
+
+        int[] pointerValues = new int[] { 5, 6, 7, 8 };
+        fixed (int* pinnedValues = pointerValues)
+        {
+            int* secondValue = pinnedValues + 1;
+            if (pinnedValues[0] != 5 || *secondValue != 6 || *(secondValue + 1) != 7)
+                Fail("pointer indexing or addition");
+            *(pinnedValues + 2) = 9;
+            secondValue++;
+            if (pointerValues[2] != 9 || *secondValue != 9)
+                Fail("pointer increment or write");
+            secondValue -= 1;
+            if (secondValue != pinnedValues + 1 || *secondValue != 6)
+                Fail("pointer subtraction");
+
+            void* raw = pinnedValues;
+            int* converted = (int*)raw;
+            if (converted != pinnedValues || converted[3] != 8)
+                Fail("pointer conversion");
+        }
+
+        PointerValues fields = new PointerValues();
+        fields.Integer = 10;
+        fields.Short = 11;
+        int* integerField = &fields.Integer;
+        short* shortField = &fields.Short;
+        *integerField += 2;
+        *shortField = 12;
+        if (fields.Integer != 12 || fields.Short != 12)
+            Fail("struct field pointer");
+
+        byte byteValue = 13;
+        short shortValue = 14;
+        long longValue = 15;
+        float floatValue = 16;
+        double doubleValue = 17;
+        byte* bytePointer = &byteValue;
+        short* shortPointer = &shortValue;
+        long* longPointer = &longValue;
+        float* floatPointer = &floatValue;
+        double* doublePointer = &doubleValue;
+        *bytePointer = 18;
+        *shortPointer = 19;
+        *longPointer = 20;
+        *floatPointer = 21;
+        *doublePointer = 22;
+        if (*bytePointer != 18 || *shortPointer != 19 || *longPointer != 20 ||
+            *floatPointer != 21 || *doublePointer != 22)
+            Fail("primitive pointer load or store");
+
+        int pointedValue = 23;
+        int* pointedValuePointer = &pointedValue;
+        int** pointerPointer = &pointedValuePointer;
+        if (**pointerPointer != 23)
+            Fail("pointer to pointer load");
+        **pointerPointer = 24;
+        if (pointedValue != 24)
+            Fail("pointer to pointer store");
+
+        int* stackPointerValues = stackalloc int[3];
+        stackPointerValues[0] = 25;
+        stackPointerValues[1] = 26;
+        stackPointerValues[2] = 27;
+        if (SumPointerValues(stackPointerValues, 3) != 78)
+            Fail("stack pointer parameter");
+
+        delegate* managed<int, int> functionPointer = &DoublePointerValue;
+        if (functionPointer(14) != 28)
+            Fail("managed function pointer");
+
+        if (sizeof(byte) != 1 || sizeof(short) != 2 || sizeof(int) != 4 ||
+            sizeof(long) != 8 || sizeof(float) != 4 || sizeof(double) != 8 ||
+            sizeof(void*) != sizeof(int*))
+            Fail("pointer sizeof");
+
         int checkedValue = checked(RuntimeValue(1) + RuntimeValue(2));
         int uncheckedValue = unchecked(int.MaxValue + RuntimeValue(1));
         if (checkedValue != RuntimeValue(3) || uncheckedValue != int.MinValue)
@@ -700,6 +796,22 @@ public static partial class LanguageFeatureValidation
     private static void Increment(ref int value) => value++;
 
     private static int ReadIn(in int value) => value;
+
+    private static unsafe void WritePointer(int* pointer, int value) => *pointer = value;
+
+    private static unsafe int ReadPointer(int* pointer) => *pointer;
+
+    private static unsafe int* ReturnPointer(int* pointer) => pointer;
+
+    private static unsafe int SumPointerValues(int* values, int length)
+    {
+        int result = 0;
+        for (int index = 0; index < length; index++)
+            result += values[index];
+        return result;
+    }
+
+    private static int DoublePointerValue(int value) => value * 2;
 
     private static int Identity(this int value) => value;
 
