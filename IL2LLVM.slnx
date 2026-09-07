@@ -5,6 +5,6 @@
     <Platform Name="x86" />
   </Configurations>
   <Project Path="ConsoleApp1/ConsoleApp1.csproj" />
-  <Project Path="ConsoleApplication1/ConsoleApplication1.vcxproj" Id="0b0b4474-bfaf-4227-b2c4-c7258e73d299" />
+  <Project Path="apphost/apphost.vcxproj" Id="0b0b4474-bfaf-4227-b2c4-c7258e73d299" />
   <Project Path="IL2LLVM/IL2LLVM.csproj" />
 </Solution>

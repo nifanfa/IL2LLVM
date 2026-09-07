@@ -25,7 +25,6 @@ int pointerSize = (int)machine.CreateTargetDataLayout().ABISizeOfType(LLVMTypeRe
 LLVMTypeRef sizeType = LLVMTypeRef.CreateIntPtr(machine.CreateTargetDataLayout());
 
 Dictionary<string, Tuple<LLVMValueRef, LLVMTypeRef, MethodReference, Collection<Instruction>?>> moduleMethods = new();
-Dictionary<RuntimeMethod, Tuple<LLVMValueRef, LLVMTypeRef>> runtimeMethods = new();
 Dictionary<string, Tuple<LLVMValueRef, LLVMTypeRef>> staticFields = new();
 Dictionary<string, (LLVMValueRef Function, LLVMValueRef State)> cctorGuards = new(StringComparer.Ordinal);
 Dictionary<string, TypeDefinition> localTypes = new(StringComparer.Ordinal);
@@ -34,30 +33,26 @@ Dictionary<string, LLVMValueRef> gcDescriptors = new(StringComparer.Ordinal);
 ulong nextRuntimeTypeId = 1;
 int nextVirtualDispatchId = 0;
 var exceptionPointerType = LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0);
-var exceptionPushType = LLVMTypeRef.CreateFunction(LLVMTypeRef.Void, [exceptionPointerType, exceptionPointerType]);
-var exceptionPushFunction = module.AddFunction("RuntimeExceptionPush", exceptionPushType);
-var exceptionPopType = LLVMTypeRef.CreateFunction(LLVMTypeRef.Void, [exceptionPointerType]);
-var exceptionPopFunction = module.AddFunction("RuntimeExceptionPop", exceptionPopType);
-var exceptionBufferType = LLVMTypeRef.CreateFunction(exceptionPointerType, [exceptionPointerType]);
-var exceptionBufferFunction = module.AddFunction("RuntimeExceptionBuffer", exceptionBufferType);
-var exceptionCurrentType = LLVMTypeRef.CreateFunction(exceptionPointerType, []);
-var exceptionCurrentFunction = module.AddFunction("RuntimeExceptionCurrent", exceptionCurrentType);
-var exceptionThrowType = LLVMTypeRef.CreateFunction(LLVMTypeRef.Void, [exceptionPointerType]);
-var exceptionThrowFunction = module.AddFunction("RuntimeExceptionThrow", exceptionThrowType);
-var setjmpType = LLVMTypeRef.CreateFunction(LLVMTypeRef.Int32, [exceptionPointerType, LLVMTypeRef.Int32], true);
-var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
-
-{
-    var funcType = LLVMTypeRef.CreateFunction(LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0), [sizeType]);
-    var funcValue = module.AddFunction(RuntimeMethod.Newobj.ToString(), funcType);
-    runtimeMethods.Add(RuntimeMethod.Newobj, new(funcValue, funcType));
-}
-
-{
-    var funcType = LLVMTypeRef.CreateFunction(LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0), [sizeType, sizeType, sizeType]);
-    var funcValue = module.AddFunction(RuntimeMethod.Newarr.ToString(), funcType);
-    runtimeMethods.Add(RuntimeMethod.Newarr, new(funcValue, funcType));
-}
+var allocationType = LLVMTypeRef.CreateFunction(exceptionPointerType, [sizeType, sizeType]);
+var allocationFunction = module.AddFunction("calloc", allocationType);
+LLVMTypeRef exceptionPushType = default;
+LLVMValueRef exceptionPushFunction = default;
+LLVMTypeRef exceptionPopType = default;
+LLVMValueRef exceptionPopFunction = default;
+LLVMTypeRef exceptionBufferType = default;
+LLVMValueRef exceptionBufferFunction = default;
+LLVMTypeRef exceptionTopType = default;
+LLVMValueRef exceptionTopFunction = default;
+LLVMTypeRef exceptionCurrentType = default;
+LLVMValueRef exceptionCurrentFunction = default;
+LLVMTypeRef setjmpType = default;
+LLVMValueRef setjmpFunction = default;
+LLVMTypeRef longjmpType = default;
+LLVMValueRef longjmpFunction = default;
+LLVMTypeRef exceptionAbortType = default;
+LLVMValueRef exceptionAbortFunction = default;
+LLVMTypeRef exceptionThrowType = default;
+LLVMValueRef exceptionThrowFunction = default;
 
 {
     var assembly = AssemblyDefinition.ReadAssembly(fileName);
@@ -66,6 +61,58 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
         .ToDictionary(m => m.FullName, StringComparer.Ordinal);
     localTypes = GetAllTypes(assembly.MainModule.Types)
         .ToDictionary(t => t.FullName, StringComparer.Ordinal);
+    var exceptionRuntimeType = localTypes["System.Runtime.ExceptionRuntime"];
+    var voidPointerType = new PointerType(localTypes["System.Void"]);
+    var exceptionPushMethod = GetRequiredMethod(exceptionRuntimeType, "Push", false,
+        localTypes["System.Void"], voidPointerType, voidPointerType);
+    var exceptionPopMethod = GetRequiredMethod(exceptionRuntimeType, "Pop", false,
+        localTypes["System.Void"], voidPointerType);
+    var exceptionBufferMethod = GetRequiredMethod(exceptionRuntimeType, "GetBuffer", false,
+        voidPointerType, voidPointerType);
+    var exceptionTopMethod = GetRequiredMethod(exceptionRuntimeType, "GetTop", false,
+        voidPointerType);
+    var exceptionCurrentMethod = GetRequiredMethod(exceptionRuntimeType, "GetCurrent", false,
+        localTypes["System.Exception"]);
+    var longjmpMethod = GetRequiredMethod(exceptionRuntimeType, "LongJump", false,
+        localTypes["System.Void"], voidPointerType, localTypes["System.Int32"]);
+    var exceptionAbortMethod = GetRequiredMethod(exceptionRuntimeType, "Abort", false,
+        localTypes["System.Void"]);
+    var exceptionThrowMethod = GetRequiredMethod(exceptionRuntimeType, "Throw", false,
+        localTypes["System.Void"], localTypes["System.Exception"]);
+    RegisterMethodFunction(module, exceptionPushMethod, exceptionPushMethod.Body.Instructions);
+    RegisterMethodFunction(module, exceptionPopMethod, exceptionPopMethod.Body.Instructions);
+    RegisterMethodFunction(module, exceptionBufferMethod, exceptionBufferMethod.Body.Instructions);
+    RegisterMethodFunction(module, exceptionTopMethod, exceptionTopMethod.Body.Instructions);
+    RegisterMethodFunction(module, exceptionCurrentMethod, exceptionCurrentMethod.Body.Instructions);
+    RegisterMethodFunction(module, longjmpMethod, null, "longjmp");
+    RegisterMethodFunction(module, exceptionAbortMethod, null, "abort");
+    RegisterMethodFunction(module, exceptionThrowMethod, exceptionThrowMethod.Body.Instructions);
+    var registeredExceptionPush = GetRegisteredMethod(exceptionPushMethod)!;
+    exceptionPushFunction = registeredExceptionPush.Item1;
+    exceptionPushType = registeredExceptionPush.Item2;
+    var registeredExceptionPop = GetRegisteredMethod(exceptionPopMethod)!;
+    exceptionPopFunction = registeredExceptionPop.Item1;
+    exceptionPopType = registeredExceptionPop.Item2;
+    var registeredExceptionBuffer = GetRegisteredMethod(exceptionBufferMethod)!;
+    exceptionBufferFunction = registeredExceptionBuffer.Item1;
+    exceptionBufferType = registeredExceptionBuffer.Item2;
+    var registeredExceptionTop = GetRegisteredMethod(exceptionTopMethod)!;
+    exceptionTopFunction = registeredExceptionTop.Item1;
+    exceptionTopType = registeredExceptionTop.Item2;
+    var registeredExceptionCurrent = GetRegisteredMethod(exceptionCurrentMethod)!;
+    exceptionCurrentFunction = registeredExceptionCurrent.Item1;
+    exceptionCurrentType = registeredExceptionCurrent.Item2;
+    setjmpType = LLVMTypeRef.CreateFunction(LLVMTypeRef.Int32, [exceptionPointerType, LLVMTypeRef.Int32], true);
+    setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
+    var registeredLongJump = GetRegisteredMethod(longjmpMethod)!;
+    longjmpFunction = registeredLongJump.Item1;
+    longjmpType = registeredLongJump.Item2;
+    var registeredExceptionAbort = GetRegisteredMethod(exceptionAbortMethod)!;
+    exceptionAbortFunction = registeredExceptionAbort.Item1;
+    exceptionAbortType = registeredExceptionAbort.Item2;
+    var registeredExceptionThrow = GetRegisteredMethod(exceptionThrowMethod)!;
+    exceptionThrowFunction = registeredExceptionThrow.Item1;
+    exceptionThrowType = registeredExceptionThrow.Item2;
     var arrayEnumeratorTypes = localTypes.Values.Where(IsArrayEnumeratorDefinition).ToList();
     var stringConstructor = GetRequiredConstructor(localTypes["System.String"],
         new ArrayType(localTypes["System.Char"]));
@@ -122,14 +169,7 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
             foreach (var field in fields)
             {
                 if (field.IsStatic)
-                {
-                    string fieldName = GetFriendlyFieldName(field);
-                    var fieldType = GetLLVMTypeRef(field.FieldType);
-                    var fieldValue = module.AddGlobal(fieldType, fieldName);
-                    fieldValue.Initializer = LLVMValueRef.CreateConstNull(fieldType);
-
-                    staticFields.Add(fieldName, new(fieldValue, fieldType));
-                }
+                    GetStaticField(field);
             }
         }
 
@@ -268,6 +308,30 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                         trackedTypes[value] = type;
                 }
 
+                LLVMValueRef BuildRuntimeTypeMatch(LLVMValueRef value, TypeReference targetType)
+                {
+                    var methodTable = builder.BuildLoad2(sizeType,
+                        GetFieldAddress(builder, value, GetObjectMethodTableField()));
+                    var matches = new List<LLVMValueRef>();
+                    var seen = new HashSet<ulong>();
+                    foreach (var candidate in localTypes.Values)
+                    {
+                        if (!IsRuntimeTypeCompatible(candidate, targetType))
+                            continue;
+                        var candidateId = GetRuntimeTypeId(candidate);
+                        if (!seen.Add(candidateId))
+                            continue;
+                        matches.Add(builder.BuildICmp(LLVMIntPredicate.LLVMIntEQ, methodTable,
+                            LLVMValueRef.CreateConstInt(sizeType, candidateId, false)));
+                    }
+                    if (matches.Count == 0)
+                        return LLVMValueRef.CreateConstInt(LLVMTypeRef.Int1, 0, false);
+                    var result = matches[0];
+                    for (int i = 1; i < matches.Count; i++)
+                        result = builder.BuildOr(result, matches[i]);
+                    return result;
+                }
+
                 TypeReference? GetIndirectType(LLVMValueRef address)
                 {
                     if (!trackedTypes.TryGetValue(address, out var addressType))
@@ -284,6 +348,15 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                     LLVMTypeRef targetFunctionType, LLVMValueRef targetFunction, List<(TypeDefinition RuntimeType, MethodReference Implementation)> implementations,
                     bool allowArraySpecial = true)
                 {
+                    LLVMValueRef[] GetImplementationArgs(TypeDefinition runtimeType)
+                    {
+                        if (!runtimeType.IsValueType || targetArgs.Length == 0)
+                            return targetArgs;
+                        var implementationArgs = (LLVMValueRef[])targetArgs.Clone();
+                        implementationArgs[0] = GetBoxedValueAddress(builder, targetArgs[0]);
+                        return implementationArgs;
+                    }
+
                     if (allowArraySpecial && TryGetArrayEnumerator(targetMethod, out var enumerableElementType,
                             out var arrayEnumeratorDefinition, out var constructor))
                     {
@@ -303,9 +376,7 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                         builder.PositionAtEnd(arrayBlock);
                         var enumeratorType = new GenericInstanceType(arrayEnumeratorDefinition);
                         enumeratorType.GenericArguments.Add(enumerableElementType);
-                        var enumerator = builder.BuildCall2(runtimeMethods[RuntimeMethod.Newobj].Item2,
-                            runtimeMethods[RuntimeMethod.Newobj].Item1,
-                            [LLVMValueRef.CreateConstInt(sizeType, (ulong)GetObjectSize(enumeratorType), false)]);
+                        var enumerator = BuildAllocation(builder, GetObjectSize(enumeratorType));
                         InitializeRuntimeType(builder, enumerator, enumeratorType);
                         builder.BuildCall2(constructorMethod.Item2, constructorMethod.Item1, [enumerator, arrayReceiverValue]);
                         builder.BuildBr(arrayContinuation);
@@ -319,13 +390,28 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                         return result;
                     }
 
-                    var distinctImplementations = implementations
-                        .Select(candidate => GetRegisteredMethod(candidate.Implementation)?.Item1 ?? default)
-                        .Where(function => function != default)
+                    var registeredImplementations = implementations
+                        .Select(candidate => (candidate.RuntimeType, Method: GetRegisteredMethod(candidate.Implementation)))
+                        .Where(candidate => candidate.Method is not null)
+                        .ToList();
+                    var distinctImplementations = registeredImplementations
+                        .Select(candidate => candidate.Method!.Item1)
                         .Distinct()
                         .ToList();
                     if (implementations.Count == 0 || distinctImplementations.Count <= 1)
-                        return builder.BuildCall2(targetFunctionType, targetFunction, targetArgs);
+                    {
+                        if (distinctImplementations.Count == 1)
+                        {
+                            var implementation = registeredImplementations[0];
+                            return builder.BuildCall2(implementation.Method!.Item2, implementation.Method.Item1,
+                                GetImplementationArgs(implementation.RuntimeType));
+                        }
+                        if (targetFunction != default)
+                            return builder.BuildCall2(targetFunctionType, targetFunction, targetArgs);
+                        return IsVoidType(targetMethod.ReturnType)
+                            ? default
+                            : LLVMValueRef.CreateConstNull(GetLLVMTypeRef(SubstituteGenericParameter(targetMethod.ReturnType, targetMethod)));
+                    }
 
                     var receiver = targetArgs[0];
                     var methodTable = builder.BuildLoad2(sizeType,
@@ -354,8 +440,9 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                         }
 
                         builder.PositionAtEnd(callBlock);
-                        var result = builder.BuildCall2(implementationMethod.Item2, implementationMethod.Item1, targetArgs);
-                        if (targetMethod.ReturnType.MetadataType != MetadataType.Void)
+                        var implementationArgs = GetImplementationArgs(candidate.RuntimeType);
+                        var result = builder.BuildCall2(implementationMethod.Item2, implementationMethod.Item1, implementationArgs);
+                        if (!IsVoidType(targetMethod.ReturnType))
                         {
                             incomingValues.Add(ConvertValue(builder, result, GetLLVMTypeRef(SubstituteGenericParameter(targetMethod.ReturnType, targetMethod))));
                             incomingBlocks.Add(callBlock);
@@ -364,16 +451,20 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                         builder.PositionAtEnd(nextBlock);
                     }
 
-                    var fallback = builder.BuildCall2(targetFunctionType, targetFunction, targetArgs);
-                    if (targetMethod.ReturnType.MetadataType != MetadataType.Void)
+                    if (!IsVoidType(targetMethod.ReturnType))
                     {
-                        incomingValues.Add(ConvertValue(builder, fallback,
-                            GetLLVMTypeRef(SubstituteGenericParameter(targetMethod.ReturnType, targetMethod))));
+                        var fallback = targetFunction == default
+                            ? LLVMValueRef.CreateConstNull(GetLLVMTypeRef(SubstituteGenericParameter(targetMethod.ReturnType, targetMethod)))
+                            : ConvertValue(builder, builder.BuildCall2(targetFunctionType, targetFunction, targetArgs),
+                                GetLLVMTypeRef(SubstituteGenericParameter(targetMethod.ReturnType, targetMethod)));
+                        incomingValues.Add(fallback);
                         incomingBlocks.Add(builder.InsertBlock);
                     }
+                    else if (targetFunction != default)
+                        builder.BuildCall2(targetFunctionType, targetFunction, targetArgs);
                     builder.BuildBr(continuation);
                     builder.PositionAtEnd(continuation);
-                    if (targetMethod.ReturnType.MetadataType == MetadataType.Void)
+                    if (IsVoidType(targetMethod.ReturnType))
                         return default;
                     var phi = builder.BuildPhi(GetLLVMTypeRef(SubstituteGenericParameter(targetMethod.ReturnType, targetMethod)), "virt.result");
                     phi.AddIncoming(incomingValues.ToArray(), incomingBlocks.ToArray(), (uint)incomingValues.Count);
@@ -732,9 +823,9 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                                 TypeReference type = SubstituteGenericParameter((TypeReference)instr.Operand, method.Value.Item3);
                                 var size = LLVMValueRef.CreateConstInt(sizeType, (ulong)GetTypeSize(type));
                                 var count = ConvertValue(builder, stack.Pop(), sizeType, false);
-                                var function = runtimeMethods[RuntimeMethod.Newarr];
                                 var arrayBaseSize = LLVMValueRef.CreateConstInt(sizeType, (ulong)GetTypeDefinitionSize(localTypes["System.Array"]), false);
-                                var ptr = builder.BuildCall2(function.Item2, function.Item1, [count, size, arrayBaseSize]);
+                                var ptr = builder.BuildCall2(allocationType, allocationFunction, [LLVMValueRef.CreateConstInt(sizeType, 1, false),
+                                    builder.BuildAdd(arrayBaseSize, builder.BuildMul(count, size))]);
                                 var lengthField = GetArrayLengthField();
                                 StoreField(builder, ptr, lengthField, count);
                                 InitializeRuntimeType(builder, ptr, new ArrayType(type));
@@ -759,9 +850,7 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                                     var array = stack.Pop();
                                     var enumeratorType = new GenericInstanceType(arrayEnumeratorDefinition);
                                     enumeratorType.GenericArguments.Add(arrayReceiver.ElementType);
-                                    var enumerator = builder.BuildCall2(runtimeMethods[RuntimeMethod.Newobj].Item2,
-                                        runtimeMethods[RuntimeMethod.Newobj].Item1,
-                                        [LLVMValueRef.CreateConstInt(sizeType, (ulong)GetObjectSize(enumeratorType), false)]);
+                                    var enumerator = BuildAllocation(builder, GetObjectSize(enumeratorType));
                                     InitializeRuntimeType(builder, enumerator, enumeratorType);
                                     builder.BuildCall2(constructorMethod.Item2, constructorMethod.Item1, [enumerator, array]);
                                     stack.Push(enumerator);
@@ -815,7 +904,7 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                                     callArguments.AddRange(invokeArguments.Select((value, index) => ConvertValue(builder, value,
                                         GetLLVMTypeRef(SubstituteGenericParameter(targetMethod.Parameters[index].ParameterType, targetMethod)))));
                                     var invokeResult = builder.BuildCall2(functionType, functionPointer, callArguments.ToArray());
-                                    if (invokeReturnType.MetadataType != MetadataType.Void)
+                                    if (!IsVoidType(invokeReturnType))
                                     {
                                         stack.Push(invokeResult);
                                         TrackType(invokeResult, invokeReturnType);
@@ -827,6 +916,49 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                                     stack.Push(stack.Count == 0
                                         ? LLVMValueRef.CreateConstNull(LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0))
                                         : stack.Pop());
+                                    break;
+                                }
+                                if (targetMethod.DeclaringType.FullName == "System.Runtime.CompilerServices.RuntimeHelpers" &&
+                                    targetMethod.Name == "InitializeArray")
+                                {
+                                    if (stack.Count != 0)
+                                        stack.Pop();
+                                    var array = stack.Count == 0 ? default : stack.Pop();
+                                    var field = instr.Previous?.OpCode.Code == Code.Ldtoken
+                                        ? (instr.Previous.Operand as FieldReference)?.Resolve()
+                                        : null;
+                                    if (field?.InitialValue is { Length: > 0 } initialValue &&
+                                        trackedTypes.TryGetValue(array, out var arrayType) && arrayType is ArrayType initializedArray)
+                                    {
+                                        var elementType = initializedArray.ElementType;
+                                        var elementLLVMType = GetLLVMTypeRef(elementType);
+                                        var elementSize = (int)GetLLVMTypeSize(elementLLVMType);
+                                        var elementCount = initializedArray.Rank == 1
+                                            ? initialValue.Length / Math.Max(1, elementSize)
+                                            : 0;
+                                        var dataOffset = GetTypeDefinitionSize(localTypes["System.Array"]);
+                                        for (int index = 0; index < elementCount; index++)
+                                        {
+                                            var offset = index * elementSize;
+                                            LLVMValueRef value;
+                                            if (elementType.MetadataType is MetadataType.Single)
+                                                value = LLVMValueRef.CreateConstReal(LLVMTypeRef.Float,
+                                                    BitConverter.ToSingle(initialValue, offset));
+                                            else if (elementType.MetadataType is MetadataType.Double)
+                                                value = LLVMValueRef.CreateConstReal(LLVMTypeRef.Double,
+                                                    BitConverter.ToDouble(initialValue, offset));
+                                            else
+                                            {
+                                                ulong bits = 0;
+                                                for (int byteIndex = 0; byteIndex < elementSize && byteIndex < 8; byteIndex++)
+                                                    bits |= (ulong)initialValue[offset + byteIndex] << (byteIndex * 8);
+                                                value = LLVMValueRef.CreateConstInt(elementLLVMType, bits, false);
+                                            }
+                                            var address = builder.BuildGEP2(LLVMTypeRef.Int8, array,
+                                                [LLVMValueRef.CreateConstInt(sizeType, (ulong)(dataOffset + offset), false)]);
+                                            builder.BuildStore(value, address);
+                                        }
+                                    }
                                     break;
                                 }
                                 var isArrayRank = SameMethodDefinition(targetMethod, arrayRankMethod);
@@ -874,11 +1006,10 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                                         var total = LLVMValueRef.CreateConstInt(sizeType, 1, false);
                                         foreach (var dimension in dimensions)
                                             total = builder.BuildMul(total, ConvertValue(builder, dimension, sizeType, false));
-                                        var array = builder.BuildCall2(runtimeMethods[RuntimeMethod.Newarr].Item2,
-                                            runtimeMethods[RuntimeMethod.Newarr].Item1,
-                                            [total,
-                                             LLVMValueRef.CreateConstInt(sizeType, (ulong)GetTypeSize(multidimensionalArray.ElementType), false),
-                                             LLVMValueRef.CreateConstInt(sizeType, (ulong)GetTypeDefinitionSize(localTypes["System.Array"]), false)]);
+                                        var array = builder.BuildCall2(allocationType, allocationFunction,
+                                            [LLVMValueRef.CreateConstInt(sizeType, 1, false),
+                                             builder.BuildAdd(LLVMValueRef.CreateConstInt(sizeType, (ulong)GetTypeDefinitionSize(localTypes["System.Array"]), false),
+                                                builder.BuildMul(total, LLVMValueRef.CreateConstInt(sizeType, (ulong)GetTypeSize(multidimensionalArray.ElementType), false)))]);
                                         StoreField(builder, array, GetArrayLengthField(), total);
                                         StoreField(builder, array, localTypes["System.Array"].Fields.First(field => field.Name == "_rank"),
                                             LLVMValueRef.CreateConstInt(sizeType, (ulong)multidimensionalArray.Rank, false));
@@ -898,7 +1029,8 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                                         var indices = Enumerable.Range(0, multidimensionalArray.Rank)
                                             .Select(_ => stack.Pop()).Reverse().ToArray();
                                         var array = stack.Pop();
-                                        var address = GetMultiArrayElementAddress(builder, array, indices, elementType);
+                                        var address = GetMultiArrayElementAddress(builder, array, indices, elementType,
+                                            GetTypeSize(multidimensionalArray.ElementType));
                                         if (targetMethod.Name == "Set")
                                             builder.BuildStore(ConvertValue(builder, value, elementType), address);
                                         else
@@ -919,8 +1051,7 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                                             ? LLVMValueRef.CreateConstNull(LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0))
                                             : stack.Pop();
                                         var delegateType = targetMethod.DeclaringType.Resolve() ?? throw new NotSupportedException($"Delegate type is not defined: {targetMethod.DeclaringType.FullName}");
-                                        ptr = builder.BuildCall2(runtimeMethods[RuntimeMethod.Newobj].Item2, runtimeMethods[RuntimeMethod.Newobj].Item1,
-                                            [LLVMValueRef.CreateConstInt(sizeType, (ulong)GetObjectSize(targetMethod.DeclaringType), false)]);
+                                        ptr = BuildAllocation(builder, GetObjectSize(targetMethod.DeclaringType));
                                         InitializeRuntimeType(builder, ptr, targetMethod.DeclaringType);
                                         builder.BuildStore(delegateFunction, GetFieldAddress(builder, ptr, GetDelegateField(targetMethod.DeclaringType, "_function")));
                                         StoreField(builder, ptr, GetDelegateField(targetMethod.DeclaringType, "_target"), delegateTarget);
@@ -928,16 +1059,18 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                                         TrackType(ptr, targetMethod.DeclaringType);
                                         break;
                                     }
-                                    var function = runtimeMethods[RuntimeMethod.Newobj];
                                     var targetType = targetMethod.DeclaringType.Resolve();
                                     int size = targetType is not null && localTypes.ContainsKey(targetType.FullName)
                                         ? GetObjectSize(targetMethod.DeclaringType)
                                         : pointerSize;
-                                    ptr = builder.BuildCall2(function.Item2, function.Item1, [LLVMValueRef.CreateConstInt(sizeType, (ulong)size)]);
+                                    ptr = BuildAllocation(builder, size);
                                     InitializeRuntimeType(builder, ptr, targetMethod.DeclaringType);
                                 }
 
-                                var m = GetRegisteredMethod(callTarget) ??
+                                var m = GetRegisteredMethod(callTarget);
+                                if (m is null && callTarget.DeclaringType.Resolve()?.IsInterface == true)
+                                    m = new(default, CreateLLVMFunction(module, callTarget), callTarget, null);
+                                if (m is null)
                                     throw new NotSupportedException($"Method is not defined in the input module: {callTarget.FullName}");
 
                                 var targetFuncCreated = m.Item2;
@@ -985,10 +1118,18 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                                         : [.. (LLVMValueRef[])[ptr], .. targetArgs];
                                 }
 
+                                var callArgs = targetArgs;
+                                if (instr.OpCode.Code == Code.Callvirt && !useRuntimeDispatch && callConstrainedType is null &&
+                                    virtualContractType is not null && IsValueType(virtualContractType) && targetArgs.Length != 0)
+                                {
+                                    callArgs = (LLVMValueRef[])targetArgs.Clone();
+                                    callArgs[0] = GetBoxedValueAddress(builder, targetArgs[0]);
+                                }
+
                                 var result = instr.OpCode.Code == Code.Callvirt && targetMethod.HasThis && useRuntimeDispatch
                                     ? BuildVirtualDispatch(targetMethod, targetArgs, targetFuncCreated, targetFunc,
                                         GetVirtualImplementations(targetMethod, virtualContractType ?? targetMethod.DeclaringType))
-                                    : builder.BuildCall2(targetFuncCreated, targetFunc, targetArgs);
+                                    : builder.BuildCall2(targetFuncCreated, targetFunc, callArgs);
                                 if (result != default && targetMethod.ReturnType is GenericParameter returnParameter &&
                                     targetMethod.DeclaringType is GenericInstanceType returnDeclaringType &&
                                     returnParameter.Position < returnDeclaringType.GenericArguments.Count)
@@ -1000,7 +1141,7 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                                     else if (result.TypeOf.Kind == LLVMTypeKind.LLVMPointerTypeKind && concreteLLVMType.Kind == LLVMTypeKind.LLVMIntegerTypeKind)
                                         result = builder.BuildPtrToInt(result, concreteLLVMType);
                                 }
-                                if (targetMethod.ReturnType.MetadataType != MetadataType.Void)
+                                if (!IsVoidType(targetMethod.ReturnType))
                                 {
                                     stack.Push(result);
                                     TrackType(result, SubstituteGenericParameter(targetMethod.ReturnType, targetMethod));
@@ -1025,7 +1166,7 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                                 var functionType = LLVMTypeRef.CreateFunction(GetLLVMTypeRef(callSite.ReturnType),
                                     callSite.Parameters.Select(parameter => GetLLVMTypeRef(parameter.ParameterType)).ToArray());
                                 var result = builder.BuildCall2(functionType, functionPointer, arguments.ToArray());
-                                if (callSite.ReturnType.MetadataType != MetadataType.Void)
+                                if (!IsVoidType(callSite.ReturnType))
                                     stack.Push(result);
                             }
                             break;
@@ -1052,14 +1193,63 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                                 var value = stack.Count == 0
                                     ? LLVMValueRef.CreateConstNull(LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0))
                                     : stack.Pop();
-                            stack.Push(value);
-                            if (!trackedTypes.ContainsKey(value))
-                                TrackType(value, targetType);
+                                value = ConvertValue(builder, value, exceptionPointerType);
+                                var nullBlock = method.Value.Item1.AppendBasicBlock($"cast.null.{nextVirtualDispatchId++}");
+                                var checkBlock = method.Value.Item1.AppendBasicBlock($"cast.check.{nextVirtualDispatchId++}");
+                                var matchBlock = method.Value.Item1.AppendBasicBlock($"cast.match.{nextVirtualDispatchId++}");
+                                var failBlock = method.Value.Item1.AppendBasicBlock($"cast.fail.{nextVirtualDispatchId++}");
+                                var continuation = method.Value.Item1.AppendBasicBlock($"cast.cont.{nextVirtualDispatchId++}");
+                                var sourceBlock = builder.InsertBlock;
+                                var isNull = builder.BuildICmp(LLVMIntPredicate.LLVMIntEQ, value,
+                                    LLVMValueRef.CreateConstNull(exceptionPointerType));
+                                builder.BuildCondBr(isNull, nullBlock, checkBlock);
+                                terminatedBlocks.Add(sourceBlock);
+
+                                builder.PositionAtEnd(nullBlock);
+                                var nullResult = LLVMValueRef.CreateConstNull(exceptionPointerType);
+                                builder.BuildBr(continuation);
+
+                                builder.PositionAtEnd(checkBlock);
+                                var matches = BuildRuntimeTypeMatch(value, targetType);
+                                builder.BuildCondBr(matches, matchBlock, failBlock);
+                                terminatedBlocks.Add(checkBlock);
+
+                                builder.PositionAtEnd(matchBlock);
+                                builder.BuildBr(continuation);
+
+                                builder.PositionAtEnd(failBlock);
+                                if (instr.OpCode.Code == Code.Castclass)
+                                {
+                                    var exceptionType = localTypes["System.InvalidCastException"];
+                                    var exception = BuildAllocation(builder, GetObjectSize(exceptionType));
+                                    InitializeRuntimeType(builder, exception, exceptionType);
+                                    builder.BuildCall2(exceptionThrowType, exceptionThrowFunction, [exception]);
+                                }
+                                else
+                                {
+                                    builder.BuildBr(continuation);
+                                }
+                                if (instr.OpCode.Code == Code.Castclass)
+                                {
+                                    builder.BuildUnreachable();
+                                    terminatedBlocks.Add(failBlock);
+                                }
+                                else
+                                    terminatedBlocks.Add(failBlock);
+
+                                builder.PositionAtEnd(continuation);
+                                var result = builder.BuildPhi(exceptionPointerType, "cast.result");
+                                if (instr.OpCode.Code == Code.Castclass)
+                                    result.AddIncoming([nullResult, value], [nullBlock, matchBlock], 2);
+                                else
+                                    result.AddIncoming([nullResult, value, nullResult], [nullBlock, matchBlock, failBlock], 3);
+                                stack.Push(result);
+                                TrackType(result, targetType);
                             }
                             break;
                         case Code.Ret:
                             var returnType = SubstituteGenericParameter(method.Value.Item3.ReturnType, method.Value.Item3);
-                            if (returnType.MetadataType != MetadataType.Void)
+                            if (!IsVoidType(returnType))
                             {
                                 builder.BuildRet(ConvertValue(builder, stack.Count == 0
                                     ? LLVMValueRef.CreateConstNull(GetLLVMTypeRef(returnType))
@@ -1139,6 +1329,9 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                                 var value = stack.Pop();
                                 var index = stack.Pop();
                                 var array = stack.Pop();
+                                var elementTypeReference = instr.OpCode.Code == Code.Stelem_Any
+                                    ? SubstituteGenericParameter((TypeReference)instr.Operand, method.Value.Item3)
+                                    : null;
                                 LLVMTypeRef type = instr.OpCode.Code switch
                                 {
                                     Code.Stelem_I => sizeType,
@@ -1149,10 +1342,15 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                                     Code.Stelem_R4 => LLVMTypeRef.Float,
                                     Code.Stelem_R8 => LLVMTypeRef.Double,
                                     Code.Stelem_Ref => LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0),
-                                    Code.Stelem_Any => GetLLVMTypeRef(SubstituteGenericParameter((TypeReference)instr.Operand, method.Value.Item3)),
+                                    Code.Stelem_Any => GetLLVMTypeRef(elementTypeReference!),
                                     _ => throw new InvalidOperationException(instr.OpCode.Code.ToString())
                                 };
-                                builder.BuildStore(ConvertValue(builder, value, type), GetArrayElementAddress(builder, array, index, type));
+                                var address = GetArrayElementAddress(builder, array, index, type,
+                                    elementTypeReference is null ? null : GetTypeSize(elementTypeReference));
+                                if (elementTypeReference is not null && IsValueType(elementTypeReference))
+                                    CopyValue(builder, address, value, GetTypeSize(elementTypeReference));
+                                else
+                                    builder.BuildStore(ConvertValue(builder, value, type), address);
                             }
                             break;
                         case Code.Stsfld:
@@ -1160,7 +1358,14 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                             {
                                 FieldReference field = (FieldReference)instr.Operand;
 
-                                var ptr = staticFields[GetFriendlyFieldName(field)];
+                                if (method.Value.Item3.Name != ".cctor")
+                                {
+                                    var guard = GetCctorGuard(field.DeclaringType);
+                                    if (guard is not null)
+                                        builder.BuildCall2(LLVMTypeRef.CreateFunction(LLVMTypeRef.Void, []), guard.Value.Function, []);
+                                }
+
+                                var ptr = GetStaticField(field, method.Value.Item3);
                                 if (instr.OpCode.Code == Code.Ldsflda)
                                     stack.Push(ptr.Item1);
                                 else
@@ -1173,10 +1378,18 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                         case Code.Ldsfld:
                             {
                                 FieldReference field = (FieldReference)instr.Operand;
-                                var ptr = staticFields[GetFriendlyFieldName(field)];
-                                var value = builder.BuildLoad2(ptr.Item2, ptr.Item1);
+                                if (method.Value.Item3.Name != ".cctor")
+                                {
+                                    var guard = GetCctorGuard(field.DeclaringType);
+                                    if (guard is not null)
+                                        builder.BuildCall2(LLVMTypeRef.CreateFunction(LLVMTypeRef.Void, []), guard.Value.Function, []);
+                                }
+                                var ptr = GetStaticField(field, method.Value.Item3);
+                                var fieldType = SubstituteFieldType(field, method.Value.Item3);
+                                var value = PromoteSmallIntegerLoad(builder,
+                                    builder.BuildLoad2(ptr.Item2, ptr.Item1), fieldType);
                                 stack.Push(value);
-                                TrackType(value, field.FieldType);
+                                TrackType(value, fieldType);
                             }
                             break;
                         case Code.Ldstr:
@@ -1208,7 +1421,8 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                                 }
                                 else
                                 {
-                                    var value = builder.BuildLoad2(GetLLVMTypeRef(fieldType), gep);
+                                    var value = PromoteSmallIntegerLoad(builder,
+                                        builder.BuildLoad2(GetLLVMTypeRef(fieldType), gep), fieldType);
                                     stack.Push(value);
                                     TrackType(value, fieldType);
                                 }
@@ -1219,15 +1433,6 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                         case Code.Ldarg_2:
                         case Code.Ldarg_3:
                             {
-                                var param = method.Value.Item1.GetParam(instr.OpCode.Code switch
-                                {
-                                    Code.Ldarg_0 => 0,
-                                    Code.Ldarg_1 => 1,
-                                    Code.Ldarg_2 => 2,
-                                    Code.Ldarg_3 => 3,
-                                    _ => throw new InvalidOperationException(instr.OpCode.Code.ToString())
-                                });
-                                stack.Push(param);
                                 var argumentIndex = instr.OpCode.Code switch
                                 {
                                     Code.Ldarg_0 => 0,
@@ -1237,13 +1442,25 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                                     _ => throw new InvalidOperationException(instr.OpCode.Code.ToString())
                                 };
                                 if (method.Value.Item3.HasThis && argumentIndex == 0)
+                                {
+                                    var param = method.Value.Item1.GetParam((uint)argumentIndex);
+                                    stack.Push(param);
                                     TrackType(param, method.Value.Item3.DeclaringType);
+                                }
                                 else
                                 {
                                     var parameterIndex = argumentIndex - (method.Value.Item3.HasThis ? 1 : 0);
                                     if (parameterIndex >= 0 && parameterIndex < method.Value.Item3.Parameters.Count)
-                                        TrackType(param, SubstituteGenericParameter(
-                                            method.Value.Item3.Parameters[parameterIndex].ParameterType, method.Value.Item3));
+                                    {
+                                        var parameterType = SubstituteGenericParameter(
+                                            method.Value.Item3.Parameters[parameterIndex].ParameterType, method.Value.Item3);
+                                        var param = local.TryGetValue(-1 - argumentIndex, out var storage)
+                                            ? builder.BuildLoad2(storage.Item2, storage.Item1)
+                                            : method.Value.Item1.GetParam((uint)argumentIndex);
+                                        param = PromoteSmallIntegerLoad(builder, param, parameterType);
+                                        TrackType(param, parameterType);
+                                        stack.Push(param);
+                                    }
                                 }
                             }
                             break;
@@ -1255,16 +1472,26 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                                     ParameterDefinition parameter => parameter.Index + (method.Value.Item3.HasThis ? 1 : 0),
                                     _ => Convert.ToInt32(instr.Operand)
                                 };
-                                var argument = method.Value.Item1.GetParam((uint)index);
-                                stack.Push(argument);
                                 if (method.Value.Item3.HasThis && index == 0)
+                                {
+                                    var argument = method.Value.Item1.GetParam((uint)index);
+                                    stack.Push(argument);
                                     TrackType(argument, method.Value.Item3.DeclaringType);
+                                }
                                 else
                                 {
                                     var parameterIndex = index - (method.Value.Item3.HasThis ? 1 : 0);
                                     if (parameterIndex >= 0 && parameterIndex < method.Value.Item3.Parameters.Count)
-                                        TrackType(argument, SubstituteGenericParameter(
-                                            method.Value.Item3.Parameters[parameterIndex].ParameterType, method.Value.Item3));
+                                    {
+                                        var parameterType = SubstituteGenericParameter(
+                                            method.Value.Item3.Parameters[parameterIndex].ParameterType, method.Value.Item3);
+                                        var argument = local.TryGetValue(-1 - index, out var storage)
+                                            ? builder.BuildLoad2(storage.Item2, storage.Item1)
+                                            : method.Value.Item1.GetParam((uint)index);
+                                        argument = PromoteSmallIntegerLoad(builder, argument, parameterType);
+                                        TrackType(argument, parameterType);
+                                        stack.Push(argument);
+                                    }
                                 }
                             }
                             break;
@@ -1277,10 +1504,14 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                                     _ => Convert.ToInt32(instr.Operand)
                                 };
                                 var value = stack.Pop();
+                                var parameterIndex = index - (method.Value.Item3.HasThis ? 1 : 0);
+                                var parameterType = SubstituteGenericParameter(
+                                    method.Value.Item3.Parameters[parameterIndex].ParameterType, method.Value.Item3);
+                                var llvmType = GetLLVMTypeRef(parameterType);
                                 local[-1 - index] = local.TryGetValue(-1 - index, out var arg)
                                     ? arg
-                                    : new(entryBuilder.BuildAlloca(value.TypeOf), value.TypeOf);
-                                builder.BuildStore(value, local[-1 - index].Item1);
+                                    : new(entryBuilder.BuildAlloca(llvmType), llvmType);
+                                builder.BuildStore(ConvertValue(builder, value, llvmType), local[-1 - index].Item1);
                             }
                             break;
                         case Code.Ldelem_I1:
@@ -1297,6 +1528,9 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                             {
                                 var index = stack.Pop();
                                 var array = stack.Pop();
+                                var elementTypeReference = instr.OpCode.Code == Code.Ldelem_Any
+                                    ? SubstituteGenericParameter((TypeReference)instr.Operand, method.Value.Item3)
+                                    : null;
                                 var type = instr.OpCode.Code switch
                                 {
                                     Code.Ldelem_I1 => LLVMTypeRef.Int8,
@@ -1309,13 +1543,25 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                                     Code.Ldelem_R4 => LLVMTypeRef.Float,
                                     Code.Ldelem_R8 => LLVMTypeRef.Double,
                                     Code.Ldelem_Ref => LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0),
-                                    Code.Ldelem_Any => GetLLVMTypeRef(SubstituteGenericParameter((TypeReference)instr.Operand, method.Value.Item3)),
+                                    Code.Ldelem_Any => GetLLVMTypeRef(elementTypeReference!),
                                     _ => throw new InvalidOperationException(instr.OpCode.Code.ToString())
                                 };
-                                var gep = GetArrayElementAddress(builder, array, index, type);
-                                var element = builder.BuildLoad2(type, gep);
+                                var gep = GetArrayElementAddress(builder, array, index, type,
+                                    elementTypeReference is null ? null : GetTypeSize(elementTypeReference));
+                                LLVMValueRef element;
+                                if (elementTypeReference is not null && IsValueType(elementTypeReference))
+                                {
+                                    var storage = CreateLocalStorage(entryBuilder, elementTypeReference);
+                                    element = builder.BuildLoad2(storage.Item2, storage.Item1);
+                                    CopyValue(builder, element, gep, GetTypeSize(elementTypeReference));
+                                }
+                                else
+                                    element = builder.BuildLoad2(type, gep);
                                 if (instr.OpCode.Code is Code.Ldelem_I1 or Code.Ldelem_U1 or Code.Ldelem_I2 or Code.Ldelem_U2)
-                                    element = ConvertValue(builder, element, sizeType, instr.OpCode.Code is Code.Ldelem_I1 or Code.Ldelem_I2);
+                                    element = ConvertValue(builder, element, LLVMTypeRef.Int32,
+                                        instr.OpCode.Code is Code.Ldelem_I1 or Code.Ldelem_I2);
+                                else if (elementTypeReference is not null)
+                                    element = PromoteSmallIntegerLoad(builder, element, elementTypeReference);
                                 stack.Push(element);
                                 if (instr.OpCode.Code == Code.Ldelem_Any)
                                     TrackType(element, SubstituteGenericParameter((TypeReference)instr.Operand, method.Value.Item3));
@@ -1338,13 +1584,16 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                                     Code.Ldloc_S => ((VariableDefinition)instr.Operand).Index,
                                     _ => throw new InvalidOperationException(instr.OpCode.Code.ToString())
                                 };
-                                var load = builder.BuildLoad2(local[offset].Item2, local[offset].Item1);
-                                stack.Push(load);
                                 var localType = GetMethodVariableType(method.Value.Item3, offset);
+                                var load = builder.BuildLoad2(local[offset].Item2, local[offset].Item1);
                                 if (localType is not null)
+                                {
+                                    load = PromoteSmallIntegerLoad(builder, load, localType);
                                     TrackType(load, localRuntimeTypes.TryGetValue(offset, out var runtimeType)
                                         ? runtimeType
                                         : localType);
+                                }
+                                stack.Push(load);
                             }
                             break;
                         case Code.Ldc_I4_M1:
@@ -1385,7 +1634,7 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                                 var index = stack.Pop();
                                 var array = stack.Pop();
                                 var elementType = SubstituteGenericParameter((TypeReference)instr.Operand, method.Value.Item3);
-                                var address = GetArrayElementAddress(builder, array, index, GetLLVMTypeRef(elementType));
+                                var address = GetArrayElementAddress(builder, array, index, GetLLVMTypeRef(elementType), GetTypeSize(elementType));
                                 stack.Push(address);
                                 TrackType(address, new ByReferenceType(elementType));
                             }
@@ -1470,6 +1719,9 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                                     _ => throw new InvalidOperationException(instr.OpCode.Code.ToString())
                                 };
                                 var value = builder.BuildLoad2(type, address);
+                                if (instr.OpCode.Code is Code.Ldind_I1 or Code.Ldind_U1 or Code.Ldind_I2 or Code.Ldind_U2)
+                                    value = ConvertValue(builder, value, LLVMTypeRef.Int32,
+                                        instr.OpCode.Code is Code.Ldind_I1 or Code.Ldind_I2);
                                 stack.Push(value);
                                 if (indirectType is not null)
                                     TrackType(value, indirectType);
@@ -1667,23 +1919,61 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                             break;
                         case Code.Ldtoken:
                             {
-                                var tokenType = SubstituteGenericParameter((TypeReference)instr.Operand, method.Value.Item3);
-                                var type = localTypes["System.Type"];
-                                var typeObject = builder.BuildCall2(runtimeMethods[RuntimeMethod.Newobj].Item2,
-                                    runtimeMethods[RuntimeMethod.Newobj].Item1,
-                                    [LLVMValueRef.CreateConstInt(sizeType, (ulong)GetTypeDefinitionSize(type), false)]);
-                                InitializeRuntimeType(builder, typeObject, type);
-                                StoreField(builder, typeObject, type.Fields.First(field => field.Name == "Name"), BuildStringValue(builder, tokenType.Name));
-                                StoreField(builder, typeObject, type.Fields.First(field => field.Name == "Namespace"),
-                                    string.IsNullOrEmpty(tokenType.Namespace) ? LLVMValueRef.CreateConstNull(LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0)) : BuildStringValue(builder, tokenType.Namespace));
-                                StoreField(builder, typeObject, type.Fields.First(field => field.Name == "FullName"), BuildStringValue(builder, tokenType.FullName.Replace('/', '+')));
-                                stack.Push(typeObject);
+                                if (instr.Operand is TypeReference tokenType)
+                                {
+                                    tokenType = SubstituteGenericParameter(tokenType, method.Value.Item3);
+                                    var type = localTypes["System.Type"];
+                                    var typeObject = BuildAllocation(builder, GetTypeDefinitionSize(type));
+                                    InitializeRuntimeType(builder, typeObject, type);
+                                    StoreField(builder, typeObject, type.Fields.First(field => field.Name == "Name"), BuildStringValue(builder, tokenType.Name));
+                                    StoreField(builder, typeObject, type.Fields.First(field => field.Name == "Namespace"),
+                                        string.IsNullOrEmpty(tokenType.Namespace) ? LLVMValueRef.CreateConstNull(LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0)) : BuildStringValue(builder, tokenType.Namespace));
+                                    StoreField(builder, typeObject, type.Fields.First(field => field.Name == "FullName"), BuildStringValue(builder, tokenType.FullName.Replace('/', '+')));
+                                    stack.Push(typeObject);
+                                }
+                                else
+                                    stack.Push(LLVMValueRef.CreateConstNull(LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0)));
                             }
                             break;
                         case Code.Box:
                             {
                                 var value = stack.Pop();
                                 var valueType = SubstituteGenericParameter((TypeReference)instr.Operand, method.Value.Item3);
+                                if (TryGetNullableElementType(valueType, out var nullableElementType))
+                                {
+                                    var nullableDefinition = valueType.Resolve() ??
+                                        throw new NotSupportedException($"Nullable type is not defined: {valueType.FullName}");
+                                    var hasValueField = nullableDefinition.Fields.First(field => field.Name == "_hasValue");
+                                    var valueField = nullableDefinition.Fields.First(field => field.Name == "_value");
+                                    var hasValue = builder.BuildLoad2(GetLLVMTypeRef(hasValueField.FieldType),
+                                        GetFieldAddress(builder, value, hasValueField, valueType));
+                                    var valueBlock = method.Value.Item1.AppendBasicBlock($"nullable.box.value.{nextVirtualDispatchId++}");
+                                    var nullBlock = method.Value.Item1.AppendBasicBlock($"nullable.box.null.{nextVirtualDispatchId++}");
+                                    var continuation = method.Value.Item1.AppendBasicBlock($"nullable.box.cont.{nextVirtualDispatchId++}");
+                                    var sourceBlock = builder.InsertBlock;
+                                    builder.BuildCondBr(builder.BuildICmp(LLVMIntPredicate.LLVMIntNE, hasValue,
+                                        LLVMValueRef.CreateConstNull(hasValue.TypeOf)), valueBlock, nullBlock);
+                                    terminatedBlocks.Add(sourceBlock);
+
+                                    builder.PositionAtEnd(valueBlock);
+                                    var nullableValueAddress = GetFieldAddress(builder, value, valueField, valueType);
+                                    var nullableValue = IsValueType(nullableElementType)
+                                        ? nullableValueAddress
+                                        : builder.BuildLoad2(GetLLVMTypeRef(nullableElementType), nullableValueAddress);
+                                    var nullableBox = BuildBoxedValue(builder, nullableValue, nullableElementType);
+                                    builder.BuildBr(continuation);
+
+                                    builder.PositionAtEnd(nullBlock);
+                                    var nullValue = LLVMValueRef.CreateConstNull(exceptionPointerType);
+                                    builder.BuildBr(continuation);
+
+                                    builder.PositionAtEnd(continuation);
+                                    var boxResult = builder.BuildPhi(exceptionPointerType, "nullable.box");
+                                    boxResult.AddIncoming([nullableBox, nullValue], [valueBlock, nullBlock], 2);
+                                    stack.Push(boxResult);
+                                    TrackType(boxResult, nullableElementType);
+                                    break;
+                                }
                                 if (IsManagedReferenceType(valueType))
                                 {
                                     var reference = ConvertValue(builder, value, exceptionPointerType);
@@ -1691,16 +1981,7 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                                     TrackType(reference, valueType);
                                     break;
                                 }
-                                var box = builder.BuildCall2(runtimeMethods[RuntimeMethod.Newobj].Item2, runtimeMethods[RuntimeMethod.Newobj].Item1,
-                                    [LLVMValueRef.CreateConstInt(sizeType, (ulong)Math.Max(1, GetTypeSize(valueType)), false)]);
-                                if (IsValueType(valueType) && value.TypeOf.Kind == LLVMTypeKind.LLVMPointerTypeKind)
-                                    CopyValue(builder, box, value, GetTypeSize(valueType));
-                                else
-                                {
-                                    var storage = builder.BuildAlloca(value.TypeOf);
-                                    builder.BuildStore(value, storage);
-                                    CopyValue(builder, box, storage, GetTypeSize(valueType));
-                                }
+                                var box = BuildBoxedValue(builder, value, valueType);
                                 stack.Push(box);
                                 TrackType(box, valueType);
                             }
@@ -1710,12 +1991,15 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                             {
                                 var value = stack.Pop();
                                 var valueType = SubstituteGenericParameter((TypeReference)instr.Operand, method.Value.Item3);
+                                var boxedValue = !IsManagedReferenceType(valueType) ? GetBoxedValueAddress(builder, value) : value;
                                 if (instr.OpCode.Code == Code.Unbox_Any && (valueType.MetadataType is MetadataType.Boolean or MetadataType.SByte or MetadataType.Byte or MetadataType.Char or MetadataType.Int16 or MetadataType.UInt16 or MetadataType.Int32 or MetadataType.UInt32 or MetadataType.Int64 or MetadataType.UInt64 or MetadataType.IntPtr or MetadataType.UIntPtr or MetadataType.Single or MetadataType.Double))
-                                    stack.Push(builder.BuildLoad2(GetLLVMTypeRef(valueType), value));
+                                    stack.Push(builder.BuildLoad2(GetLLVMTypeRef(valueType), boxedValue));
+                                else if (instr.OpCode.Code == Code.Unbox_Any && GetEnumUnderlyingType(valueType) is not null)
+                                    stack.Push(builder.BuildLoad2(GetLLVMTypeRef(valueType), boxedValue));
                                 else if (instr.OpCode.Code == Code.Unbox_Any && !IsValueType(valueType))
                                     stack.Push(ConvertValue(builder, value, GetLLVMTypeRef(valueType)));
                                 else
-                                    stack.Push(value);
+                                    stack.Push(boxedValue);
                             }
                             break;
                         case Code.Switch:
@@ -1849,7 +2133,11 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                                 var result = val1.TypeOf.Kind == LLVMTypeKind.LLVMPointerTypeKind
                                     ? builder.BuildGEP2(LLVMTypeRef.Int8, val1,
                                         [builder.BuildNeg(ConvertValue(builder, val2, sizeType, true))])
-                                    : builder.BuildSub(val1, val2);
+                                    : NormalizeBinaryOperands(builder, val1, val2) is var operands
+                                        ? IsFloatingValue(operands.Left)
+                                            ? builder.BuildFSub(operands.Left, operands.Right)
+                                            : builder.BuildSub(operands.Left, operands.Right)
+                                        : default;
                                 stack.Push(result);
                             }
                             break;
@@ -1863,7 +2151,11 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                                     ? builder.BuildGEP2(LLVMTypeRef.Int8, val1, [ConvertValue(builder, val2, sizeType, true)])
                                     : val2.TypeOf.Kind == LLVMTypeKind.LLVMPointerTypeKind
                                         ? builder.BuildGEP2(LLVMTypeRef.Int8, val2, [ConvertValue(builder, val1, sizeType, true)])
-                                        : builder.BuildAdd(val1, val2);
+                                        : NormalizeBinaryOperands(builder, val1, val2) is var operands
+                                            ? IsFloatingValue(operands.Left)
+                                                ? builder.BuildFAdd(operands.Left, operands.Right)
+                                                : builder.BuildAdd(operands.Left, operands.Right)
+                                            : default;
                                 stack.Push(result);
                             }
                             break;
@@ -1872,9 +2164,15 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                             {
                                 var val2 = stack.Pop();
                                 var val1 = stack.Pop();
-                                stack.Push(val1.TypeOf.Kind == LLVMTypeKind.LLVMPointerTypeKind
-                                    ? builder.BuildGEP2(LLVMTypeRef.Int8, val1, [builder.BuildNeg(ConvertValue(builder, val2, sizeType, true))])
-                                    : builder.BuildSub(val1, val2));
+                                if (val1.TypeOf.Kind == LLVMTypeKind.LLVMPointerTypeKind)
+                                    stack.Push(builder.BuildGEP2(LLVMTypeRef.Int8, val1, [builder.BuildNeg(ConvertValue(builder, val2, sizeType, true))]));
+                                else
+                                {
+                                    var operands = NormalizeBinaryOperands(builder, val1, val2);
+                                    stack.Push(IsFloatingValue(operands.Left)
+                                        ? builder.BuildFSub(operands.Left, operands.Right)
+                                        : builder.BuildSub(operands.Left, operands.Right));
+                                }
                             }
                             break;
                         case Code.Mul_Ovf:
@@ -1883,7 +2181,10 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                             {
                                 var val2 = stack.Pop();
                                 var val1 = stack.Pop();
-                                var result = builder.BuildMul(val1, val2);
+                                var operands = NormalizeBinaryOperands(builder, val1, val2);
+                                var result = IsFloatingValue(operands.Left)
+                                    ? builder.BuildFMul(operands.Left, operands.Right)
+                                    : builder.BuildMul(operands.Left, operands.Right);
                                 stack.Push(result);
                             }
                             break;
@@ -1891,7 +2192,10 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                             {
                                 var val2 = stack.Pop();
                                 var val1 = stack.Pop();
-                                var result = builder.BuildSDiv(val1, val2);
+                                var operands = NormalizeBinaryOperands(builder, val1, val2);
+                                var result = IsFloatingValue(operands.Left)
+                                    ? builder.BuildFDiv(operands.Left, operands.Right)
+                                    : builder.BuildSDiv(operands.Left, operands.Right);
                                 stack.Push(result);
                             }
                             break;
@@ -1899,7 +2203,10 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                             {
                                 var val2 = stack.Pop();
                                 var val1 = stack.Pop();
-                                stack.Push(builder.BuildUDiv(val1, val2));
+                                var operands = NormalizeBinaryOperands(builder, val1, val2);
+                                stack.Push(IsFloatingValue(operands.Left)
+                                    ? builder.BuildFDiv(operands.Left, operands.Right)
+                                    : builder.BuildUDiv(operands.Left, operands.Right));
                             }
                             break;
                         case Code.Rem:
@@ -1907,55 +2214,67 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                             {
                                 var val2 = stack.Pop();
                                 var val1 = stack.Pop();
-                                stack.Push(instr.OpCode.Code == Code.Rem
-                                    ? builder.BuildSRem(val1, val2)
-                                    : builder.BuildURem(val1, val2));
+                                var operands = NormalizeBinaryOperands(builder, val1, val2);
+                                stack.Push(IsFloatingValue(operands.Left)
+                                    ? builder.BuildFRem(operands.Left, operands.Right)
+                                    : instr.OpCode.Code == Code.Rem
+                                    ? builder.BuildSRem(operands.Left, operands.Right)
+                                    : builder.BuildURem(operands.Left, operands.Right));
                             }
                             break;
                         case Code.And:
                             {
                                 var val2 = stack.Pop();
                                 var val1 = stack.Pop();
-                                stack.Push(builder.BuildAnd(val1, val2));
+                                var operands = NormalizeBinaryOperands(builder, val1, val2);
+                                stack.Push(builder.BuildAnd(operands.Left, operands.Right));
                             }
                             break;
                         case Code.Or:
                             {
                                 var val2 = stack.Pop();
                                 var val1 = stack.Pop();
-                                stack.Push(builder.BuildOr(val1, val2));
+                                var operands = NormalizeBinaryOperands(builder, val1, val2);
+                                stack.Push(builder.BuildOr(operands.Left, operands.Right));
                             }
                             break;
                         case Code.Xor:
                             {
                                 var val2 = stack.Pop();
                                 var val1 = stack.Pop();
-                                stack.Push(builder.BuildXor(val1, val2));
+                                var operands = NormalizeBinaryOperands(builder, val1, val2);
+                                stack.Push(builder.BuildXor(operands.Left, operands.Right));
                             }
                             break;
                         case Code.Shl:
                             {
                                 var val2 = stack.Pop();
                                 var val1 = stack.Pop();
-                                stack.Push(builder.BuildShl(val1, val2));
+                                var operands = NormalizeBinaryOperands(builder, val1, val2);
+                                stack.Push(builder.BuildShl(operands.Left, operands.Right));
                             }
                             break;
                         case Code.Shr:
                             {
                                 var val2 = stack.Pop();
                                 var val1 = stack.Pop();
-                                stack.Push(builder.BuildAShr(val1, val2));
+                                var operands = NormalizeBinaryOperands(builder, val1, val2);
+                                stack.Push(builder.BuildAShr(operands.Left, operands.Right));
                             }
                             break;
                         case Code.Shr_Un:
                             {
                                 var val2 = stack.Pop();
                                 var val1 = stack.Pop();
-                                stack.Push(builder.BuildLShr(val1, val2));
+                                var operands = NormalizeBinaryOperands(builder, val1, val2);
+                                stack.Push(builder.BuildLShr(operands.Left, operands.Right));
                             }
                             break;
                         case Code.Neg:
-                            stack.Push(builder.BuildNeg(stack.Pop()));
+                            {
+                                var value = stack.Pop();
+                                stack.Push(IsFloatingValue(value) ? builder.BuildFNeg(value) : builder.BuildNeg(value));
+                            }
                             break;
                         case Code.Not:
                             stack.Push(builder.BuildNot(stack.Pop()));
@@ -2038,7 +2357,7 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                         continue;
                     builder.PositionAtEnd(block);
                     var returnType = SubstituteGenericParameter(method.Value.Item3.ReturnType, method.Value.Item3);
-                    if (returnType.MetadataType == MetadataType.Void)
+                    if (IsVoidType(returnType))
                         builder.BuildRetVoid();
                     else
                         builder.BuildRet(LLVMValueRef.CreateConstNull(GetLLVMTypeRef(returnType)));
@@ -2048,7 +2367,7 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
                 {
                     builder.PositionAtEnd(entry);
                     var returnType = SubstituteGenericParameter(method.Value.Item3.ReturnType, method.Value.Item3);
-                    if (returnType.MetadataType == MetadataType.Void)
+                    if (IsVoidType(returnType))
                         builder.BuildRetVoid();
                     else
                         builder.BuildRet(LLVMValueRef.CreateConstNull(GetLLVMTypeRef(returnType)));
@@ -2111,16 +2430,19 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
         return false;
     }
 
-    LLVMValueRef GetArrayElementAddress(LLVMBuilderRef builder, LLVMValueRef array, LLVMValueRef index, LLVMTypeRef elementType)
+    LLVMValueRef GetArrayElementAddress(LLVMBuilderRef builder, LLVMValueRef array, LLVMValueRef index,
+        LLVMTypeRef elementType, int? elementSize = null)
     {
         var nativeIndex = ConvertValue(builder, index, sizeType, false);
-        var elementOffset = builder.BuildMul(nativeIndex, LLVMValueRef.CreateConstInt(sizeType, (ulong)GetLLVMTypeSize(elementType), false));
+        var elementOffset = builder.BuildMul(nativeIndex,
+            LLVMValueRef.CreateConstInt(sizeType, elementSize.HasValue ? (ulong)elementSize.Value : GetLLVMTypeSize(elementType), false));
         var dataOffset = LLVMValueRef.CreateConstInt(sizeType, (ulong)GetTypeDefinitionSize(GetArrayLengthField().DeclaringType), false);
         var byteOffset = builder.BuildAdd(dataOffset, elementOffset);
         return builder.BuildGEP2(LLVMTypeRef.Int8, array, [byteOffset]);
     }
 
-    LLVMValueRef GetMultiArrayElementAddress(LLVMBuilderRef builder, LLVMValueRef array, LLVMValueRef[] indices, LLVMTypeRef elementType)
+    LLVMValueRef GetMultiArrayElementAddress(LLVMBuilderRef builder, LLVMValueRef array, LLVMValueRef[] indices,
+        LLVMTypeRef elementType, int? elementSize = null)
     {
         var elementIndex = LLVMValueRef.CreateConstInt(sizeType, 0, false);
         for (int i = 0; i < indices.Length; i++)
@@ -2129,18 +2451,18 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
             var length = builder.BuildLoad2(sizeType, GetFieldAddress(builder, array, lengthField));
             elementIndex = builder.BuildAdd(builder.BuildMul(elementIndex, length), ConvertValue(builder, indices[i], sizeType, false));
         }
-        var elementOffset = builder.BuildMul(elementIndex, LLVMValueRef.CreateConstInt(sizeType, (ulong)GetLLVMTypeSize(elementType), false));
+        var elementOffset = builder.BuildMul(elementIndex,
+            LLVMValueRef.CreateConstInt(sizeType, elementSize.HasValue ? (ulong)elementSize.Value : GetLLVMTypeSize(elementType), false));
         var dataOffset = LLVMValueRef.CreateConstInt(sizeType, (ulong)GetTypeDefinitionSize(localTypes["System.Array"]), false);
         return builder.BuildGEP2(LLVMTypeRef.Int8, array, [builder.BuildAdd(dataOffset, elementOffset)]);
     }
 
     LLVMValueRef BuildStringValue(LLVMBuilderRef builder, string value)
     {
-        var array = builder.BuildCall2(runtimeMethods[RuntimeMethod.Newarr].Item2,
-            runtimeMethods[RuntimeMethod.Newarr].Item1,
-            [LLVMValueRef.CreateConstInt(sizeType, (ulong)(value.Length + 1), false),
-             LLVMValueRef.CreateConstInt(sizeType, (ulong)GetMetadataTypeSize(MetadataType.Char), false),
-             LLVMValueRef.CreateConstInt(sizeType, (ulong)GetTypeDefinitionSize(localTypes["System.Array"]), false)]);
+        var arrayBaseSize = GetTypeDefinitionSize(localTypes["System.Array"]);
+        var array = builder.BuildCall2(allocationType, allocationFunction,
+            [LLVMValueRef.CreateConstInt(sizeType, 1, false),
+             LLVMValueRef.CreateConstInt(sizeType, (ulong)(arrayBaseSize + (value.Length + 1) * GetMetadataTypeSize(MetadataType.Char)), false)]);
         StoreField(builder, array, GetArrayLengthField(), LLVMValueRef.CreateConstInt(sizeType, (ulong)value.Length, false));
         for (int i = 0; i < value.Length; i++)
         {
@@ -2148,14 +2470,47 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
             builder.BuildStore(LLVMValueRef.CreateConstInt(LLVMTypeRef.Int16, value[i], false), address);
         }
         var stringType = localTypes["System.String"];
-        var stringObject = builder.BuildCall2(runtimeMethods[RuntimeMethod.Newobj].Item2,
-            runtimeMethods[RuntimeMethod.Newobj].Item1,
-            [LLVMValueRef.CreateConstInt(sizeType, (ulong)GetTypeDefinitionSize(stringType), false)]);
+        var stringObject = BuildAllocation(builder, GetTypeDefinitionSize(stringType));
         InitializeRuntimeType(builder, stringObject, stringType);
         var constructor = GetRegisteredMethod(stringConstructor) ??
             throw new NotSupportedException($"Method is not defined in the input module: {stringConstructor.FullName}");
         builder.BuildCall2(constructor.Item2, constructor.Item1, [stringObject, array]);
         return stringObject;
+    }
+
+    LLVMValueRef BuildAllocation(LLVMBuilderRef builder, int size)
+    {
+        return builder.BuildCall2(allocationType, allocationFunction,
+            [LLVMValueRef.CreateConstInt(sizeType, 1, false),
+             LLVMValueRef.CreateConstInt(sizeType, (ulong)Math.Max(1, size), false)]);
+    }
+
+    LLVMValueRef BuildBoxedValue(LLVMBuilderRef builder, LLVMValueRef value, TypeReference valueType)
+    {
+        var box = BuildAllocation(builder, GetBoxedObjectHeaderSize() + Math.Max(1, GetTypeSize(valueType)));
+        InitializeBoxedRuntimeType(builder, box, valueType);
+        var boxedValue = GetBoxedValueAddress(builder, box);
+        if (IsValueType(valueType) && value.TypeOf.Kind == LLVMTypeKind.LLVMPointerTypeKind)
+            CopyValue(builder, boxedValue, value, GetTypeSize(valueType));
+        else
+        {
+            var storage = builder.BuildAlloca(value.TypeOf);
+            builder.BuildStore(value, storage);
+            CopyValue(builder, boxedValue, storage, GetTypeSize(valueType));
+        }
+        return box;
+    }
+
+    bool TryGetNullableElementType(TypeReference type, out TypeReference elementType)
+    {
+        if (type is GenericInstanceType generic && generic.ElementType.Namespace == "System" &&
+            generic.ElementType.Name == "Nullable`1" && generic.GenericArguments.Count == 1)
+        {
+            elementType = generic.GenericArguments[0];
+            return true;
+        }
+        elementType = type;
+        return false;
     }
 
     bool IsLPWStrParameter(MethodReference method, int parameterIndex)
@@ -2268,6 +2623,25 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
         StoreField(builder, obj, GetObjectMethodTableField(),
             LLVMValueRef.CreateConstInt(sizeType, GetRuntimeTypeId(type), false));
         StoreField(builder, obj, GetObjectGCDescriptorField(),
+            LLVMValueRef.CreateConstPtrToInt(GetGCDescriptor(type), sizeType));
+    }
+
+    int GetBoxedObjectHeaderSize()
+    {
+        return GetTypeDefinitionSize(localTypes["System.Object"]);
+    }
+
+    LLVMValueRef GetBoxedValueAddress(LLVMBuilderRef builder, LLVMValueRef box)
+    {
+        return builder.BuildGEP2(LLVMTypeRef.Int8, box,
+            [LLVMValueRef.CreateConstInt(sizeType, (ulong)GetBoxedObjectHeaderSize(), false)]);
+    }
+
+    void InitializeBoxedRuntimeType(LLVMBuilderRef builder, LLVMValueRef box, TypeReference type)
+    {
+        StoreField(builder, box, GetObjectMethodTableField(),
+            LLVMValueRef.CreateConstInt(sizeType, GetRuntimeTypeId(type), false));
+        StoreField(builder, box, GetObjectGCDescriptorField(),
             LLVMValueRef.CreateConstPtrToInt(GetGCDescriptor(type), sizeType));
     }
 
@@ -2443,6 +2817,8 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
         var targetDefinition = targetType.Resolve();
         if (targetDefinition is null)
             return false;
+        if (runtimeType.IsValueType && targetDefinition.FullName is "System.Object" or "System.ValueType")
+            return true;
         if (targetDefinition.IsInterface)
             return ImplementsInterface(runtimeType, targetType);
         for (TypeReference? current = runtimeType; current is not null; current = GetClosedBaseType(current))
@@ -2458,7 +2834,7 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
     {
         var implementations = new List<(TypeDefinition RuntimeType, MethodReference Implementation)>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var type in localTypes.Values.Where(candidate => !candidate.IsInterface && !candidate.IsValueType)
+        foreach (var type in localTypes.Values.Where(candidate => !candidate.IsInterface)
                      .OrderByDescending(GetTypeDepth))
         {
             if (!IsRuntimeTypeCompatible(type, contractType))
@@ -2531,6 +2907,15 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
         if (type is GenericParameter)
             return sizeType;
         return GetLLVMTypeRefFromMetadataType(type.MetadataType);
+    }
+
+    bool IsVoidType(TypeReference type)
+    {
+        if (type is RequiredModifierType requiredModifier)
+            return IsVoidType(requiredModifier.ElementType);
+        if (type is OptionalModifierType optionalModifier)
+            return IsVoidType(optionalModifier.ElementType);
+        return type.MetadataType == MetadataType.Void;
     }
 
     TypeReference? GetEnumUnderlyingType(TypeReference type)
@@ -2968,6 +3353,59 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
         if (source.Kind == LLVMTypeKind.LLVMPointerTypeKind && target.Kind == LLVMTypeKind.LLVMIntegerTypeKind)
             return builder.BuildPtrToInt(value, target);
         return value;
+    }
+
+    LLVMValueRef PromoteSmallIntegerLoad(LLVMBuilderRef builder, LLVMValueRef value, TypeReference type)
+    {
+        while (type is RequiredModifierType or OptionalModifierType or PinnedType)
+        {
+            type = type switch
+            {
+                RequiredModifierType requiredModifier => requiredModifier.ElementType,
+                OptionalModifierType optionalModifier => optionalModifier.ElementType,
+                PinnedType pinned => pinned.ElementType,
+                _ => type
+            };
+        }
+
+        type = GetEnumUnderlyingType(type) ?? type;
+        return type.MetadataType switch
+        {
+            MetadataType.SByte or MetadataType.Int16 => ConvertValue(builder, value, LLVMTypeRef.Int32),
+            MetadataType.Boolean or MetadataType.Byte or MetadataType.Char or MetadataType.UInt16 =>
+                ConvertValue(builder, value, LLVMTypeRef.Int32, false),
+            _ => value
+        };
+    }
+
+    (LLVMValueRef Left, LLVMValueRef Right) NormalizeBinaryOperands(LLVMBuilderRef builder, LLVMValueRef left, LLVMValueRef right)
+    {
+        if (left.TypeOf.Equals(right.TypeOf))
+            return (left, right);
+
+        var leftType = left.TypeOf;
+        var rightType = right.TypeOf;
+        if (leftType.Kind == LLVMTypeKind.LLVMIntegerTypeKind && rightType.Kind == LLVMTypeKind.LLVMIntegerTypeKind)
+        {
+            var target = leftType.IntWidth >= rightType.IntWidth ? leftType : rightType;
+            return (ConvertValue(builder, left, target), ConvertValue(builder, right, target));
+        }
+
+        if (leftType.Kind is LLVMTypeKind.LLVMFloatTypeKind or LLVMTypeKind.LLVMDoubleTypeKind ||
+            rightType.Kind is LLVMTypeKind.LLVMFloatTypeKind or LLVMTypeKind.LLVMDoubleTypeKind)
+        {
+            var target = leftType.Kind == LLVMTypeKind.LLVMDoubleTypeKind || rightType.Kind == LLVMTypeKind.LLVMDoubleTypeKind
+                ? LLVMTypeRef.Double
+                : LLVMTypeRef.Float;
+            return (ConvertValue(builder, left, target), ConvertValue(builder, right, target));
+        }
+
+        return (left, right);
+    }
+
+    bool IsFloatingValue(LLVMValueRef value)
+    {
+        return value.TypeOf.Kind is LLVMTypeKind.LLVMFloatTypeKind or LLVMTypeKind.LLVMDoubleTypeKind;
     }
 
     LLVMValueRef BuildComparison(LLVMBuilderRef builder, Code code, LLVMValueRef left, LLVMValueRef right)
@@ -3486,12 +3924,22 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
             : '_').ToArray());
     }
 
-    string GetFriendlyFieldName(FieldReference field)
+    Tuple<LLVMValueRef, LLVMTypeRef> GetStaticField(FieldReference field, MethodReference? context = null)
     {
-        return $"{GetFriendlyTypeName(field.DeclaringType)}_{SanitizeSymbolPart(field.Name)}";
+        var declaringType = context is null ? field.DeclaringType : ResolveGenericType(field.DeclaringType, context);
+        var fieldName = $"{GetFriendlyTypeName(declaringType)}_{SanitizeSymbolPart(field.Name)}";
+        if (staticFields.TryGetValue(fieldName, out var existing))
+            return existing;
+        var fieldType = GetLLVMTypeRef(SubstituteFieldType(field, context));
+        var fieldValue = module.AddGlobal(fieldType, fieldName);
+        fieldValue.Initializer = LLVMValueRef.CreateConstNull(fieldType);
+        var result = new Tuple<LLVMValueRef, LLVMTypeRef>(fieldValue, fieldType);
+        staticFields.Add(fieldName, result);
+        return result;
     }
 
-    void RegisterMethodFunction(LLVMModuleRef module, MethodReference method, Collection<Instruction>? instructions)
+    void RegisterMethodFunction(LLVMModuleRef module, MethodReference method, Collection<Instruction>? instructions,
+        string? symbolName = null)
     {
         if (method.DeclaringType is ArrayType array && array.Rank > 1 &&
             method.Name is ".ctor" or "Get" or "Set")
@@ -3511,7 +3959,7 @@ var setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
         }
 
         var funcType = CreateLLVMFunction(module, method);
-        var funcValue = module.AddFunction(friendlyName, funcType);
+        var funcValue = module.AddFunction(symbolName ?? friendlyName, funcType);
         moduleMethods.Add(friendlyName, new(funcValue, funcType, method, instructions));
     }
 }
@@ -3522,12 +3970,6 @@ if (!module.TryVerify(LLVMVerifierFailureAction.LLVMReturnStatusAction, out var 
     throw new InvalidOperationException(verificationError);
 
 machine.EmitToFile(module, $"{Path.GetFileNameWithoutExtension(fileName)}.obj", LLVMCodeGenFileType.LLVMObjectFile);
-
-enum RuntimeMethod
-{
-    Newobj,
-    Newarr
-}
 
 sealed class ExceptionRegion
 {

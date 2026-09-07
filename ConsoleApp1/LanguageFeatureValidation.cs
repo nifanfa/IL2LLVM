@@ -30,6 +30,15 @@ public static partial class LanguageFeatureValidation
         Value,
     }
 
+    [Flags]
+    private enum FeatureFlags : ushort
+    {
+        None = 0,
+        Read = 1,
+        Write = 2,
+        Execute = 4,
+    }
+
     private interface IFeatureValue
     {
         int Value { get; }
@@ -43,6 +52,21 @@ public static partial class LanguageFeatureValidation
     private interface IGenericFeature<T>
     {
         T GetValue();
+    }
+
+    private interface IBoxingMutation
+    {
+        int Increment();
+    }
+
+    private interface IHierarchyFeature
+    {
+        int EvaluateHierarchy();
+    }
+
+    private interface ISecondaryFeature
+    {
+        int SecondaryValue { get; }
     }
 
     private readonly struct FeatureValue : IFeatureValue
@@ -62,10 +86,65 @@ public static partial class LanguageFeatureValidation
             => new FeatureValue(left._value + right._value);
     }
 
+    private struct BoxingValue : IFeatureValue, IBoxingMutation
+    {
+        public int Number;
+        public short Offset;
+        public object Reference;
+
+        public int Value => Number + Offset;
+
+        public int Increment() => ++Number;
+    }
+
     private struct PointerValues
     {
         public int Integer;
         public short Short;
+    }
+
+    private struct Coordinate
+    {
+        public int X;
+        public int Y;
+
+        public Coordinate(int x, int y)
+        {
+            X = x;
+            Y = y;
+        }
+
+        public int Sum() => X + Y;
+    }
+
+    private struct NestedValue
+    {
+        public Coordinate Coordinate;
+        public FeatureValue Feature;
+        public long Wide;
+        public byte Tag;
+
+        public NestedValue(Coordinate coordinate, FeatureValue feature, long wide, byte tag)
+        {
+            Coordinate = coordinate;
+            Feature = feature;
+            Wide = wide;
+            Tag = tag;
+        }
+
+        public int Total => Coordinate.Sum() + Feature.Value + (int)Wide + Tag;
+    }
+
+    private struct GenericPair<TFirst, TSecond>
+    {
+        public TFirst First;
+        public TSecond Second;
+
+        public GenericPair(TFirst first, TSecond second)
+        {
+            First = first;
+            Second = second;
+        }
     }
 
     private abstract class FeatureBase
@@ -91,6 +170,96 @@ public static partial class LanguageFeatureValidation
         public override int Evaluate() => base.Evaluate() + 1;
 
         public void RaiseChanged() => Changed?.Invoke();
+    }
+
+    private class HierarchyRoot
+    {
+        private readonly int _rootValue;
+        protected readonly object RootReference;
+
+        public HierarchyRoot(int rootValue, object rootReference)
+        {
+            _rootValue = rootValue;
+            RootReference = rootReference;
+        }
+
+        public virtual int EvaluateHierarchy() => _rootValue;
+        public object GetRootReference() => RootReference;
+    }
+
+    private class HierarchyMiddle : HierarchyRoot
+    {
+        private readonly long _middleValue;
+
+        public HierarchyMiddle(int rootValue, long middleValue, object rootReference)
+            : base(rootValue, rootReference)
+        {
+            _middleValue = middleValue;
+        }
+
+        public override int EvaluateHierarchy() => base.EvaluateHierarchy() + (int)_middleValue;
+    }
+
+    private sealed class HierarchyLeaf : HierarchyMiddle, IHierarchyFeature, ISecondaryFeature
+    {
+        private readonly byte _leafValue;
+        private readonly object _leafReference;
+
+        public HierarchyLeaf(int rootValue, long middleValue, byte leafValue, object rootReference, object leafReference)
+            : base(rootValue, middleValue, rootReference)
+        {
+            _leafValue = leafValue;
+            _leafReference = leafReference;
+        }
+
+        public override int EvaluateHierarchy() => base.EvaluateHierarchy() + _leafValue;
+        int IHierarchyFeature.EvaluateHierarchy() => EvaluateHierarchy() + 1;
+        public int SecondaryValue => _leafValue;
+        public object GetLeafReference() => _leafReference;
+    }
+
+    private sealed class AlternateHierarchyFeature : IHierarchyFeature, ISecondaryFeature
+    {
+        private readonly int _value;
+
+        public AlternateHierarchyFeature(int value)
+        {
+            _value = value;
+        }
+
+        public int EvaluateHierarchy() => _value * 2;
+        public int SecondaryValue => _value;
+    }
+
+    private sealed class GenericContainer<T>
+    {
+        public static int InstanceCount;
+        public T Value;
+
+        public GenericContainer(T value)
+        {
+            Value = value;
+            InstanceCount++;
+        }
+
+        public T Replace(T value)
+        {
+            T previous = Value;
+            Value = value;
+            return previous;
+        }
+    }
+
+    private sealed class PrimaryFeature(int value)
+    {
+        public int Value { get; } = value;
+        public int Double() => value * 2;
+    }
+
+    private sealed class RequiredFeature
+    {
+        public required int Value { get; init; }
+        public required string Name { get; init; }
     }
 
     private sealed class InitializerFeature : IExplicitFeature
@@ -150,7 +319,14 @@ public static partial class LanguageFeatureValidation
         for (int index = 0; index < values.Length; index++)
             list.Add(values[index]);
         VerifyTypes(values, list);
+        VerifyNumericOperators();
+        VerifyStrings();
         VerifyObjectAndGenericFeatures(values);
+        VerifyInheritanceAndInterfaces();
+        VerifyGenericFeatures();
+        VerifyBoxing();
+        VerifyStructures();
+        VerifyLatestSyntax();
         VerifyModernLanguageFeatures(values);
         VerifyArrays();
         VerifyDelegatesAndLinq(values);
@@ -241,6 +417,84 @@ public static partial class LanguageFeatureValidation
             Fail("default or collection");
     }
 
+    private static void VerifyNumericOperators()
+    {
+        int left = RuntimeValue(42);
+        int right = RuntimeValue(5);
+        if (left + right != RuntimeValue(47) || left - right != RuntimeValue(37) ||
+            left * right != RuntimeValue(210) || left / right != RuntimeValue(8) ||
+            left % right != RuntimeValue(2) || -right != RuntimeValue(-5) ||
+            ~right != RuntimeValue(-6) || (left & right) != 0 ||
+            (left | right) != RuntimeValue(47) || (left ^ right) != RuntimeValue(47) ||
+            (right << 3) != RuntimeValue(40) || (left >> 1) != RuntimeValue(21))
+            Fail("integer arithmetic or bitwise operators");
+
+        uint unsigned = 0xf0000000u;
+        ulong wideUnsigned = 0xf000000000000000ul;
+        long wideSigned = RuntimeValue(-81);
+        if ((unsigned >> RuntimeValue(28)) != RuntimeValue(15) || unsigned <= int.MaxValue ||
+            (wideUnsigned >> RuntimeValue(60)) != (ulong)RuntimeValue(15) ||
+            wideSigned / RuntimeValue(9) != RuntimeValue(-9) ||
+            wideSigned % RuntimeValue(10) != RuntimeValue(-1))
+            Fail("signed or unsigned arithmetic");
+
+        sbyte signedByte = (sbyte)RuntimeValue(-120);
+        byte unsignedByte = (byte)RuntimeValue(250);
+        short signedShort = (short)RuntimeValue(-30000);
+        ushort unsignedShort = (ushort)RuntimeValue(60000);
+        byte wrappedByte = unchecked((byte)(unsignedByte + RuntimeValue(10)));
+        uint widenedSigned = unchecked((uint)signedByte);
+        if (signedByte != -120 || unsignedByte != 250 || signedShort != -30000 ||
+            unsignedShort != 60000 || wrappedByte != 4 || widenedSigned != 0xffffff88u ||
+            (char)RuntimeValue(0x03a9) != 'Ω')
+            Fail("numeric conversions");
+
+        float single = RuntimeValue(15) / 2.0f;
+        double precision = RuntimeValue(22) / 4.0;
+        if (single != 7.5f || precision != 5.5 || single <= 7.0f || precision >= 6.0)
+            Fail("floating point arithmetic");
+
+        nint native = RuntimeValue(12);
+        nuint nativeUnsigned = (nuint)RuntimeValue(13);
+        native++;
+        --nativeUnsigned;
+        if (native != RuntimeValue(13) || nativeUnsigned != (nuint)RuntimeValue(12))
+            Fail("native integer arithmetic");
+
+        s_volatileValue = 0;
+        bool skippedAnd = false && SetVolatileAndReturnTrue();
+        bool skippedOr = true || SetVolatileAndReturnTrue();
+        bool evaluated = true && SetVolatileAndReturnTrue();
+        if (skippedAnd || !skippedOr || !evaluated || s_volatileValue != RuntimeValue(1))
+            Fail("short circuit boolean operators");
+    }
+
+    private static void VerifyStrings()
+    {
+        string unicode = "汉字Ω";
+        string combined = "prefix-" + unicode + "-suffix";
+        string padded = "  value  ";
+        string[] parts = "one,two,three".Split(',');
+        string joined = string.Join("|", parts);
+        string empty = string.Empty;
+
+        if (unicode.Length != RuntimeValue(3) || unicode[0] != '汉' || unicode[2] != 'Ω' ||
+            combined.Length != RuntimeValue(17) || !combined.StartsWith("prefix-") ||
+            !combined.EndsWith("-suffix") || combined.IndexOf(unicode) != RuntimeValue(7) ||
+            combined.IndexOf('Ω') != RuntimeValue(9))
+            Fail("unicode or string search");
+
+        if (padded.Trim() != "value" || "abcabc".Replace('b', 'x') != "axcaxc" ||
+            combined.Substring(RuntimeValue(7), RuntimeValue(3)) != unicode ||
+            parts.Length != RuntimeValue(3) || parts[1] != "two" || joined != "one|two|three" ||
+            !string.IsNullOrEmpty(empty) || !string.IsNullOrEmpty(null) || string.IsNullOrEmpty("x"))
+            Fail("string operations");
+
+        if (RuntimeValue(-123).ToString() != "-123" || ((uint)RuntimeValue(456)).ToString() != "456" ||
+            true.ToString() != "True" || 'Z'.ToString() != "Z")
+            Fail("primitive formatting");
+    }
+
     private static void VerifyObjectAndGenericFeatures(int[] values)
     {
         FeatureValue value = values[0];
@@ -267,6 +521,192 @@ public static partial class LanguageFeatureValidation
             ReadGenericValue(objectReader.GetValue()) != RuntimeValue(5) ||
             PreserveReference(feature) != feature)
             Fail("generic constraint or interface dispatch");
+    }
+
+    private static void VerifyInheritanceAndInterfaces()
+    {
+        object rootReference = new object();
+        object leafReference = new object();
+        HierarchyLeaf leaf = new HierarchyLeaf(
+            RuntimeValue(1), RuntimeValue(2), (byte)RuntimeValue(3), rootReference, leafReference);
+        HierarchyRoot root = leaf;
+        HierarchyMiddle middle = leaf;
+        IHierarchyFeature first = leaf;
+        IHierarchyFeature second = new AlternateHierarchyFeature(RuntimeValue(4));
+        IHierarchyFeature[] implementations = new IHierarchyFeature[] { first, second };
+        int total = 0;
+        for (int index = 0; index < implementations.Length; index++)
+            total += implementations[index].EvaluateHierarchy();
+
+        if (root.EvaluateHierarchy() != RuntimeValue(6) || middle.EvaluateHierarchy() != RuntimeValue(6) ||
+            first.EvaluateHierarchy() != RuntimeValue(7) || second.EvaluateHierarchy() != RuntimeValue(8) ||
+            total != RuntimeValue(15) || ((ISecondaryFeature)leaf).SecondaryValue != RuntimeValue(3) ||
+            root.GetRootReference() != rootReference || leaf.GetLeafReference() != leafReference)
+            Fail("multi-level inheritance or interface dispatch");
+
+        object boxedLeaf = HideObject(leaf);
+        object unrelated = HideObject(new object());
+        if (!(boxedLeaf is HierarchyRoot) || !(boxedLeaf is IHierarchyFeature) ||
+            boxedLeaf is FeatureObject || unrelated is IHierarchyFeature ||
+            boxedLeaf as HierarchyLeaf != leaf || unrelated as HierarchyLeaf != null ||
+            null is HierarchyLeaf)
+            Fail("runtime type tests");
+    }
+
+    private static void VerifyGenericFeatures()
+    {
+        GenericContainer<int>.InstanceCount = 0;
+        GenericContainer<string>.InstanceCount = 0;
+        GenericContainer<int> integers = new GenericContainer<int>(RuntimeValue(4));
+        GenericContainer<int> moreIntegers = new GenericContainer<int>(RuntimeValue(8));
+        GenericContainer<string> strings = new GenericContainer<string>("first");
+        int previousInteger = integers.Replace(RuntimeValue(6));
+        string previousString = strings.Replace("second");
+
+        if (GenericContainer<int>.InstanceCount != RuntimeValue(2) ||
+            GenericContainer<string>.InstanceCount != RuntimeValue(1) ||
+            previousInteger != RuntimeValue(4) || integers.Value != RuntimeValue(6) ||
+            moreIntegers.Value != RuntimeValue(8) || previousString != "first" || strings.Value != "second")
+            Fail("closed generic classes or static fields");
+
+        GenericPair<int, FeatureValue> pair = new GenericPair<int, FeatureValue>(
+            RuntimeValue(3), new FeatureValue(RuntimeValue(5)));
+        GenericPair<int, FeatureValue> pairCopy = IdentityGeneric(pair);
+        int first = RuntimeValue(10);
+        int second = RuntimeValue(20);
+        Swap(ref first, ref second);
+        FeatureValue feature = new FeatureValue(RuntimeValue(9));
+
+        if (pairCopy.First != RuntimeValue(3) || pairCopy.Second.Value != RuntimeValue(5) ||
+            first != RuntimeValue(20) || second != RuntimeValue(10) ||
+            IdentityGeneric(feature).Value != RuntimeValue(9) ||
+            DefaultGeneric<int>() != 0 || DefaultGeneric<FeatureObject>() != null ||
+            ReadGenericValue(feature) != RuntimeValue(9))
+            Fail("generic methods or value types");
+    }
+
+    private static void VerifyBoxing()
+    {
+        object marker = new object();
+        BoxingValue original = new BoxingValue
+        {
+            Number = RuntimeValue(7),
+            Offset = (short)RuntimeValue(2),
+            Reference = marker,
+        };
+        object boxedValue = original;
+        original.Number = RuntimeValue(30);
+        BoxingValue unboxedValue = (BoxingValue)boxedValue;
+        IFeatureValue featureValue = (IFeatureValue)boxedValue;
+        IBoxingMutation mutation = (IBoxingMutation)boxedValue;
+
+        if (unboxedValue.Number != RuntimeValue(7) ||
+            unboxedValue.Offset != (short)RuntimeValue(2) ||
+            unboxedValue.Reference != marker ||
+            featureValue.Value != RuntimeValue(9) ||
+            mutation.Increment() != RuntimeValue(8) ||
+            featureValue.Value != RuntimeValue(10))
+            Fail("struct boxing");
+
+        int integer = RoundTripBox(RuntimeValue(-7));
+        long longInteger = RoundTripBox((long)RuntimeValue(9));
+        FeatureKind kind = RoundTripBox(FeatureKind.Value);
+        BoxingValue genericValue = RoundTripBox(original);
+        int? nullableValue = RuntimeValue(5);
+        int? nullableNull = null;
+        object boxedNullableValue = nullableValue;
+        object boxedNullableNull = nullableNull;
+
+        if (integer != RuntimeValue(-7) || longInteger != RuntimeValue(9) ||
+            kind != FeatureKind.Value || genericValue.Number != RuntimeValue(30) ||
+            (int)boxedNullableValue != RuntimeValue(5) || boxedNullableNull != null)
+            Fail("generic or nullable boxing");
+
+        FeatureObject feature = new FeatureObject(RuntimeValue(6));
+        object boxedReference = feature;
+        if ((FeatureObject)boxedReference != feature || ((IFeatureValue)boxedReference).Value != RuntimeValue(7))
+            Fail("reference conversion");
+    }
+
+    private static T RoundTripBox<T>(T value)
+        where T : struct
+    {
+        object boxed = value;
+        return (T)boxed;
+    }
+
+    private static void VerifyStructures()
+    {
+        NestedValue empty = default;
+        NestedValue value = new NestedValue(
+            new Coordinate(RuntimeValue(1), RuntimeValue(2)),
+            new FeatureValue(RuntimeValue(3)),
+            RuntimeValue(4),
+            (byte)RuntimeValue(5));
+        NestedValue copy = value;
+        copy.Coordinate.X = RuntimeValue(10);
+
+        if (empty.Total != RuntimeValue(0) || value.Total != RuntimeValue(15) ||
+            copy.Total != RuntimeValue(24) || value.Coordinate.X != RuntimeValue(1))
+            Fail("struct value semantics");
+
+        NestedValue[] values = new NestedValue[RuntimeValue(2)];
+        values[0] = value;
+        CreateNestedValue(out values[1]);
+        OffsetNestedValue(ref values[0], RuntimeValue(1));
+
+        if (ReadNestedValue(in values[0]) != RuntimeValue(17) ||
+            ReadNestedValue(in values[1]) != RuntimeValue(15) ||
+            values[0].Coordinate.Sum() != RuntimeValue(4))
+            Fail("struct fields or parameters");
+    }
+
+    private static void CreateNestedValue(out NestedValue value)
+    {
+        value = new NestedValue(
+            new Coordinate(RuntimeValue(1), RuntimeValue(2)),
+            new FeatureValue(RuntimeValue(3)),
+            RuntimeValue(4),
+            (byte)RuntimeValue(5));
+    }
+
+    private static void OffsetNestedValue(ref NestedValue value, int offset)
+    {
+        value.Coordinate.X += offset;
+        value.Wide += offset;
+    }
+
+    private static int ReadNestedValue(in NestedValue value) => value.Total;
+
+    private static void VerifyLatestSyntax()
+    {
+        int[] collection = [RuntimeValue(1), RuntimeValue(2), RuntimeValue(3)];
+        List<int> list = [RuntimeValue(4), RuntimeValue(5)];
+        PrimaryFeature primary = new(RuntimeValue(6));
+        RequiredFeature required = new()
+        {
+            Value = RuntimeValue(7),
+            Name = "required",
+        };
+        string raw = """raw value""";
+        int pattern = list switch
+        {
+            [4, 5] => 9,
+            [4] => 4,
+            _ => 0,
+        };
+        int relational = required.Value switch
+        {
+            < 0 => -1,
+            >= 7 and < 8 => 1,
+            _ => 0,
+        };
+
+        if (collection.Length != RuntimeValue(3) || list.Count != RuntimeValue(2) ||
+            primary.Value != RuntimeValue(6) || primary.Double() != RuntimeValue(12) ||
+            required.Value != RuntimeValue(7) || required.Name != "required" ||
+            raw != "raw value" || pattern != RuntimeValue(9) || relational != RuntimeValue(1))
+            Fail("latest language syntax");
     }
 
     private static unsafe void VerifyModernLanguageFeatures(int[] values)
@@ -791,6 +1231,26 @@ public static partial class LanguageFeatureValidation
     private static int RuntimeValue(int value)
     {
         return value + s_runtimeBias - 1;
+    }
+
+    private static bool SetVolatileAndReturnTrue()
+    {
+        s_volatileValue++;
+        return true;
+    }
+
+    private static T IdentityGeneric<T>(T value) => value;
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    private static object HideObject(object value) => value;
+
+    private static T DefaultGeneric<T>() => default;
+
+    private static void Swap<T>(ref T left, ref T right)
+    {
+        T value = left;
+        left = right;
+        right = value;
     }
 
     private static void Increment(ref int value) => value++;

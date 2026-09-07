@@ -29,24 +29,147 @@ namespace System
     }
 
     public struct Void { }
-    public struct Boolean { }
-    public struct Char { }
-    public struct SByte { }
-    public struct Byte { }
-    public struct Int16 { }
-    public struct UInt16 { }
+    public interface IComparable
+    {
+        int CompareTo(object value);
+    }
+    public interface IComparable<in T>
+    {
+        int CompareTo(T value);
+    }
+    public struct Boolean
+    {
+        public override string ToString() => this ? "True" : "False";
+    }
+    public struct Char
+    {
+        public const char MinValue = (char)0;
+        public const char MaxValue = (char)0xffff;
+        public override string ToString() => new string(new char[] { this });
+    }
+    public struct SByte
+    {
+        public const sbyte MinValue = -128;
+        public const sbyte MaxValue = 127;
+        public override string ToString() => Number.Format((long)this);
+    }
+    public struct Byte
+    {
+        public const byte MinValue = 0;
+        public const byte MaxValue = 255;
+        public override string ToString() => Number.Format((ulong)this);
+    }
+    public struct Int16
+    {
+        public const short MinValue = -32768;
+        public const short MaxValue = 32767;
+        public override string ToString() => Number.Format((long)this);
+    }
+    public struct UInt16
+    {
+        public const ushort MinValue = 0;
+        public const ushort MaxValue = 65535;
+        public override string ToString() => Number.Format((ulong)this);
+    }
     public struct Int32
     {
         public const int MinValue = -2147483648;
         public const int MaxValue = 2147483647;
+        public override string ToString() => Number.Format((long)this);
     }
-    public struct UInt32 { }
-    public struct Int64 { }
-    public struct UInt64 { }
-    public struct IntPtr { }
-    public struct UIntPtr { }
-    public struct Single { }
-    public struct Double { }
+    public struct UInt32
+    {
+        public const uint MinValue = 0;
+        public const uint MaxValue = 0xffffffff;
+        public override string ToString() => Number.Format((ulong)this);
+    }
+    public struct Int64
+    {
+        public const long MinValue = -9223372036854775808;
+        public const long MaxValue = 9223372036854775807;
+        public override string ToString() => Number.Format(this);
+    }
+    public struct UInt64
+    {
+        public const ulong MinValue = 0;
+        public const ulong MaxValue = 0xffffffffffffffff;
+        public override string ToString() => Number.Format(this);
+    }
+    public struct IntPtr
+    {
+        public static readonly IntPtr Zero;
+        public override string ToString() => "0";
+    }
+    public struct UIntPtr
+    {
+        public static readonly UIntPtr Zero;
+        public override string ToString() => "0";
+    }
+    public readonly struct Index
+    {
+        private readonly int _value;
+
+        public Index(int value, bool fromEnd = false)
+        {
+            if (value < 0)
+                throw new ArgumentOutOfRangeException();
+            _value = fromEnd ? ~value : value;
+        }
+
+        private Index(int value)
+        {
+            _value = value;
+        }
+
+        public static Index Start => new Index(0);
+        public static Index End => new Index(~0);
+        public int Value => _value < 0 ? ~_value : _value;
+        public bool IsFromEnd => _value < 0;
+        public int GetOffset(int length) => _value < 0 ? length + ~_value : _value;
+        public static Index FromStart(int value) => new Index(value);
+        public static Index FromEnd(int value) => new Index(~value);
+        public static implicit operator Index(int value) => FromStart(value);
+    }
+    public struct Single
+    {
+        public const float MinValue = -3.4028234663852886E+38F;
+        public const float MaxValue = 3.4028234663852886E+38F;
+    }
+    public struct Double
+    {
+        public const double MinValue = -1.7976931348623157E+308;
+        public const double MaxValue = 1.7976931348623157E+308;
+    }
+
+    internal static class Number
+    {
+        public static string Format(long value)
+        {
+            bool negative = value < 0;
+            ulong magnitude = negative ? (ulong)(-(value + 1)) + 1 : (ulong)value;
+            return Format(magnitude, negative);
+        }
+
+        public static string Format(ulong value) => Format(value, false);
+
+        private static string Format(ulong value, bool negative)
+        {
+            char[] buffer = new char[negative ? 21 : 20];
+            int index = buffer.Length;
+            do
+            {
+                buffer[--index] = (char)('0' + (value % 10));
+                value /= 10;
+            }
+            while (value != 0);
+            if (negative)
+                buffer[--index] = '-';
+            char[] result = new char[buffer.Length - index];
+            for (int i = 0; i < result.Length; i++)
+                result[i] = buffer[index + i];
+            return new string(result);
+        }
+    }
 
     public abstract class ValueType : Object { }
     public abstract class Enum : ValueType { }
@@ -70,10 +193,114 @@ namespace System
         private int _length1;
         private int _length2;
 
-        public virtual int Rank => _rank;
-        public virtual int GetLength(int dimension) => dimension == 0 ? _length0 : dimension == 1 ? _length1 : _length2;
-        public virtual int GetLowerBound(int dimension) => 0;
+        public virtual int Rank => _rank == 0 ? 1 : _rank;
+        public virtual int GetLength(int dimension)
+        {
+            if ((uint)dimension >= (uint)Rank)
+                throw new IndexOutOfRangeException("The array dimension is outside the array rank.");
+            if (Rank == 1)
+                return Length;
+            return dimension == 0 ? _length0 : dimension == 1 ? _length1 : _length2;
+        }
+        public virtual int GetLowerBound(int dimension)
+        {
+            if ((uint)dimension >= (uint)Rank)
+                throw new IndexOutOfRangeException("The array dimension is outside the array rank.");
+            return 0;
+        }
         public virtual int GetUpperBound(int dimension) => GetLength(dimension) - 1;
+
+        public static T[] Empty<T>() => new T[0];
+
+        public static void Clear<T>(T[] array, int index, int length)
+        {
+            ValidateRange(array, index, length);
+            for (int i = 0; i < length; i++)
+                array[index + i] = default;
+        }
+
+        public static void Copy<T>(T[] sourceArray, T[] destinationArray, int length)
+            => Copy(sourceArray, 0, destinationArray, 0, length);
+
+        public static void Copy<T>(T[] sourceArray, int sourceIndex, T[] destinationArray, int destinationIndex, int length)
+        {
+            ValidateRange(sourceArray, sourceIndex, length);
+            ValidateRange(destinationArray, destinationIndex, length);
+            if (ReferenceEquals(sourceArray, destinationArray) && destinationIndex > sourceIndex &&
+                destinationIndex < sourceIndex + length)
+            {
+                for (int i = length - 1; i >= 0; i--)
+                    destinationArray[destinationIndex + i] = sourceArray[sourceIndex + i];
+                return;
+            }
+            for (int i = 0; i < length; i++)
+                destinationArray[destinationIndex + i] = sourceArray[sourceIndex + i];
+        }
+
+        public static void Resize<T>(ref T[] array, int newSize)
+        {
+            if (newSize < 0)
+                throw new ArgumentException("The array size cannot be negative.");
+            T[] result = new T[newSize];
+            if (array != null)
+                Copy(array, 0, result, 0, array.Length < newSize ? array.Length : newSize);
+            array = result;
+        }
+
+        public static int IndexOf<T>(T[] array, T value)
+            => IndexOf(array, value, 0, array == null ? 0 : array.Length);
+
+        public static int IndexOf<T>(T[] array, T value, int startIndex, int count)
+        {
+            ValidateRange(array, startIndex, count);
+            for (int i = 0; i < count; i++)
+                if (Object.Equals(array[startIndex + i], value))
+                    return startIndex + i;
+            return -1;
+        }
+
+        public static void Reverse<T>(T[] array) => Reverse(array, 0, array == null ? 0 : array.Length);
+
+        public static void Reverse<T>(T[] array, int index, int length)
+        {
+            ValidateRange(array, index, length);
+            int left = index;
+            int right = index + length - 1;
+            while (left < right)
+            {
+                T value = array[left];
+                array[left++] = array[right];
+                array[right--] = value;
+            }
+        }
+
+        public static void Sort<T>(T[] array) => Sort(array, 0, array == null ? 0 : array.Length, null);
+        public static void Sort<T>(T[] array, System.Collections.Generic.IComparer<T> comparer)
+            => Sort(array, 0, array == null ? 0 : array.Length, comparer);
+
+        public static void Sort<T>(T[] array, int index, int length, System.Collections.Generic.IComparer<T> comparer)
+        {
+            ValidateRange(array, index, length);
+            for (int i = index + 1; i < index + length; i++)
+            {
+                T value = array[i];
+                int j = i - 1;
+                while (j >= index && comparer != null && comparer.Compare(array[j], value) > 0)
+                {
+                    array[j + 1] = array[j];
+                    j--;
+                }
+                array[j + 1] = value;
+            }
+        }
+
+        private static void ValidateRange<T>(T[] array, int index, int length)
+        {
+            if (array == null)
+                throw new ArgumentNullException("The array cannot be null.");
+            if (index < 0 || length < 0 || index > array.Length - length)
+                throw new ArgumentException("The array range is invalid.");
+        }
     }
 
     public sealed class ArrayEnumerator<T> : Object, System.Collections.Generic.IEnumerator<T>
@@ -93,6 +320,7 @@ namespace System
     {
         public int Length;
         private char[] _chars;
+        public static readonly string Empty = "";
 
         public String() { }
         public String(char[] value)
@@ -104,7 +332,14 @@ namespace System
         public char this[int index] => _chars[index];
         public override string ToString() => this;
         public override bool Equals(object other) => other is string value && Equals(this, value);
-        public override int GetHashCode() => (int)Length;
+        public bool Equals(string other) => Equals(this, other);
+        public override int GetHashCode()
+        {
+            int hash = 5381;
+            for (int index = 0; index < Length; index++)
+                hash = ((hash << 5) + hash) ^ this[index];
+            return hash;
+        }
         public static bool Equals(string left, string right)
         {
             if (ReferenceEquals(left, null) || ReferenceEquals(right, null))
@@ -131,73 +366,234 @@ namespace System
                 value[left.Length + index] = right[index];
             return new string(value);
         }
+
+        public static string Concat(string first, string second, string third)
+            => Concat(Concat(first, second), third);
+
+        public static string Concat(string first, string second, string third, string fourth)
+            => Concat(Concat(first, second), Concat(third, fourth));
+
+        public static bool IsNullOrEmpty(string value) => value == null || value.Length == 0;
+
+        public bool StartsWith(string value)
+        {
+            if (value == null)
+                throw new ArgumentNullException("The value cannot be null.");
+            if (value.Length > Length)
+                return false;
+            for (int index = 0; index < value.Length; index++)
+                if (this[index] != value[index])
+                    return false;
+            return true;
+        }
+
+        public bool EndsWith(string value)
+        {
+            if (value == null)
+                throw new ArgumentNullException("The value cannot be null.");
+            if (value.Length > Length)
+                return false;
+            int offset = Length - value.Length;
+            for (int index = 0; index < value.Length; index++)
+                if (this[offset + index] != value[index])
+                    return false;
+            return true;
+        }
+
+        public int IndexOf(char value)
+        {
+            for (int index = 0; index < Length; index++)
+                if (this[index] == value)
+                    return index;
+            return -1;
+        }
+
+        public int IndexOf(string value)
+        {
+            if (value == null)
+                throw new ArgumentNullException("The value cannot be null.");
+            if (value.Length == 0)
+                return 0;
+            for (int index = 0; index <= Length - value.Length; index++)
+            {
+                bool match = true;
+                for (int offset = 0; offset < value.Length; offset++)
+                    if (this[index + offset] != value[offset])
+                    {
+                        match = false;
+                        break;
+                    }
+                if (match)
+                    return index;
+            }
+            return -1;
+        }
+
+        public string Substring(int startIndex)
+            => Substring(startIndex, Length - startIndex);
+
+        public string Substring(int startIndex, int length)
+        {
+            if (startIndex < 0 || length < 0 || startIndex > Length - length)
+                throw new ArgumentException("The string range is invalid.");
+            char[] value = new char[length];
+            for (int index = 0; index < length; index++)
+                value[index] = this[startIndex + index];
+            return new string(value);
+        }
+
+        public string Trim()
+        {
+            int start = 0;
+            int end = Length - 1;
+            while (start <= end && this[start] <= ' ')
+                start++;
+            while (end >= start && this[end] <= ' ')
+                end--;
+            return start == 0 && end == Length - 1 ? this : Substring(start, end - start + 1);
+        }
+
+        public string Replace(char oldValue, char newValue)
+        {
+            char[] value = new char[Length];
+            for (int index = 0; index < Length; index++)
+                value[index] = this[index] == oldValue ? newValue : this[index];
+            return new string(value);
+        }
+
+        public string[] Split(char separator)
+        {
+            int count = 1;
+            for (int index = 0; index < Length; index++)
+                if (this[index] == separator)
+                    count++;
+            string[] result = new string[count];
+            int start = 0;
+            int part = 0;
+            for (int index = 0; index <= Length; index++)
+            {
+                if (index != Length && this[index] != separator)
+                    continue;
+                result[part++] = Substring(start, index - start);
+                start = index + 1;
+            }
+            return result;
+        }
+
+        public static string Join(string separator, string[] values)
+        {
+            if (values == null)
+                throw new ArgumentNullException("The values cannot be null.");
+            string result = Empty;
+            for (int index = 0; index < values.Length; index++)
+            {
+                if (index != 0)
+                    result = Concat(result, separator);
+                result = Concat(result, values[index]);
+            }
+            return result;
+        }
     }
 
     public class Exception : Object
     {
         public string Message;
+        public Exception InnerException;
         public Exception() { }
         public Exception(string message) { Message = message; }
+        public Exception(string message, Exception innerException)
+        {
+            Message = message;
+            InnerException = innerException;
+        }
     }
 
     public class NotSupportedException : Exception
     {
-        public NotSupportedException() { }
+        public NotSupportedException() : base("Specified method is not supported.") { }
         public NotSupportedException(string message) : base(message) { }
     }
 
     public class ArgumentException : Exception
     {
-        public ArgumentException() { }
+        public ArgumentException() : base("Value does not fall within the expected range.") { }
         public ArgumentException(string message) : base(message) { }
     }
 
     public class ArgumentNullException : ArgumentException
     {
-        public ArgumentNullException() { }
+        public ArgumentNullException() : base("Value cannot be null.") { }
         public ArgumentNullException(string message) : base(message) { }
+    }
+
+    public class ArgumentOutOfRangeException : ArgumentException
+    {
+        public ArgumentOutOfRangeException() : base("Specified argument was out of the range of valid values.") { }
+        public ArgumentOutOfRangeException(string message) : base(message) { }
     }
 
     public class OperationCanceledException : Exception
     {
-        public OperationCanceledException() { }
+        public OperationCanceledException() : base("The operation was canceled.") { }
         public OperationCanceledException(string message) : base(message) { }
     }
 
     public class IndexOutOfRangeException : Exception
     {
-        public IndexOutOfRangeException() { }
+        public IndexOutOfRangeException() : base("Index was outside the bounds of the array.") { }
         public IndexOutOfRangeException(string message) : base(message) { }
     }
 
     public class InvalidProgramException : Exception
     {
-        public InvalidProgramException() { }
+        public InvalidProgramException() : base("Common Language Runtime detected an invalid program.") { }
         public InvalidProgramException(string message) : base(message) { }
     }
 
     public class OverflowException : Exception
     {
-        public OverflowException() { }
+        public OverflowException() : base("Arithmetic operation resulted in an overflow.") { }
         public OverflowException(string message) : base(message) { }
+    }
+
+    public class TypeLoadException : Exception
+    {
+        public TypeLoadException() : base("Failure has occurred while loading a type.") { }
+        public TypeLoadException(string message) : base(message) { }
     }
 
     public class InvalidCastException : Exception
     {
-        public InvalidCastException() { }
+        public InvalidCastException() : base("Specified cast is not valid.") { }
         public InvalidCastException(string message) : base(message) { }
     }
 
     public class NullReferenceException : Exception
     {
-        public NullReferenceException() { }
+        public NullReferenceException() : base("Object reference not set to an instance of an object.") { }
         public NullReferenceException(string message) : base(message) { }
     }
 
     public class InvalidOperationException : Exception
     {
-        public InvalidOperationException() { }
+        public InvalidOperationException() : base("The operation is not valid due to the current state of the object.") { }
         public InvalidOperationException(string message) : base(message) { }
+    }
+
+    public class KeyNotFoundException : Exception
+    {
+        public KeyNotFoundException() : base("The given key was not present in the dictionary.") { }
+        public KeyNotFoundException(string message) : base(message) { }
+    }
+
+    public class AggregateException : Exception
+    {
+        private Exception[] _innerExceptions;
+        public AggregateException(Exception[] innerExceptions)
+        {
+            _innerExceptions = innerExceptions;
+        }
+        public Exception[] InnerExceptions => _innerExceptions;
     }
 
     public interface IDisposable
@@ -207,9 +603,14 @@ namespace System
 
     public delegate void Action();
     public delegate void Action<T>(T arg);
+    public delegate void Action<T1, T2>(T1 arg1, T2 arg2);
+    public delegate void Action<T1, T2, T3>(T1 arg1, T2 arg2, T3 arg3);
+    public delegate void Action<T1, T2, T3, T4>(T1 arg1, T2 arg2, T3 arg3, T4 arg4);
     public delegate TResult Func<TResult>();
     public delegate TResult Func<T, TResult>(T arg);
     public delegate TResult Func<T1, T2, TResult>(T1 arg1, T2 arg2);
+    public delegate TResult Func<T1, T2, T3, TResult>(T1 arg1, T2 arg2, T3 arg3);
+    public delegate TResult Func<T1, T2, T3, T4, TResult>(T1 arg1, T2 arg2, T3 arg3, T4 arg4);
 
     public class Delegate : Object
     {
@@ -241,7 +642,17 @@ namespace System
         internal Type Type;
     }
 
+    public struct RuntimeMethodHandle { }
+    public struct RuntimeFieldHandle { }
+
+    public static class AppContext
+    {
+        public static void SetData(string name, object value) { }
+        public static object GetData(string name) => null;
+    }
+
     public class Attribute { }
+    public sealed class FlagsAttribute : Attribute { }
     public enum AttributeTargets { }
     public sealed class AttributeUsageAttribute : Attribute
     {
@@ -285,11 +696,47 @@ namespace System.Runtime.InteropServices
 
         public UnmanagedType Value { get; }
     }
+
+    public sealed class UnmanagedCallersOnlyAttribute : Attribute { }
+    public sealed class InAttribute : Attribute { }
+    public sealed class OutAttribute : Attribute { }
+    public sealed class StructLayoutAttribute : Attribute
+    {
+        public StructLayoutAttribute(LayoutKind layoutKind) { Value = layoutKind; }
+        public LayoutKind Value { get; }
+        public int Pack;
+        public int Size;
+    }
+    public sealed class FieldOffsetAttribute : Attribute
+    {
+        public FieldOffsetAttribute(int value) { Value = value; }
+        public int Value { get; }
+    }
+    public enum LayoutKind
+    {
+        Sequential = 0,
+        Explicit = 2,
+        Auto = 3
+    }
+    public enum CallingConvention
+    {
+        Winapi = 1,
+        Cdecl = 2,
+        StdCall = 3,
+        ThisCall = 4,
+        FastCall = 5
+    }
 }
 
 namespace System.Runtime.CompilerServices
 {
     public sealed class CompilerGeneratedAttribute : Attribute { }
+    public sealed class RequiredMemberAttribute : Attribute { }
+    public sealed class CompilerFeatureRequiredAttribute : Attribute
+    {
+        public CompilerFeatureRequiredAttribute(string featureName) { FeatureName = featureName; }
+        public string FeatureName { get; }
+    }
     public sealed class IsExternalInit { }
     public sealed class IsVolatile { }
     public sealed class MethodImplAttribute : Attribute
@@ -299,7 +746,20 @@ namespace System.Runtime.CompilerServices
     public enum MethodImplOptions
     {
         NoInlining = 8,
-        AggressiveInlining = 256
+        AggressiveInlining = 256,
+        AggressiveOptimization = 512,
+        InternalCall = 4096
+    }
+
+    public static class RuntimeFeature
+    {
+        public static bool IsDynamicCodeSupported => false;
+    }
+
+    public static class RuntimeHelpers
+    {
+        public static int OffsetToStringData => 0;
+        public static void InitializeArray(Array array, RuntimeFieldHandle fieldHandle) { }
     }
 
     public sealed class ExtensionAttribute : Attribute { }
@@ -372,6 +832,55 @@ namespace System.Runtime
     {
         public RuntimeExportAttribute(string name) { }
     }
+
+    public static unsafe class ExceptionRuntime
+    {
+        private static void* _top;
+        private static Exception _current;
+
+        public static void Push(void* frame, void* buffer)
+        {
+            void** fields = (void**)frame;
+            fields[0] = _top;
+            fields[1] = buffer;
+            _top = frame;
+        }
+
+        public static void Pop(void* frame)
+        {
+            if (_top == frame)
+                _top = *(void**)frame;
+        }
+
+        public static void* GetBuffer(void* frame) => ((void**)frame)[1];
+
+        public static void* GetTop() => _top;
+
+        public static Exception GetCurrent() => _current;
+
+        public static void SetCurrent(Exception exception) => _current = exception;
+
+        [DllImport("*")]
+        public static extern void LongJump(void* buffer, int value);
+        [DllImport("*")]
+        public static extern void Abort();
+
+        public static void Throw(Exception exception)
+        {
+            SetCurrent(exception);
+            void* top = GetTop();
+            if (top == null)
+            {
+                if (_current != null && _current.Message != null)
+                    Console.WriteLine(_current.Message);
+                else
+                    Console.WriteLine("Unhandled exception.");
+                Abort();
+            }
+            else
+                LongJump(GetBuffer(top), 1);
+        }
+    }
 }
 
 namespace System.Reflection
@@ -399,6 +908,121 @@ namespace System.Collections
 
 namespace System.Collections.Generic
 {
+    public delegate bool Predicate<T>(T value);
+    public delegate int Comparison<T>(T left, T right);
+
+    public interface ICollection<T> : IEnumerable<T>
+    {
+        int Count { get; }
+        bool IsReadOnly { get; }
+        void Add(T item);
+        void Clear();
+        bool Contains(T item);
+        void CopyTo(T[] array, int arrayIndex);
+        bool Remove(T item);
+    }
+
+    public interface IReadOnlyCollection<out T> : IEnumerable<T>
+    {
+        int Count { get; }
+    }
+
+    public interface IReadOnlyList<out T> : IReadOnlyCollection<T>
+    {
+        T this[int index] { get; }
+    }
+
+    public interface IList<T> : ICollection<T>
+    {
+        T this[int index] { get; set; }
+        int IndexOf(T item);
+        void Insert(int index, T item);
+        void RemoveAt(int index);
+    }
+
+    public interface IComparer<in T>
+    {
+        int Compare(T left, T right);
+    }
+
+    public interface IEqualityComparer<in T>
+    {
+        bool Equals(T left, T right);
+        int GetHashCode(T value);
+    }
+
+    public struct KeyValuePair<TKey, TValue>
+    {
+        private TKey _key;
+        private TValue _value;
+        public KeyValuePair(TKey key, TValue value) { _key = key; _value = value; }
+        public TKey Key => _key;
+        public TValue Value => _value;
+    }
+
+    public interface IDictionary<TKey, TValue> : ICollection<KeyValuePair<TKey, TValue>>
+    {
+        ICollection<TKey> Keys { get; }
+        ICollection<TValue> Values { get; }
+        TValue this[TKey key] { get; set; }
+        void Add(TKey key, TValue value);
+        bool ContainsKey(TKey key);
+        bool Remove(TKey key);
+        bool TryGetValue(TKey key, out TValue value);
+    }
+
+    public interface ISet<T> : ICollection<T>
+    {
+        bool Add(T item);
+        void ExceptWith(IEnumerable<T> other);
+        void IntersectWith(IEnumerable<T> other);
+        bool IsProperSubsetOf(IEnumerable<T> other);
+        bool IsProperSupersetOf(IEnumerable<T> other);
+        bool IsSubsetOf(IEnumerable<T> other);
+        bool IsSupersetOf(IEnumerable<T> other);
+        bool Overlaps(IEnumerable<T> other);
+        bool SetEquals(IEnumerable<T> other);
+        void SymmetricExceptWith(IEnumerable<T> other);
+        void UnionWith(IEnumerable<T> other);
+    }
+
+    public abstract class Comparer<T> : Object, IComparer<T>
+    {
+        public static Comparer<T> Default => new DefaultComparer();
+        public abstract int Compare(T left, T right);
+
+        private sealed class DefaultComparer : Comparer<T>
+        {
+            public override int Compare(T left, T right)
+            {
+                if (ReferenceEquals(left, right))
+                    return 0;
+                if (left == null)
+                    return -1;
+                if (right == null)
+                    return 1;
+                if (left is IComparable<T> generic)
+                    return generic.CompareTo(right);
+                if (left is IComparable comparable)
+                    return comparable.CompareTo(right);
+                throw new InvalidOperationException("The values cannot be compared.");
+            }
+        }
+    }
+
+    public abstract class EqualityComparer<T> : Object, IEqualityComparer<T>
+    {
+        public static EqualityComparer<T> Default => new DefaultEqualityComparer();
+        public abstract bool Equals(T left, T right);
+        public abstract int GetHashCode(T value);
+
+        private sealed class DefaultEqualityComparer : EqualityComparer<T>
+        {
+            public override bool Equals(T left, T right) => Object.Equals(left, right);
+            public override int GetHashCode(T value) => value == null ? 0 : value.GetHashCode();
+        }
+    }
+
     public interface IEnumerator<out T> : IDisposable, IEnumerator
     {
         new T Current { get; }
@@ -409,49 +1033,650 @@ namespace System.Collections.Generic
         new IEnumerator<T> GetEnumerator();
     }
 
-    public class List<T> : Object, IEnumerable<T>
+    public class List<T> : Object, IList<T>, IReadOnlyList<T>
     {
         private T[] _items;
         private int _count;
 
         public List()
         {
-            _items = new T[4];
+            _items = new T[0];
+        }
+
+        public List(int capacity)
+        {
+            if (capacity < 0)
+                    throw new ArgumentException("The list capacity cannot be negative.");
+            _items = new T[capacity];
+        }
+
+        public List(T[] values)
+        {
+            if (values == null)
+                throw new ArgumentNullException("The source items cannot be null.");
+            _items = new T[values.Length];
+            for (int index = 0; index < values.Length; index++)
+                _items[index] = values[index];
+            _count = values.Length;
+        }
+
+        public List(IEnumerable<T> values)
+        {
+            if (values == null)
+                throw new ArgumentNullException("The source items cannot be null.");
+            _items = new T[0];
+            AddRange(values);
         }
 
         public int Count => _count;
+        public bool IsReadOnly => false;
+        public int Capacity
+        {
+            get => _items.Length;
+            set
+            {
+                if (value < _count)
+                    throw new ArgumentException("The list capacity cannot be less than Count.");
+                if (value != _items.Length)
+                    Resize(value);
+            }
+        }
         public T this[int index]
         {
-            get => _items[index];
-            set => _items[index] = value;
+            get
+            {
+                ValidateIndex(index);
+                return _items[index];
+            }
+            set
+            {
+                ValidateIndex(index);
+                _items[index] = value;
+            }
         }
 
         public void Add(T value)
         {
-            if (_count == _items.Length)
-            {
-                T[] expanded = new T[_items.Length * 2];
-                for (int index = 0; index < _count; index++)
-                    expanded[index] = _items[index];
-                _items = expanded;
-            }
+            EnsureCapacity(_count + 1);
             _items[_count++] = value;
         }
 
-        public IEnumerator<T> GetEnumerator() => new Enumerator(this);
+        public void AddRange(T[] values)
+        {
+            if (values == null)
+                throw new ArgumentNullException("The source items cannot be null.");
+            EnsureCapacity(_count + values.Length);
+            for (int index = 0; index < values.Length; index++)
+                _items[_count + index] = values[index];
+            _count += values.Length;
+        }
+
+        public void AddRange(IEnumerable<T> values)
+        {
+            if (values == null)
+                throw new ArgumentNullException("The source items cannot be null.");
+            foreach (T value in values)
+                Add(value);
+        }
+
+        public void Insert(int index, T value)
+        {
+            if ((uint)index > (uint)_count)
+                throw new ArgumentException("The insertion index is outside the list.");
+            EnsureCapacity(_count + 1);
+            for (int i = _count; i > index; i--)
+                _items[i] = _items[i - 1];
+            _items[index] = value;
+            _count++;
+        }
+
+        public void RemoveAt(int index)
+        {
+            ValidateIndex(index);
+            _count--;
+            for (int i = index; i < _count; i++)
+                _items[i] = _items[i + 1];
+            _items[_count] = default;
+        }
+
+        public int IndexOf(T value)
+        {
+            for (int index = 0; index < _count; index++)
+                if ((object)_items[index] == (object)value)
+                    return index;
+            return -1;
+        }
+
+        public bool Contains(T value) => IndexOf(value) >= 0;
+
+        public bool Remove(T value)
+        {
+            int index = IndexOf(value);
+            if (index < 0)
+                return false;
+            RemoveAt(index);
+            return true;
+        }
+
+        public void CopyTo(T[] array, int arrayIndex)
+        {
+            if (array == null)
+                throw new ArgumentNullException("The destination array cannot be null.");
+            if (arrayIndex < 0 || arrayIndex > array.Length - _count)
+                throw new ArgumentException("The destination array range is invalid.");
+            for (int index = 0; index < _count; index++)
+                array[arrayIndex + index] = _items[index];
+        }
+
+        public int RemoveAll(Predicate<T> match)
+        {
+            if (match == null)
+                throw new ArgumentNullException("The match predicate cannot be null.");
+            int write = 0;
+            for (int index = 0; index < _count; index++)
+                if (!match(_items[index]))
+                    _items[write++] = _items[index];
+            for (int index = write; index < _count; index++)
+                _items[index] = default;
+            int removed = _count - write;
+            _count = write;
+            return removed;
+        }
+
+        public T Find(Predicate<T> match)
+        {
+            int index = FindIndex(match);
+            return index < 0 ? default : _items[index];
+        }
+
+        public int FindIndex(Predicate<T> match)
+        {
+            if (match == null)
+                throw new ArgumentNullException("The match predicate cannot be null.");
+            for (int index = 0; index < _count; index++)
+                if (match(_items[index]))
+                    return index;
+            return -1;
+        }
+
+        public void ForEach(Action<T> action)
+        {
+            if (action == null)
+                throw new ArgumentNullException("The action cannot be null.");
+            for (int index = 0; index < _count; index++)
+                action(_items[index]);
+        }
+
+        public void Clear()
+        {
+            for (int index = 0; index < _count; index++)
+                _items[index] = default;
+            _count = 0;
+        }
+
+        public T[] ToArray()
+        {
+            T[] values = new T[_count];
+            for (int index = 0; index < _count; index++)
+                values[index] = _items[index];
+            return values;
+        }
+
+        public void Reverse()
+        {
+            int left = 0;
+            int right = _count - 1;
+            while (left < right)
+            {
+                T value = _items[left];
+                _items[left++] = _items[right];
+                _items[right--] = value;
+            }
+        }
+
+        public void Sort()
+        {
+            Sort((IComparer<T>)null);
+        }
+
+        public void Sort(IComparer<T> comparer)
+        {
+            if (comparer == null)
+                return;
+
+            for (int index = 1; index < _count; index++)
+            {
+                T value = _items[index];
+                int position = index - 1;
+                while (position >= 0 && comparer.Compare(_items[position], value) > 0)
+                {
+                    _items[position + 1] = _items[position];
+                    position--;
+                }
+                _items[position + 1] = value;
+            }
+        }
+        public void Sort(Comparison<T> comparison)
+        {
+            Sort((IComparer<T>)null);
+        }
+
+        public List<T> GetRange(int index, int count)
+        {
+            if (index < 0 || count < 0 || index > _count - count)
+                throw new ArgumentException("The list range is invalid.");
+            List<T> result = new List<T>(count);
+            for (int i = 0; i < count; i++)
+                result.Add(_items[index + i]);
+            return result;
+        }
+
+        public Enumerator GetEnumerator() => new Enumerator(this);
+        IEnumerator<T> IEnumerable<T>.GetEnumerator() => new Enumerator(this);
         System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
 
-        private sealed class Enumerator : Object, IEnumerator<T>
+        private void EnsureCapacity(int minimum)
+        {
+            if (_items.Length >= minimum)
+                return;
+            int capacity = _items.Length == 0 ? 4 : _items.Length * 2;
+            if (capacity < minimum)
+                capacity = minimum;
+            Resize(capacity);
+        }
+
+        private void Resize(int capacity)
+        {
+            T[] values = new T[capacity];
+            for (int index = 0; index < _count; index++)
+                values[index] = _items[index];
+            _items = values;
+        }
+
+        private void ValidateIndex(int index)
+        {
+            if ((uint)index >= (uint)_count)
+                throw new IndexOutOfRangeException("The list index is outside the collection.");
+        }
+
+        public struct Enumerator : IEnumerator<T>
         {
             private readonly List<T> _list;
-            private int _index = -1;
-            public Enumerator(List<T> list) { _list = list; }
-            public T Current => _list[_index];
+            private int _index;
+            private T _current;
+            internal Enumerator(List<T> list) { _list = list; _index = 0; _current = default; }
+            public T Current => _current;
             object System.Collections.IEnumerator.Current => Current;
-            public bool MoveNext() => ++_index < _list.Count;
-            public void Reset() { _index = -1; }
+            public bool MoveNext()
+            {
+                if (_index >= _list._count)
+                {
+                    _current = default;
+                    return false;
+                }
+                _current = _list._items[_index++];
+                return true;
+            }
+            public void Reset() { _index = 0; _current = default; }
             public void Dispose() { }
         }
+    }
+
+    public sealed class ComparisonComparer<T> : Comparer<T>
+    {
+        private readonly Comparison<T> _comparison;
+        public ComparisonComparer(Comparison<T> comparison) { _comparison = comparison; }
+        public override int Compare(T left, T right) => _comparison(left, right);
+    }
+
+    public class Dictionary<TKey, TValue> : Object, IDictionary<TKey, TValue>
+    {
+        private KeyValuePair<TKey, TValue>[] _items;
+        private int _count;
+        private readonly IEqualityComparer<TKey> _comparer;
+
+        public Dictionary() : this(0, null) { }
+        public Dictionary(int capacity) : this(capacity, null) { }
+        public Dictionary(IEqualityComparer<TKey> comparer) : this(0, comparer) { }
+        public Dictionary(int capacity, IEqualityComparer<TKey> comparer)
+        {
+            if (capacity < 0)
+                throw new ArgumentException("The dictionary capacity cannot be negative.");
+            _items = new KeyValuePair<TKey, TValue>[capacity];
+            _comparer = comparer ?? new DictionaryComparer<TKey>();
+        }
+
+        public int Count => _count;
+        public bool IsReadOnly => false;
+        public ICollection<TKey> Keys
+        {
+            get
+            {
+                List<TKey> result = new List<TKey>(_count);
+                for (int index = 0; index < _count; index++)
+                    result.Add(_items[index].Key);
+                return result;
+            }
+        }
+        public ICollection<TValue> Values
+        {
+            get
+            {
+                List<TValue> result = new List<TValue>(_count);
+                for (int index = 0; index < _count; index++)
+                    result.Add(_items[index].Value);
+                return result;
+            }
+        }
+
+        public TValue this[TKey key]
+        {
+            get
+            {
+                int index = FindIndex(key);
+                if (index < 0)
+                    throw new InvalidOperationException("The requested key was not found in the dictionary.");
+                return _items[index].Value;
+            }
+            set
+            {
+                int index = FindIndex(key);
+                if (index < 0)
+                {
+                    Add(key, value);
+                    return;
+                }
+                _items[index] = new KeyValuePair<TKey, TValue>(key, value);
+            }
+        }
+
+        public void Add(TKey key, TValue value)
+        {
+            if (ContainsKey(key))
+                throw new ArgumentException("An item with the same key has already been added.");
+            EnsureCapacity(_count + 1);
+            _items[_count++] = new KeyValuePair<TKey, TValue>(key, value);
+        }
+
+        public void Add(KeyValuePair<TKey, TValue> item) => Add(item.Key, item.Value);
+        public bool TryAdd(TKey key, TValue value)
+        {
+            if (ContainsKey(key))
+                return false;
+            Add(key, value);
+            return true;
+        }
+        public bool ContainsKey(TKey key) => FindIndex(key) >= 0;
+        public bool ContainsValue(TValue value)
+        {
+            for (int index = 0; index < _count; index++)
+                if (Object.Equals(_items[index].Value, value))
+                    return true;
+            return false;
+        }
+        public bool TryGetValue(TKey key, out TValue value)
+        {
+            int index = FindIndex(key);
+            if (index >= 0)
+            {
+                value = _items[index].Value;
+                return true;
+            }
+            value = default;
+            return false;
+        }
+        public bool Contains(KeyValuePair<TKey, TValue> item)
+            => TryGetValue(item.Key, out TValue value) && Object.Equals(value, item.Value);
+        public bool Remove(KeyValuePair<TKey, TValue> item) => Contains(item) && Remove(item.Key);
+        public bool Remove(TKey key)
+        {
+            int index = FindIndex(key);
+            if (index < 0)
+                return false;
+            _count--;
+            for (int i = index; i < _count; i++)
+                _items[i] = _items[i + 1];
+            _items[_count] = default;
+            return true;
+        }
+        public void Clear()
+        {
+            for (int index = 0; index < _count; index++)
+                _items[index] = default;
+            _count = 0;
+        }
+        public void CopyTo(KeyValuePair<TKey, TValue>[] array, int arrayIndex)
+        {
+            if (array == null)
+                throw new ArgumentNullException("The destination array cannot be null.");
+            if (arrayIndex < 0 || arrayIndex > array.Length - _count)
+                throw new ArgumentException("The destination array range is invalid.");
+            for (int index = 0; index < _count; index++)
+                array[arrayIndex + index] = _items[index];
+        }
+        public Enumerator GetEnumerator() => new Enumerator(this);
+        IEnumerator<KeyValuePair<TKey, TValue>> IEnumerable<KeyValuePair<TKey, TValue>>.GetEnumerator() => GetEnumerator();
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+
+        private int FindIndex(TKey key)
+        {
+            if ((object)key == null)
+                throw new ArgumentNullException("The dictionary key cannot be null.");
+            for (int index = 0; index < _count; index++)
+                if (_comparer.Equals(_items[index].Key, key))
+                    return index;
+            return -1;
+        }
+        private void EnsureCapacity(int minimum)
+        {
+            if (_items.Length >= minimum)
+                return;
+            int capacity = _items.Length == 0 ? 4 : _items.Length * 2;
+            if (capacity < minimum)
+                capacity = minimum;
+            KeyValuePair<TKey, TValue>[] values = new KeyValuePair<TKey, TValue>[capacity];
+            for (int index = 0; index < _count; index++)
+                values[index] = _items[index];
+            _items = values;
+        }
+
+        private sealed class DictionaryComparer<T> : EqualityComparer<T>
+        {
+            public override bool Equals(T left, T right) => Object.Equals(left, right);
+            public override int GetHashCode(T value) => value == null ? 0 : value.GetHashCode();
+        }
+
+        public struct Enumerator : IEnumerator<KeyValuePair<TKey, TValue>>
+        {
+            private readonly Dictionary<TKey, TValue> _dictionary;
+            private int _index;
+            private KeyValuePair<TKey, TValue> _current;
+            internal Enumerator(Dictionary<TKey, TValue> dictionary)
+            {
+                _dictionary = dictionary;
+                _index = 0;
+                _current = default;
+            }
+            public KeyValuePair<TKey, TValue> Current => _current;
+            object System.Collections.IEnumerator.Current => _current;
+            public bool MoveNext()
+            {
+                if (_index >= _dictionary._count)
+                {
+                    _current = default;
+                    return false;
+                }
+                _current = _dictionary._items[_index++];
+                return true;
+            }
+            public void Reset() { _index = 0; _current = default; }
+            public void Dispose() { }
+        }
+    }
+
+    public class HashSet<T> : Object, ISet<T>
+    {
+        private readonly List<T> _items;
+        private readonly IEqualityComparer<T> _comparer;
+        public HashSet() : this((IEqualityComparer<T>)null) { }
+        public HashSet(IEqualityComparer<T> comparer)
+        {
+            _items = new List<T>();
+            _comparer = comparer ?? new SetComparer<T>();
+        }
+        public HashSet(IEnumerable<T> values) : this(values, null) { }
+        public HashSet(IEnumerable<T> values, IEqualityComparer<T> comparer) : this(comparer)
+        {
+            if (values == null)
+                throw new ArgumentNullException("The source collection cannot be null.");
+            UnionWith(values);
+        }
+        public int Count => _items.Count;
+        public bool IsReadOnly => false;
+        public bool Add(T value)
+        {
+            if (Contains(value))
+                return false;
+            _items.Add(value);
+            return true;
+        }
+        void ICollection<T>.Add(T value) => Add(value);
+        public bool Contains(T value)
+        {
+            for (int index = 0; index < _items.Count; index++)
+                if (_comparer.Equals(_items[index], value))
+                    return true;
+            return false;
+        }
+        public bool Remove(T value)
+        {
+            for (int index = 0; index < _items.Count; index++)
+                if (_comparer.Equals(_items[index], value))
+                {
+                    _items.RemoveAt(index);
+                    return true;
+                }
+            return false;
+        }
+        public void Clear() => _items.Clear();
+        public void CopyTo(T[] array, int arrayIndex) => _items.CopyTo(array, arrayIndex);
+        public T[] ToArray() => _items.ToArray();
+        public void UnionWith(IEnumerable<T> other) { foreach (T value in other) Add(value); }
+        public void ExceptWith(IEnumerable<T> other) { foreach (T value in other) Remove(value); }
+        public void IntersectWith(IEnumerable<T> other)
+        {
+            HashSet<T> set = new HashSet<T>(other, _comparer);
+            for (int index = _items.Count - 1; index >= 0; index--)
+                if (!set.Contains(_items[index]))
+                    _items.RemoveAt(index);
+        }
+        public void SymmetricExceptWith(IEnumerable<T> other)
+        {
+            HashSet<T> set = new HashSet<T>(other, _comparer);
+            foreach (T value in set)
+                if (!Remove(value))
+                    Add(value);
+        }
+        public bool IsSubsetOf(IEnumerable<T> other)
+        {
+            HashSet<T> set = new HashSet<T>(other, _comparer);
+            for (int index = 0; index < Count; index++)
+                if (!set.Contains(_items[index]))
+                    return false;
+            return true;
+        }
+        public bool IsProperSubsetOf(IEnumerable<T> other)
+        {
+            HashSet<T> set = new HashSet<T>(other, _comparer);
+            return Count < set.Count && IsSubsetOf(set);
+        }
+        public bool IsSupersetOf(IEnumerable<T> other)
+        {
+            foreach (T value in other)
+                if (!Contains(value))
+                    return false;
+            return true;
+        }
+        public bool IsProperSupersetOf(IEnumerable<T> other)
+        {
+            HashSet<T> set = new HashSet<T>(other, _comparer);
+            return Count > set.Count && IsSupersetOf(set);
+        }
+        public bool Overlaps(IEnumerable<T> other)
+        {
+            foreach (T value in other)
+                if (Contains(value))
+                    return true;
+            return false;
+        }
+        public bool SetEquals(IEnumerable<T> other)
+        {
+            HashSet<T> set = new HashSet<T>(other, _comparer);
+            return Count == set.Count && IsSubsetOf(set);
+        }
+        public IEnumerator<T> GetEnumerator() => _items.GetEnumerator();
+        IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
+
+        private sealed class SetComparer<TValue> : EqualityComparer<TValue>
+        {
+            public override bool Equals(TValue left, TValue right) => Object.Equals(left, right);
+            public override int GetHashCode(TValue value) => value == null ? 0 : value.GetHashCode();
+        }
+    }
+
+    public class Queue<T> : Object, IEnumerable<T>
+    {
+        private readonly List<T> _items = new List<T>();
+        public int Count => _items.Count;
+        public void Enqueue(T value) => _items.Add(value);
+        public T Dequeue()
+        {
+            if (_items.Count == 0)
+                throw new InvalidOperationException("The queue is empty.");
+            T value = _items[0];
+            _items.RemoveAt(0);
+            return value;
+        }
+        public T Peek()
+        {
+            if (_items.Count == 0)
+                throw new InvalidOperationException("The queue is empty.");
+            return _items[0];
+        }
+        public bool TryDequeue(out T value)
+        {
+            if (_items.Count == 0) { value = default; return false; }
+            value = Dequeue();
+            return true;
+        }
+        public void Clear() => _items.Clear();
+        public IEnumerator<T> GetEnumerator() => _items.GetEnumerator();
+        IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
+    }
+
+    public class Stack<T> : Object, IEnumerable<T>
+    {
+        private readonly List<T> _items = new List<T>();
+        public int Count => _items.Count;
+        public void Push(T value) => _items.Add(value);
+        public T Pop()
+        {
+            if (_items.Count == 0)
+                throw new InvalidOperationException("The stack is empty.");
+            int index = _items.Count - 1;
+            T value = _items[index];
+            _items.RemoveAt(index);
+            return value;
+        }
+        public T Peek()
+        {
+            if (_items.Count == 0)
+                throw new InvalidOperationException("The stack is empty.");
+            return _items[_items.Count - 1];
+        }
+        public void Clear() => _items.Clear();
+        public IEnumerator<T> GetEnumerator() => _items.GetEnumerator();
+        IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
     }
 }
 
@@ -463,56 +1688,255 @@ namespace System.Linq
     {
         public static System.Collections.Generic.IEnumerable<TResult> Select<TSource, TResult>(this System.Collections.Generic.IEnumerable<TSource> source, Func<TSource, TResult> selector)
         {
+            if (source == null || selector == null)
+                throw new ArgumentNullException("The source and selector cannot be null.");
             List<TResult> result = new List<TResult>();
             IEnumerator<TSource> iterator = source.GetEnumerator();
-            while (iterator.MoveNext())
-                result.Add(selector(iterator.Current));
+            try
+            {
+                while (iterator.MoveNext())
+                    result.Add(selector(iterator.Current));
+            }
+            finally { iterator.Dispose(); }
+            return result;
+        }
+
+        public static System.Collections.Generic.IEnumerable<TResult> Select<TSource, TResult>(this TSource[] source, Func<TSource, TResult> selector)
+        {
+            if (source == null || selector == null)
+                throw new ArgumentNullException("The source and selector cannot be null.");
+            List<TResult> result = new List<TResult>(source.Length);
+            for (int index = 0; index < source.Length; index++)
+                result.Add(selector(source[index]));
             return result;
         }
 
         public static System.Collections.Generic.IEnumerable<TSource> Where<TSource>(this System.Collections.Generic.IEnumerable<TSource> source, Func<TSource, bool> predicate)
         {
+            if (source == null || predicate == null)
+                throw new ArgumentNullException("The source and predicate cannot be null.");
             List<TSource> result = new List<TSource>();
             IEnumerator<TSource> iterator = source.GetEnumerator();
-            while (iterator.MoveNext())
-                if (predicate(iterator.Current))
-                    result.Add(iterator.Current);
+            try
+            {
+                while (iterator.MoveNext())
+                    if (predicate(iterator.Current))
+                        result.Add(iterator.Current);
+            }
+            finally { iterator.Dispose(); }
             return result;
+        }
+
+        public static System.Collections.Generic.IEnumerable<TSource> Where<TSource>(this TSource[] source, Func<TSource, bool> predicate)
+        {
+            if (source == null || predicate == null)
+                throw new ArgumentNullException("The source and predicate cannot be null.");
+            List<TSource> result = new List<TSource>();
+            for (int index = 0; index < source.Length; index++)
+                if (predicate(source[index]))
+                    result.Add(source[index]);
+            return result;
+        }
+
+        public static bool Any<TSource>(this System.Collections.Generic.IEnumerable<TSource> source)
+        {
+            if (source == null)
+                throw new ArgumentNullException("The source cannot be null.");
+            IEnumerator<TSource> iterator = source.GetEnumerator();
+            try { return iterator.MoveNext(); }
+            finally { iterator.Dispose(); }
+        }
+
+        public static bool Any<TSource>(this System.Collections.Generic.IEnumerable<TSource> source, Func<TSource, bool> predicate)
+        {
+            if (source == null || predicate == null)
+                throw new ArgumentNullException("The source and predicate cannot be null.");
+            IEnumerator<TSource> iterator = source.GetEnumerator();
+            try
+            {
+                while (iterator.MoveNext())
+                    if (predicate(iterator.Current))
+                        return true;
+                return false;
+            }
+            finally { iterator.Dispose(); }
+        }
+
+        public static bool Contains<TSource>(this System.Collections.Generic.IEnumerable<TSource> source, TSource value)
+        {
+            if (source == null)
+                throw new ArgumentNullException("The source cannot be null.");
+            IEnumerator<TSource> iterator = source.GetEnumerator();
+            try
+            {
+                while (iterator.MoveNext())
+                    if (Object.Equals(iterator.Current, value))
+                        return true;
+                return false;
+            }
+            finally { iterator.Dispose(); }
         }
 
         public static TSource[] ToArray<TSource>(this System.Collections.Generic.IEnumerable<TSource> source)
         {
+            if (source == null)
+                throw new ArgumentNullException("The source cannot be null.");
             List<TSource> result = new List<TSource>();
             IEnumerator<TSource> iterator = source.GetEnumerator();
-            while (iterator.MoveNext())
-                result.Add(iterator.Current);
-            TSource[] values = new TSource[result.Count];
-            for (int index = 0; index < result.Count; index++)
-                values[index] = result[index];
-            return values;
+            try
+            {
+                while (iterator.MoveNext())
+                    result.Add(iterator.Current);
+            }
+            finally { iterator.Dispose(); }
+            return result.ToArray();
         }
+
+        public static List<TSource> ToList<TSource>(this System.Collections.Generic.IEnumerable<TSource> source)
+            => new List<TSource>(source);
 
         public static int Count<TSource>(this System.Collections.Generic.IEnumerable<TSource> source)
         {
+            if (source == null)
+                throw new ArgumentNullException("The source cannot be null.");
             int count = 0;
             IEnumerator<TSource> iterator = source.GetEnumerator();
-            while (iterator.MoveNext())
-                count++;
+            try
+            {
+                while (iterator.MoveNext())
+                    count++;
+            }
+            finally { iterator.Dispose(); }
+            return count;
+        }
+
+        public static int Count<TSource>(this System.Collections.Generic.IEnumerable<TSource> source, Func<TSource, bool> predicate)
+        {
+            if (source == null || predicate == null)
+                throw new ArgumentNullException("The source and predicate cannot be null.");
+            int count = 0;
+            IEnumerator<TSource> iterator = source.GetEnumerator();
+            try
+            {
+                while (iterator.MoveNext())
+                    if (predicate(iterator.Current))
+                        count++;
+            }
+            finally { iterator.Dispose(); }
             return count;
         }
 
         public static TSource First<TSource>(this System.Collections.Generic.IEnumerable<TSource> source)
         {
+            if (source == null)
+                throw new ArgumentNullException("The source cannot be null.");
             IEnumerator<TSource> iterator = source.GetEnumerator();
-            if (iterator.MoveNext())
-                return iterator.Current;
-            throw new InvalidOperationException();
+            try
+            {
+                if (iterator.MoveNext())
+                    return iterator.Current;
+            }
+            finally { iterator.Dispose(); }
+            throw new InvalidOperationException("The source contains no elements.");
+        }
+
+        public static TSource FirstOrDefault<TSource>(this System.Collections.Generic.IEnumerable<TSource> source)
+        {
+            if (source == null)
+                throw new ArgumentNullException("The source cannot be null.");
+            IEnumerator<TSource> iterator = source.GetEnumerator();
+            try { return iterator.MoveNext() ? iterator.Current : default; }
+            finally { iterator.Dispose(); }
+        }
+
+        public static TSource FirstOrDefault<TSource>(this System.Collections.Generic.IEnumerable<TSource> source, Func<TSource, bool> predicate)
+        {
+            if (source == null || predicate == null)
+                throw new ArgumentNullException("The source and predicate cannot be null.");
+            IEnumerator<TSource> iterator = source.GetEnumerator();
+            try
+            {
+                while (iterator.MoveNext())
+                    if (predicate(iterator.Current))
+                        return iterator.Current;
+                return default;
+            }
+            finally { iterator.Dispose(); }
+        }
+
+        public static System.Collections.Generic.IEnumerable<TSource> Skip<TSource>(this System.Collections.Generic.IEnumerable<TSource> source, int count)
+        {
+            if (source == null)
+                throw new ArgumentNullException("The source cannot be null.");
+            if (count < 0)
+                throw new ArgumentException("The count cannot be negative.");
+            List<TSource> result = new List<TSource>();
+            int index = 0;
+            foreach (TSource value in source)
+                if (index++ >= count)
+                    result.Add(value);
+            return result;
+        }
+
+        public static System.Collections.Generic.IEnumerable<TSource> Take<TSource>(this System.Collections.Generic.IEnumerable<TSource> source, int count)
+        {
+            if (source == null)
+                throw new ArgumentNullException("The source cannot be null.");
+            if (count < 0)
+                throw new ArgumentException("The count cannot be negative.");
+            List<TSource> result = new List<TSource>();
+            int index = 0;
+            foreach (TSource value in source)
+            {
+                if (index++ >= count)
+                    break;
+                result.Add(value);
+            }
+            return result;
+        }
+
+        public static int Sum(this System.Collections.Generic.IEnumerable<int> source)
+        {
+            if (source == null)
+                throw new ArgumentNullException("The source cannot be null.");
+            int sum = 0;
+            foreach (int value in source)
+                sum += value;
+            return sum;
         }
     }
 }
 
 namespace System.Threading
 {
+    public struct CancellationToken
+    {
+        private bool _canceled;
+        public bool IsCancellationRequested => _canceled;
+        public bool CanBeCanceled => _canceled;
+        internal CancellationToken(bool canceled) { _canceled = canceled; }
+        public CancellationTokenRegistration Register(Action callback)
+        {
+            if (_canceled && callback != null)
+                callback();
+            return new CancellationTokenRegistration();
+        }
+    }
+
+    public sealed class CancellationTokenSource : Object, IDisposable
+    {
+        private bool _canceled;
+        public CancellationToken Token => new CancellationToken(_canceled);
+        public bool IsCancellationRequested => _canceled;
+        public void Cancel() => _canceled = true;
+        public void Dispose() { }
+    }
+
+    public struct CancellationTokenRegistration : IDisposable
+    {
+        public void Dispose() { }
+    }
+
     public static class Monitor
     {
         public static void Enter(object value) { }
@@ -522,27 +1946,167 @@ namespace System.Threading
 
 namespace System.Threading.Tasks
 {
+    public enum TaskStatus
+    {
+        Created,
+        WaitingForActivation,
+        WaitingToRun,
+        Running,
+        WaitingForChildrenToComplete,
+        RanToCompletion,
+        Canceled,
+        Faulted
+    }
+
     public class Task : Object
     {
-        private bool _completed;
+        private const int Pending = 0;
+        private const int Completed = 1;
+        private const int Faulted = 2;
+        private const int Canceled = 3;
+        private int _state;
         private Exception _exception;
         private Action _continuation;
-        public bool IsCompleted => _completed;
+        internal Task() { }
+        public bool IsCompleted => _state != Pending;
+        public bool IsCompletedSuccessfully => _state == Completed;
+        public bool IsFaulted => _state == Faulted;
+        public bool IsCanceled => _state == Canceled;
+        public Exception Exception => _exception;
+        public TaskStatus Status => _state == Pending ? TaskStatus.WaitingForActivation :
+            (_state == Completed ? TaskStatus.RanToCompletion :
+             (_state == Canceled ? TaskStatus.Canceled : TaskStatus.Faulted));
         public TaskAwaiter GetAwaiter() => new TaskAwaiter(this);
         public ConfiguredTaskAwaitable ConfigureAwait(bool continueOnCapturedContext) => new ConfiguredTaskAwaitable(this);
-        public void SetResult() { _completed = true; _continuation?.Invoke(); }
-        public void SetException(Exception exception) { _exception = exception; _completed = true; _continuation?.Invoke(); }
+        public void SetResult() => TrySetResult();
+        public void SetException(Exception exception) => TrySetException(exception);
+        public void SetCanceled() => TrySetCanceled();
         internal void OnCompleted(Action continuation)
         {
-            if (_completed) continuation();
-            else _continuation += continuation;
+            if (continuation == null)
+                throw new ArgumentNullException("The task continuation cannot be null.");
+            if (IsCompleted)
+                continuation();
+            else
+                _continuation += continuation;
         }
         internal void GetResult()
         {
-            if (_exception != null) throw _exception;
+            Wait();
         }
-        public static Task FromResult() { Task task = new Task(); task.SetResult(); return task; }
+        public void Wait()
+        {
+            if (_state == Faulted)
+                throw _exception;
+            if (_state == Canceled)
+                throw new OperationCanceledException();
+        }
+        internal bool TrySetResult()
+        {
+            if (_state != Pending)
+                return false;
+            _state = Completed;
+            Action continuation = _continuation;
+            _continuation = null;
+            if (continuation != null)
+                continuation();
+            return true;
+        }
+        internal bool TrySetException(Exception exception)
+        {
+            if (_state != Pending)
+                return false;
+            _exception = exception;
+            _state = Faulted;
+            Action continuation = _continuation;
+            _continuation = null;
+            if (continuation != null)
+                continuation();
+            return true;
+        }
+        internal bool TrySetCanceled()
+        {
+            if (_state != Pending)
+                return false;
+            _state = Canceled;
+            Action continuation = _continuation;
+            _continuation = null;
+            if (continuation != null)
+                continuation();
+            return true;
+        }
+        public static Task CompletedTask
+        {
+            get
+            {
+                Task task = new Task();
+                task.TrySetResult();
+                return task;
+            }
+        }
+        public static Task FromResult() => CompletedTask;
+        public static Task FromException(Exception exception)
+        {
+            Task task = new Task();
+            task.TrySetException(exception);
+            return task;
+        }
+        public static Task FromCanceled(System.Threading.CancellationToken cancellationToken)
+        {
+            Task task = new Task();
+            task.TrySetCanceled();
+            return task;
+        }
         public static Task<TResult> FromResult<TResult>(TResult result) { Task<TResult> task = new Task<TResult>(); task.SetResult(result); return task; }
+        public static Task<TResult> FromException<TResult>(Exception exception)
+        {
+            Task<TResult> task = new Task<TResult>();
+            task.SetException(exception);
+            return task;
+        }
+        public static Task<TResult> FromCanceled<TResult>(System.Threading.CancellationToken cancellationToken)
+        {
+            Task<TResult> task = new Task<TResult>();
+            task.SetCanceled();
+            return task;
+        }
+        public static Task Run(Action action)
+        {
+            if (action == null)
+                return FromException(new ArgumentNullException("The action cannot be null."));
+            try { action(); return CompletedTask; }
+            catch (Exception exception) { return FromException(exception); }
+        }
+        public static Task<TResult> Run<TResult>(Func<TResult> function)
+        {
+            if (function == null)
+                return FromException<TResult>(new ArgumentNullException("The function cannot be null."));
+            try { return FromResult(function()); }
+            catch (Exception exception) { return FromException<TResult>(exception); }
+        }
+        public static Task WhenAll(params Task[] tasks)
+        {
+            if (tasks == null)
+                return FromException(new ArgumentNullException("The task collection cannot be null."));
+            for (int index = 0; index < tasks.Length; index++)
+                if (tasks[index] == null)
+                    return FromException(new ArgumentException("The task collection cannot contain null."));
+            for (int index = 0; index < tasks.Length; index++)
+                if (tasks[index].IsFaulted)
+                    return FromException(tasks[index].Exception);
+                else if (tasks[index].IsCanceled)
+                    return FromCanceled(default);
+            return CompletedTask;
+        }
+        public static Task<Task> WhenAny(params Task[] tasks)
+        {
+            if (tasks == null || tasks.Length == 0)
+                return FromException<Task>(new ArgumentException("At least one task is required."));
+            for (int index = 0; index < tasks.Length; index++)
+                if (tasks[index] == null)
+                    return FromException<Task>(new ArgumentException("The task collection cannot contain null."));
+            return FromResult(tasks[0]);
+        }
     }
 
     public class Task<TResult> : Task
@@ -551,7 +2115,8 @@ namespace System.Threading.Tasks
         public new TaskAwaiter<TResult> GetAwaiter() => new TaskAwaiter<TResult>(this);
         public new ConfiguredTaskAwaitable<TResult> ConfigureAwait(bool continueOnCapturedContext) => new ConfiguredTaskAwaitable<TResult>(this);
         public void SetResult(TResult result) { _result = result; base.SetResult(); }
-        public TResult GetResult() { base.GetResult(); return _result; }
+        internal bool TrySetResult(TResult result) { _result = result; return base.TrySetResult(); }
+        public new TResult GetResult() { base.GetResult(); return _result; }
         public static Task<TResult> FromResult(TResult result) { Task<TResult> task = new Task<TResult>(); task.SetResult(result); return task; }
     }
 
@@ -561,6 +2126,10 @@ namespace System.Threading.Tasks
         public Task Task => _task;
         public void SetResult() => _task.SetResult();
         public void SetException(Exception exception) => _task.SetException(exception);
+        public void SetCanceled() => _task.SetCanceled();
+        public bool TrySetResult() => _task.TrySetResult();
+        public bool TrySetException(Exception exception) => _task.TrySetException(exception);
+        public bool TrySetCanceled() => _task.TrySetCanceled();
     }
 
     public class TaskCompletionSource<TResult> : Object
@@ -569,6 +2138,10 @@ namespace System.Threading.Tasks
         public Task<TResult> Task => _task;
         public void SetResult(TResult result) => _task.SetResult(result);
         public void SetException(Exception exception) => _task.SetException(exception);
+        public void SetCanceled() => _task.SetCanceled();
+        public bool TrySetResult(TResult result) => _task.TrySetResult(result);
+        public bool TrySetException(Exception exception) => _task.TrySetException(exception);
+        public bool TrySetCanceled() => _task.TrySetCanceled();
     }
 
     public struct TaskAwaiter : System.Runtime.CompilerServices.ICriticalNotifyCompletion
