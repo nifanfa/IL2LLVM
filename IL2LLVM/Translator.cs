@@ -379,6 +379,7 @@ sealed partial class Translator
                         SortedDictionary<int, LLVMBasicBlockRef> label = new();
                         int nextFinallyContinuation = 1;
                         TypeReference? constrainedType = null;
+                        uint unalignedAlignment = 0;
                         var methodDefinition = FindLocalMethod(method.Value.Item3, localMethods) ?? method.Value.Item3.Resolve();
 
                         void TrackType(LLVMValueRef value, TypeReference type)
@@ -1126,9 +1127,16 @@ sealed partial class Translator
                             switch (instr.OpCode.Code)
                             {
                                 case Code.Nop:
+                                case Code.Break:
+                                case Code.No:
                                 case Code.Volatile:
                                 case Code.Readonly:
                                 case Code.Tail:
+                                    break;
+                                case Code.Unaligned:
+                                    unalignedAlignment = Convert.ToUInt32(instr.Operand);
+                                    if (unalignedAlignment is not (1 or 2 or 4))
+                                        throw new InvalidOperationException($"Unsupported unaligned prefix value: {unalignedAlignment}.");
                                     break;
                                 case Code.Constrained:
                                     constrainedType = SubstituteGenericParameter((TypeReference)instr.Operand, method.Value.Item3);
@@ -1819,6 +1827,7 @@ sealed partial class Translator
                                 case Code.Ldelem_I4:
                                 case Code.Ldelem_U4:
                                 case Code.Ldelem_I8:
+                                case Code.Ldelem_I:
                                 case Code.Ldelem_R4:
                                 case Code.Ldelem_R8:
                                 case Code.Ldelem_Ref:
@@ -1838,6 +1847,7 @@ sealed partial class Translator
                                             Code.Ldelem_I4 => LLVMTypeRef.Int32,
                                             Code.Ldelem_U4 => LLVMTypeRef.Int32,
                                             Code.Ldelem_I8 => LLVMTypeRef.Int64,
+                                            Code.Ldelem_I => sizeType,
                                             Code.Ldelem_R4 => LLVMTypeRef.Float,
                                             Code.Ldelem_R8 => LLVMTypeRef.Double,
                                             Code.Ldelem_Ref => LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0),
@@ -2017,6 +2027,11 @@ sealed partial class Translator
                                             _ => throw new InvalidOperationException(instr.OpCode.Code.ToString())
                                         };
                                         var value = builder.BuildLoad2(type, address);
+                                        if (unalignedAlignment != 0)
+                                        {
+                                            value.Alignment = unalignedAlignment;
+                                            unalignedAlignment = 0;
+                                        }
                                         if (instr.OpCode.Code is Code.Ldind_I1 or Code.Ldind_U1 or Code.Ldind_I2 or Code.Ldind_U2)
                                             value = ConvertValue(builder, value, LLVMTypeRef.Int32,
                                                 instr.OpCode.Code is Code.Ldind_I1 or Code.Ldind_I2);
@@ -2050,7 +2065,12 @@ sealed partial class Translator
                                             Code.Stind_Ref => LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0),
                                             _ => throw new InvalidOperationException(instr.OpCode.Code.ToString())
                                         };
-                                        builder.BuildStore(ConvertValue(builder, value, type), address);
+                                        var store = builder.BuildStore(ConvertValue(builder, value, type), address);
+                                        if (unalignedAlignment != 0)
+                                        {
+                                            store.Alignment = unalignedAlignment;
+                                            unalignedAlignment = 0;
+                                        }
                                     }
                                     break;
                                 case Code.Initobj:
@@ -2060,14 +2080,18 @@ sealed partial class Translator
                                         unsafe
                                         {
                                             LLVM.BuildMemSet(builder, address, LLVMValueRef.CreateConstInt(LLVMTypeRef.Int8, 0, false),
-                                                LLVMValueRef.CreateConstInt(sizeType, (ulong)Math.Max(1, GetTypeSize(type)), false), 1);
+                                                LLVMValueRef.CreateConstInt(sizeType, (ulong)Math.Max(1, GetTypeSize(type)), false),
+                                                unalignedAlignment == 0 ? 1 : unalignedAlignment);
                                         }
+                                        unalignedAlignment = 0;
                                     }
                                     break;
                                 case Code.Ldobj:
                                     {
                                         var type = SubstituteGenericParameter((TypeReference)instr.Operand, method.Value.Item3);
                                         var address = stack.Pop();
+                                        var alignment = unalignedAlignment;
+                                        unalignedAlignment = 0;
                                         if (IsValueType(type))
                                         {
                                             var storage = CreateLocalStorage(entryBuilder, type);
@@ -2076,7 +2100,12 @@ sealed partial class Translator
                                             stack.Push(destination);
                                         }
                                         else
-                                            stack.Push(builder.BuildLoad2(GetLLVMTypeRef(type), address));
+                                        {
+                                            var value = builder.BuildLoad2(GetLLVMTypeRef(type), address);
+                                            if (alignment != 0)
+                                                value.Alignment = alignment;
+                                            stack.Push(value);
+                                        }
                                     }
                                     break;
                                 case Code.Stobj:
@@ -2084,10 +2113,16 @@ sealed partial class Translator
                                         var type = SubstituteGenericParameter((TypeReference)instr.Operand, method.Value.Item3);
                                         var value = stack.Pop();
                                         var address = stack.Pop();
+                                        var alignment = unalignedAlignment;
+                                        unalignedAlignment = 0;
                                         if (IsValueType(type))
                                             CopyValue(builder, address, value, GetTypeSize(type));
                                         else
-                                            builder.BuildStore(ConvertValue(builder, value, GetLLVMTypeRef(type)), address);
+                                        {
+                                            var store = builder.BuildStore(ConvertValue(builder, value, GetLLVMTypeRef(type)), address);
+                                            if (alignment != 0)
+                                                store.Alignment = alignment;
+                                        }
                                     }
                                     break;
                                 case Code.Cpobj:
@@ -2096,6 +2131,33 @@ sealed partial class Translator
                                         var source = stack.Pop();
                                         var destination = stack.Pop();
                                         CopyValue(builder, destination, source, GetTypeSize(type));
+                                        unalignedAlignment = 0;
+                                    }
+                                    break;
+                                case Code.Cpblk:
+                                    {
+                                        var length = ConvertValue(builder, stack.Pop(), sizeType, false);
+                                        var source = ConvertValue(builder, stack.Pop(), exceptionPointerType);
+                                        var destination = ConvertValue(builder, stack.Pop(), exceptionPointerType);
+                                        unsafe
+                                        {
+                                            LLVM.BuildMemCpy(builder, destination, unalignedAlignment == 0 ? 1 : unalignedAlignment,
+                                                source, unalignedAlignment == 0 ? 1 : unalignedAlignment, length);
+                                        }
+                                        unalignedAlignment = 0;
+                                    }
+                                    break;
+                                case Code.Initblk:
+                                    {
+                                        var length = ConvertValue(builder, stack.Pop(), sizeType, false);
+                                        var value = ConvertValue(builder, stack.Pop(), LLVMTypeRef.Int8, false);
+                                        var destination = ConvertValue(builder, stack.Pop(), exceptionPointerType);
+                                        unsafe
+                                        {
+                                            LLVM.BuildMemSet(builder, destination, value, length,
+                                                unalignedAlignment == 0 ? 1 : unalignedAlignment);
+                                        }
+                                        unalignedAlignment = 0;
                                     }
                                     break;
                                 case Code.Ldc_I8:
@@ -2652,9 +2714,14 @@ sealed partial class Translator
                                         stack.Push(value);
                                     }
                                     break;
+                                case Code.Jmp:
+                                case Code.Ckfinite:
+                                case Code.Arglist:
+                                case Code.Mkrefany:
+                                case Code.Refanyval:
+                                case Code.Refanytype:
                                 default:
-                                    NotImplemented(instr);
-                                    break;
+                                    throw new NotImplementedException("How did you reach that? This can't be happening...");
                             }
                             previousInstruction = instr;
                         }

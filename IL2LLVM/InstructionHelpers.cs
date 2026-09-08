@@ -192,15 +192,6 @@ sealed partial class Translator
         _ => LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0)
     };
 
-    void NotImplemented(Instruction instr)
-    {
-        if (Debugger.IsAttached)
-        {
-            Debugger.Break();
-        }
-        else throw new NotImplementedException();
-    }
-
     int GetMethodParameterCount(MethodReference method)
     {
         int count = method.Parameters.Count;
