@@ -319,6 +319,7 @@ public static partial class LanguageFeatureValidation
         for (int index = 0; index < values.Length; index++)
             list.Add(values[index]);
         VerifyTypes(values, list);
+        VerifyEnums();
         VerifyNumericOperators();
         VerifyStrings();
         VerifyObjectAndGenericFeatures(values);
@@ -415,6 +416,29 @@ public static partial class LanguageFeatureValidation
 
         if (default(FeatureValue).Value != RuntimeValue(0) || list.Count != values.Length)
             Fail("default or collection");
+    }
+
+    private static void VerifyEnums()
+    {
+        FeatureFlags configured = FeatureFlags.Read | FeatureFlags.Execute;
+        FeatureFlags all = FeatureFlags.Read | FeatureFlags.Write | FeatureFlags.Execute;
+        FeatureFlags withoutRead = configured & ~FeatureFlags.Read;
+        FeatureFlags fromValue = (FeatureFlags)RuntimeValue(3);
+        int selected = configured switch
+        {
+            FeatureFlags.Read => 1,
+            FeatureFlags.Read | FeatureFlags.Execute => 5,
+            _ => 0,
+        };
+
+        if ((ushort)configured != RuntimeValue(5) ||
+            (configured & FeatureFlags.Read) != FeatureFlags.Read ||
+            (configured & FeatureFlags.Write) != FeatureFlags.None ||
+            withoutRead != FeatureFlags.Execute ||
+            (all & configured) != configured ||
+            fromValue != (FeatureFlags.Read | FeatureFlags.Write) ||
+            selected != RuntimeValue(5))
+            Fail("enum flags");
     }
 
     private static void VerifyNumericOperators()
@@ -797,6 +821,18 @@ public static partial class LanguageFeatureValidation
             matrix.GetUpperBound(RuntimeValue(1)) != columns - RuntimeValue(1) ||
             matrix[0, 0] != RuntimeValue(1) || matrix[rows - 1, columns - 1] != RuntimeValue(6))
             Fail("multidimensional array");
+
+        Coordinate[,] coordinates = new Coordinate[rows, columns];
+        coordinates[rows - 1, columns - 1] = new Coordinate(RuntimeValue(10), RuntimeValue(20));
+        if (coordinates[rows - 1, columns - 1].Sum() != RuntimeValue(30))
+            Fail("multidimensional value element set");
+        coordinates[rows - 1, columns - 1].X++;
+        FeatureObject[,] objects = new FeatureObject[rows, columns];
+        objects[0, columns - 1] = new FeatureObject(RuntimeValue(8));
+        if (coordinates[rows - 1, columns - 1].Sum() != RuntimeValue(31))
+            Fail("multidimensional value element address");
+        if (objects[0, columns - 1].Value != RuntimeValue(9))
+            Fail("multidimensional reference element");
 
         int[,,] cube = new int[rows, rows, rows];
         cube[rows - 1, 0, rows - 1] = RuntimeValue(7);

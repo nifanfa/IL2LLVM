@@ -4,8 +4,8 @@ namespace System
 {
     public class Object
     {
-        private IntPtr m_pMethodTable;
-        private unsafe GCDesc* m_pGCDesc;
+        internal IntPtr m_pMethodTable;
+        internal unsafe GCDesc* m_pGCDesc;
 
         public Object() { }
 
@@ -26,6 +26,12 @@ namespace System
         public IntPtr ArrayElementSize;
         public IntPtr ArrayElementReferenceCount;
         public fixed ushort FixedReferenceOffsets[1];
+    }
+
+    public static class GC
+    {
+        public static void Collect() => Runtime.GCHeap.Collect();
+        public static int CollectionCount(int generation) => Runtime.GCHeap.CollectionCount(generation);
     }
 
     public struct Void { }
@@ -95,10 +101,11 @@ namespace System
         public const ulong MaxValue = 0xffffffffffffffff;
         public override string ToString() => Number.Format(this);
     }
-    public struct IntPtr
+    public unsafe struct IntPtr
     {
         public static readonly IntPtr Zero;
         public override string ToString() => "0";
+        public static explicit operator int(IntPtr value) => *(int*)&value;
     }
     public struct UIntPtr
     {
@@ -185,22 +192,20 @@ namespace System
         public static implicit operator Nullable<T>(T value) => new Nullable<T>(value);
         public static explicit operator T(Nullable<T> value) => value.Value;
     }
-    public abstract class Array
+    public abstract unsafe class Array
     {
         public int Length;
-        private int _rank;
-        private int _length0;
-        private int _length1;
-        private int _length2;
+        private int[] _lengths;
+        internal void* m_pData;
 
-        public virtual int Rank => _rank == 0 ? 1 : _rank;
+        public virtual int Rank => _lengths == null ? 1 : _lengths.Length;
         public virtual int GetLength(int dimension)
         {
             if ((uint)dimension >= (uint)Rank)
                 throw new IndexOutOfRangeException("The array dimension is outside the array rank.");
-            if (Rank == 1)
+            if (_lengths == null)
                 return Length;
-            return dimension == 0 ? _length0 : dimension == 1 ? _length1 : _length2;
+            return _lengths[dimension];
         }
         public virtual int GetLowerBound(int dimension)
         {
@@ -643,7 +648,11 @@ namespace System
     }
 
     public struct RuntimeMethodHandle { }
-    public struct RuntimeFieldHandle { }
+    public unsafe struct RuntimeFieldHandle
+    {
+        internal void* Data;
+        internal int Length;
+    }
 
     public static class AppContext
     {
@@ -685,6 +694,7 @@ namespace System.Runtime.InteropServices
     public sealed class DllImportAttribute : Attribute
     {
         public DllImportAttribute(string dllName) { }
+        public string EntryPoint { get; set; }
     }
 
     public sealed class MarshalAsAttribute : Attribute
@@ -756,10 +766,18 @@ namespace System.Runtime.CompilerServices
         public static bool IsDynamicCodeSupported => false;
     }
 
-    public static class RuntimeHelpers
+    public static unsafe class RuntimeHelpers
     {
         public static int OffsetToStringData => 0;
-        public static void InitializeArray(Array array, RuntimeFieldHandle fieldHandle) { }
+        public static void InitializeArray(Array array, RuntimeFieldHandle fieldHandle)
+        {
+            if (array == null || fieldHandle.Data == null || fieldHandle.Length == 0)
+                return;
+            byte* source = (byte*)fieldHandle.Data;
+            byte* destination = (byte*)array.m_pData;
+            for (int index = 0; index < fieldHandle.Length; index++)
+                destination[index] = source[index];
+        }
     }
 
     public sealed class ExtensionAttribute : Attribute { }
@@ -828,6 +846,189 @@ namespace System.Runtime.CompilerServices
 
 namespace System.Runtime
 {
+    internal unsafe struct GCRoot
+    {
+        public void* Address;
+        public GCDesc* Descriptor;
+    }
+
+    internal unsafe struct GCFrame
+    {
+        public GCFrame* Previous;
+        public GCRoot* Roots;
+        public int RootCount;
+    }
+
+    internal unsafe struct GCAllocation
+    {
+        public GCAllocation* Next;
+        public nuint Size;
+        public int Marked;
+    }
+
+    internal unsafe struct GCObjectHeader
+    {
+        public IntPtr m_pMethodTable;
+        public GCDesc* m_pGCDesc;
+    }
+
+    internal unsafe struct GCStaticRoot
+    {
+        public GCStaticRoot* Next;
+        public void* Address;
+        public GCDesc* Descriptor;
+    }
+
+    internal static unsafe class GCHeap
+    {
+        private static GCAllocation* s_allocations;
+        private static GCFrame* s_frames;
+        private static GCStaticRoot* s_staticRoots;
+        private static int s_allocatedBytes;
+        private static int s_collectionThreshold = int.MaxValue;
+        private static int s_collectionCount;
+
+        [DllImport("*", EntryPoint = "calloc")]
+        private static extern void* Calloc(nuint count, nuint size);
+
+        [DllImport("*", EntryPoint = "free")]
+        private static extern void Free(void* value);
+
+        public static void* Allocate(nuint size)
+        {
+            if (s_allocatedBytes >= s_collectionThreshold)
+                Collect();
+
+            GCAllocation* allocation = (GCAllocation*)Calloc(1, size + (nuint)sizeof(GCAllocation));
+            if (allocation == null)
+                ExceptionRuntime.Abort();
+            allocation->Next = s_allocations;
+            allocation->Size = size;
+            s_allocations = allocation;
+            s_allocatedBytes += (int)size;
+            return (byte*)allocation + sizeof(GCAllocation);
+        }
+
+        public static void Push(GCFrame* frame, GCRoot* roots, int rootCount)
+        {
+            frame->Previous = s_frames;
+            frame->Roots = roots;
+            frame->RootCount = rootCount;
+            s_frames = frame;
+        }
+
+        public static void Pop(GCFrame* frame)
+        {
+            s_frames = frame->Previous;
+        }
+
+        public static GCFrame* GetTopFrame() => s_frames;
+
+        public static void UnwindTo(GCFrame* frame) => s_frames = frame;
+
+        public static void RegisterStaticRoot(void* address, GCDesc* descriptor)
+        {
+            for (GCStaticRoot* existing = s_staticRoots; existing != null; existing = existing->Next)
+                if (existing->Address == address)
+                    return;
+
+            GCStaticRoot* registered = (GCStaticRoot*)Calloc(1, (nuint)sizeof(GCStaticRoot));
+            if (registered == null)
+                ExceptionRuntime.Abort();
+            registered->Address = address;
+            registered->Descriptor = descriptor;
+            registered->Next = s_staticRoots;
+            s_staticRoots = registered;
+        }
+
+        public static void Collect()
+        {
+            for (GCStaticRoot* root = s_staticRoots; root != null; root = root->Next)
+            {
+                if (root->Descriptor == null)
+                    MarkRoot(root->Address, null);
+                else
+                    ScanValue(root->Address, root->Descriptor);
+            }
+            for (GCFrame* frame = s_frames; frame != null; frame = frame->Previous)
+                for (int index = 0; index < frame->RootCount; index++)
+                    MarkRoot(frame->Roots[index].Address, frame->Roots[index].Descriptor);
+
+            GCAllocation* previous = null;
+            GCAllocation* allocation = s_allocations;
+            while (allocation != null)
+            {
+                if (allocation->Marked != 0)
+                {
+                    allocation->Marked = 0;
+                    previous = allocation;
+                    allocation = allocation->Next;
+                }
+                else
+                {
+                    GCAllocation* next = allocation->Next;
+                    if (previous == null)
+                        s_allocations = next;
+                    else
+                        previous->Next = next;
+                    Free(allocation);
+                    allocation = next;
+                }
+            }
+            s_allocatedBytes = 0;
+            s_collectionCount++;
+        }
+
+        public static int CollectionCount(int generation) => s_collectionCount;
+
+        private static void MarkRoot(void* address, GCDesc* descriptor)
+        {
+            if (address == null)
+                return;
+            if (descriptor == null)
+                MarkObject(*(void**)address);
+            else
+                ScanValue(address, descriptor);
+        }
+
+        private static void MarkObject(void* value)
+        {
+            if (value == null)
+                return;
+            GCAllocation* allocation = (GCAllocation*)((byte*)value - sizeof(GCAllocation));
+            if (allocation->Marked != 0)
+                return;
+            allocation->Marked = 1;
+            GCDesc* descriptor = ((GCObjectHeader*)value)->m_pGCDesc;
+            if (descriptor != null)
+                ScanValue(value, descriptor);
+        }
+
+        private static void ScanValue(void* value, GCDesc* descriptor)
+        {
+            byte* data = (byte*)value;
+            ushort* offsets = (ushort*)((byte*)descriptor + sizeof(nuint) * 6);
+            int fixedReferenceCount = (int)descriptor->FixedReferenceCount;
+            for (int index = 0; index < fixedReferenceCount; index++)
+                MarkObject(*(void**)(data + offsets[index]));
+
+            int arrayElementSize = (int)descriptor->ArrayElementSize;
+            if (arrayElementSize == 0)
+                return;
+
+            int length = *(int*)(data + (nint)descriptor->ArrayLengthOffset);
+            int arrayElementReferenceCount = (int)descriptor->ArrayElementReferenceCount;
+            ushort* elementOffsets = offsets + fixedReferenceCount;
+            byte* elements = data + (nint)descriptor->BaseSize;
+            for (int elementIndex = 0; elementIndex < length; elementIndex++)
+            {
+                byte* element = elements + (nint)elementIndex * arrayElementSize;
+                for (int referenceIndex = 0; referenceIndex < arrayElementReferenceCount; referenceIndex++)
+                    MarkObject(*(void**)(element + elementOffsets[referenceIndex]));
+            }
+        }
+    }
+
     public sealed class RuntimeExportAttribute : Attribute
     {
         public RuntimeExportAttribute(string name) { }
@@ -843,6 +1044,7 @@ namespace System.Runtime
             void** fields = (void**)frame;
             fields[0] = _top;
             fields[1] = buffer;
+            fields[2] = GCHeap.GetTopFrame();
             _top = frame;
         }
 
@@ -860,9 +1062,11 @@ namespace System.Runtime
 
         public static void SetCurrent(Exception exception) => _current = exception;
 
-        [DllImport("*")]
+        [DllImport("*", EntryPoint = "setjmp")]
+        public static extern int SetJump(void* buffer);
+        [DllImport("*", EntryPoint = "longjmp")]
         public static extern void LongJump(void* buffer, int value);
-        [DllImport("*")]
+        [DllImport("*", EntryPoint = "abort")]
         public static extern void Abort();
 
         public static void Throw(Exception exception)
@@ -878,7 +1082,10 @@ namespace System.Runtime
                 Abort();
             }
             else
+            {
+                GCHeap.UnwindTo((GCFrame*)((void**)top)[2]);
                 LongJump(GetBuffer(top), 1);
+            }
         }
     }
 }

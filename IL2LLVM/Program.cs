@@ -34,6 +34,7 @@ Dictionary<string, (LLVMValueRef Function, LLVMValueRef State)> cctorGuards = ne
 Dictionary<string, TypeDefinition> localTypes = new(StringComparer.Ordinal);
 Dictionary<string, ulong> runtimeTypeIds = new(StringComparer.Ordinal);
 Dictionary<string, LLVMValueRef> gcDescriptors = new(StringComparer.Ordinal);
+Dictionary<string, LLVMValueRef> runtimeFieldData = new(StringComparer.Ordinal);
 ulong nextRuntimeTypeId = 1;
 int nextVirtualDispatchId = 0;
 LLVMTypeRef exceptionPushType = default;
@@ -48,6 +49,14 @@ LLVMTypeRef setjmpType = default;
 LLVMValueRef setjmpFunction = default;
 LLVMTypeRef exceptionThrowType = default;
 LLVMValueRef exceptionThrowFunction = default;
+LLVMTypeRef gcAllocateType = default;
+LLVMValueRef gcAllocateFunction = default;
+LLVMTypeRef gcPushType = default;
+LLVMValueRef gcPushFunction = default;
+LLVMTypeRef gcPopType = default;
+LLVMValueRef gcPopFunction = default;
+LLVMTypeRef gcRegisterStaticRootType = default;
+LLVMValueRef gcRegisterStaticRootFunction = default;
 
 {
     var assembly = AssemblyDefinition.ReadAssembly(fileName);
@@ -68,6 +77,8 @@ LLVMValueRef exceptionThrowFunction = default;
         voidPointerType);
     var exceptionCurrentMethod = GetRequiredMethod(exceptionRuntimeType, "GetCurrent", false,
         localTypes["System.Exception"]);
+    var setjmpMethod = GetRequiredMethod(exceptionRuntimeType, "SetJump", false,
+        localTypes["System.Int32"], voidPointerType);
     var longjmpMethod = GetRequiredMethod(exceptionRuntimeType, "LongJump", false,
         localTypes["System.Void"], voidPointerType, localTypes["System.Int32"]);
     var exceptionAbortMethod = GetRequiredMethod(exceptionRuntimeType, "Abort", false,
@@ -79,12 +90,38 @@ LLVMValueRef exceptionThrowFunction = default;
     RegisterMethodFunction(module, exceptionBufferMethod, exceptionBufferMethod.Body.Instructions);
     RegisterMethodFunction(module, exceptionTopMethod, exceptionTopMethod.Body.Instructions);
     RegisterMethodFunction(module, exceptionCurrentMethod, exceptionCurrentMethod.Body.Instructions);
-    RegisterMethodFunction(module, longjmpMethod, null, "longjmp");
-    RegisterMethodFunction(module, exceptionAbortMethod, null, "abort");
+    RegisterMethodFunction(module, setjmpMethod, null);
+    RegisterMethodFunction(module, longjmpMethod, null);
+    RegisterMethodFunction(module, exceptionAbortMethod, null);
     var exceptionPointerType = LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0);
-    var allocationType = LLVMTypeRef.CreateFunction(exceptionPointerType, [sizeType, sizeType]);
-    var allocationFunction = module.AddFunction("calloc", allocationType);
     RegisterMethodFunction(module, exceptionThrowMethod, exceptionThrowMethod.Body.Instructions);
+    var gcHeapType = localTypes["System.Runtime.GCHeap"];
+    var gcFramePointerType = new PointerType(localTypes["System.Runtime.GCFrame"]);
+    var gcRootPointerType = new PointerType(localTypes["System.Runtime.GCRoot"]);
+    var gcDescPointerType = new PointerType(localTypes["System.GCDesc"]);
+    var gcAllocateMethod = GetRequiredMethod(gcHeapType, "Allocate", false, voidPointerType,
+        localTypes["System.UIntPtr"]);
+    var gcPushMethod = GetRequiredMethod(gcHeapType, "Push", false, localTypes["System.Void"],
+        gcFramePointerType, gcRootPointerType, localTypes["System.Int32"]);
+    var gcPopMethod = GetRequiredMethod(gcHeapType, "Pop", false, localTypes["System.Void"], gcFramePointerType);
+    var gcRegisterStaticRootMethod = GetRequiredMethod(gcHeapType, "RegisterStaticRoot", false,
+        localTypes["System.Void"], voidPointerType, gcDescPointerType);
+    RegisterMethodFunction(module, gcAllocateMethod, gcAllocateMethod.Body.Instructions);
+    RegisterMethodFunction(module, gcPushMethod, gcPushMethod.Body.Instructions);
+    RegisterMethodFunction(module, gcPopMethod, gcPopMethod.Body.Instructions);
+    RegisterMethodFunction(module, gcRegisterStaticRootMethod, gcRegisterStaticRootMethod.Body.Instructions);
+    var registeredGCAllocate = GetRegisteredMethod(gcAllocateMethod)!;
+    gcAllocateFunction = registeredGCAllocate.Item1;
+    gcAllocateType = registeredGCAllocate.Item2;
+    var registeredGCPush = GetRegisteredMethod(gcPushMethod)!;
+    gcPushFunction = registeredGCPush.Item1;
+    gcPushType = registeredGCPush.Item2;
+    var registeredGCPop = GetRegisteredMethod(gcPopMethod)!;
+    gcPopFunction = registeredGCPop.Item1;
+    gcPopType = registeredGCPop.Item2;
+    var registeredGCRegisterStaticRoot = GetRegisteredMethod(gcRegisterStaticRootMethod)!;
+    gcRegisterStaticRootFunction = registeredGCRegisterStaticRoot.Item1;
+    gcRegisterStaticRootType = registeredGCRegisterStaticRoot.Item2;
     var registeredExceptionPush = GetRegisteredMethod(exceptionPushMethod)!;
     exceptionPushFunction = registeredExceptionPush.Item1;
     exceptionPushType = registeredExceptionPush.Item2;
@@ -97,8 +134,9 @@ LLVMValueRef exceptionThrowFunction = default;
     var registeredExceptionCurrent = GetRegisteredMethod(exceptionCurrentMethod)!;
     exceptionCurrentFunction = registeredExceptionCurrent.Item1;
     exceptionCurrentType = registeredExceptionCurrent.Item2;
-    setjmpType = LLVMTypeRef.CreateFunction(LLVMTypeRef.Int32, [exceptionPointerType, exceptionPointerType]);
-    setjmpFunction = module.AddFunction("_setjmp", setjmpType);
+    var registeredSetjmp = GetRegisteredMethod(setjmpMethod)!;
+    setjmpFunction = registeredSetjmp.Item1;
+    setjmpType = registeredSetjmp.Item2;
     var registeredExceptionThrow = GetRegisteredMethod(exceptionThrowMethod)!;
     exceptionThrowFunction = registeredExceptionThrow.Item1;
     exceptionThrowType = registeredExceptionThrow.Item2;
@@ -107,15 +145,6 @@ LLVMValueRef exceptionThrowFunction = default;
         new ArrayType(localTypes["System.Char"]));
     var typeGetTypeFromHandleMethod = GetRequiredMethod(localTypes["System.Type"], "GetTypeFromHandle", false,
         localTypes["System.Type"], localTypes["System.RuntimeTypeHandle"]);
-    var arrayRankMethod = GetRequiredMethod(localTypes["System.Array"], "get_Rank", true,
-        localTypes["System.Int32"]);
-    var arrayGetLengthMethod = GetRequiredMethod(localTypes["System.Array"], "GetLength", true,
-        localTypes["System.Int32"], localTypes["System.Int32"]);
-    var arrayGetLowerBoundMethod = GetRequiredMethod(localTypes["System.Array"], "GetLowerBound", true,
-        localTypes["System.Int32"], localTypes["System.Int32"]);
-    var arrayGetUpperBoundMethod = GetRequiredMethod(localTypes["System.Array"], "GetUpperBound", true,
-        localTypes["System.Int32"], localTypes["System.Int32"]);
-
     HashSet<string> reachableMethods = new(StringComparer.Ordinal);
     Queue<MethodDefinition> pendingMethods = new();
     HashSet<string> rootMethods = new(StringComparer.Ordinal);
@@ -317,12 +346,9 @@ LLVMValueRef exceptionThrowFunction = default;
             entryBuilder = context.CreateBuilder();
             entryBuilder.PositionAtEnd(allocaBlock);
             builder.PositionAtEnd(entry);
-            if (method.Value.Item3.Resolve() is not { IsConstructor: true } && !method.Value.Item3.HasThis)
-            {
-                var guard = GetCctorGuard(method.Value.Item3.DeclaringType);
-                if (guard is not null)
-                    builder.BuildCall2(LLVMTypeRef.CreateFunction(LLVMTypeRef.Void, []), guard.Value.Function, []);
-            }
+            var cctorGuard = method.Value.Item3.Resolve() is not { IsConstructor: true } && !method.Value.Item3.HasThis
+                ? GetCctorGuard(method.Value.Item3.DeclaringType)
+                : null;
             {
                 Stack<LLVMValueRef> stack = new();
                 Dictionary<LLVMBasicBlockRef, List<(LLVMBasicBlockRef Source, List<LLVMValueRef> Values)>> incomingStacks = new();
@@ -417,6 +443,7 @@ LLVMValueRef exceptionThrowFunction = default;
                         enumeratorType.GenericArguments.Add(enumerableElementType);
                         var enumerator = BuildAllocation(builder, GetObjectSize(enumeratorType));
                         InitializeRuntimeType(builder, enumerator, enumeratorType);
+                        StoreTemporaryRoot(1, enumerator, enumeratorType);
                         builder.BuildCall2(constructorMethod.Item2, constructorMethod.Item1, [enumerator, arrayReceiverValue]);
                         builder.BuildBr(arrayContinuation);
                         builder.PositionAtEnd(fallbackBlock);
@@ -620,8 +647,7 @@ LLVMValueRef exceptionThrowFunction = default;
                     var dispatch = method.Value.Item1.AppendBasicBlock($"eh.dispatch.{nextVirtualDispatchId++}");
                     builder.BuildCall2(exceptionPushType, exceptionPushFunction, [region.Frame, region.Buffer]);
                     var jumpResult = builder.BuildCall2(setjmpType, setjmpFunction,
-                        [builder.BuildCall2(exceptionBufferType, exceptionBufferFunction, [region.Frame]),
-                         LLVMValueRef.CreateConstNull(exceptionPointerType)]);
+                        [builder.BuildCall2(exceptionBufferType, exceptionBufferFunction, [region.Frame])]);
                     builder.BuildCondBr(builder.BuildICmp(LLVMIntPredicate.LLVMIntEQ, jumpResult,
                         LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, 0, false)), normal, dispatch);
                     terminatedBlocks.Add(source);
@@ -789,7 +815,7 @@ LLVMValueRef exceptionThrowFunction = default;
                     foreach (var regionGroup in methodDefinition.Body.ExceptionHandlers
                                  .GroupBy(handler => (handler.TryStart.Offset, handler.TryEnd.Offset)))
                     {
-                        var frame = BuildEntryAlloca(LLVMTypeRef.CreateArray(LLVMTypeRef.Int8, (uint)(pointerSize * 2)), 16);
+                        var frame = BuildEntryAlloca(LLVMTypeRef.CreateArray(LLVMTypeRef.Int8, (uint)(pointerSize * 3)), 16);
                         var buffer = BuildEntryAlloca(LLVMTypeRef.CreateArray(LLVMTypeRef.Int8, 256), 16);
                         var region = new ExceptionRegion
                         {
@@ -813,6 +839,166 @@ LLVMValueRef exceptionThrowFunction = default;
                         return start != 0 ? start : right.End.CompareTo(left.End);
                     });
                 }
+
+                var fixedRoots = new List<(LLVMValueRef Address, TypeReference? Descriptor)>();
+
+                void AddRoot(Tuple<LLVMValueRef, LLVMTypeRef> storage, TypeReference type, bool initialize)
+                {
+                    if (IsManagedReferenceType(type))
+                    {
+                        if (initialize)
+                            builder.BuildStore(LLVMValueRef.CreateConstNull(storage.Item2), storage.Item1);
+                        fixedRoots.Add((storage.Item1, null));
+                        return;
+                    }
+                    if (!IsValueType(type) || !GetGCReferenceOffsets(type).Any())
+                        return;
+                    var value = builder.BuildLoad2(storage.Item2, storage.Item1);
+                    if (initialize)
+                    {
+                        unsafe
+                        {
+                            LLVM.BuildMemSet(builder, value, LLVMValueRef.CreateConstNull(LLVMTypeRef.Int8),
+                                LLVMValueRef.CreateConstInt(sizeType, (ulong)GetTypeSize(type), false), 1);
+                        }
+                    }
+                    fixedRoots.Add((value, type));
+                }
+
+                for (int index = 0; index < GetMethodParameterCount(method.Value.Item3); index++)
+                {
+                    var parameterType = method.Value.Item3.HasThis && index == 0
+                        ? method.Value.Item3.DeclaringType
+                        : SubstituteGenericParameter(method.Value.Item3.Parameters[index - (method.Value.Item3.HasThis ? 1 : 0)].ParameterType,
+                            method.Value.Item3);
+                    AddRoot(local[-1 - index], parameterType, false);
+                }
+                if (methodDefinition?.HasBody == true)
+                {
+                    foreach (var variable in methodDefinition.Body.Variables)
+                        AddRoot(local[variable.Index], SubstituteGenericParameter(variable.VariableType, method.Value.Item3), true);
+                }
+                foreach (var handler in caughtExceptions)
+                    AddRoot(new Tuple<LLVMValueRef, LLVMTypeRef>(handler.Value, exceptionPointerType), localTypes["System.Exception"], true);
+
+                var tracksGCFrames = !SameTypeDefinition(method.Value.Item3.DeclaringType, gcHeapType);
+                var maxStack = Math.Max(1, methodDefinition?.Body.MaxStackSize ?? 1);
+                var stackRootCapacity = maxStack + 1;
+                const int temporaryRootCount = 4;
+                var rootEntryCount = fixedRoots.Count + stackRootCapacity + temporaryRootCount;
+                var rootEntryType = LLVMTypeRef.CreateArray(exceptionPointerType, (uint)(rootEntryCount * 2));
+                var rootEntries = BuildEntryAlloca(rootEntryType, (uint)pointerSize);
+                var rootFrame = BuildEntryAlloca(LLVMTypeRef.CreateArray(LLVMTypeRef.Int8,
+                    (uint)GetTypeSize(localTypes["System.Runtime.GCFrame"])), (uint)pointerSize);
+                var rootSpills = Enumerable.Range(0, stackRootCapacity).Select(_ => BuildEntryAlloca(exceptionPointerType)).ToArray();
+                var temporaryRootSpills = Enumerable.Range(0, temporaryRootCount)
+                    .Select(_ => BuildEntryAlloca(exceptionPointerType)).ToArray();
+
+                LLVMValueRef GetRootEntryAddress(int index)
+                {
+                    return builder.BuildGEP2(rootEntryType, rootEntries,
+                        [LLVMValueRef.CreateConstInt(sizeType, 0, false),
+                         LLVMValueRef.CreateConstInt(sizeType, (ulong)(index * 2), false)]);
+                }
+
+                void StoreRootEntry(int index, LLVMValueRef address, TypeReference? descriptor)
+                {
+                    var entry = GetRootEntryAddress(index);
+                    builder.BuildStore(ConvertValue(builder, address, exceptionPointerType), entry);
+                    var descriptorAddress = builder.BuildGEP2(exceptionPointerType, entry,
+                        [LLVMValueRef.CreateConstInt(sizeType, 1, false)]);
+                    var descriptorValue = descriptor is null
+                        ? LLVMValueRef.CreateConstNull(exceptionPointerType)
+                        : GetGCDescriptor(descriptor);
+                    builder.BuildStore(ConvertValue(builder, descriptorValue, exceptionPointerType), descriptorAddress);
+                }
+
+                for (int index = 0; index < fixedRoots.Count; index++)
+                    StoreRootEntry(index, fixedRoots[index].Address, fixedRoots[index].Descriptor);
+                for (int index = fixedRoots.Count; index < rootEntryCount; index++)
+                    StoreRootEntry(index, LLVMValueRef.CreateConstNull(exceptionPointerType), null);
+
+                void SynchronizeRoots(IEnumerable<(LLVMValueRef Value, TypeReference? Type)> roots)
+                {
+                    var values = roots.ToArray();
+                    for (int index = 0; index < stackRootCapacity; index++)
+                    {
+                        var rootIndex = fixedRoots.Count + index;
+                        if (index >= values.Length || values[index].Type is null)
+                        {
+                            StoreRootEntry(rootIndex, LLVMValueRef.CreateConstNull(exceptionPointerType), null);
+                            continue;
+                        }
+                        var value = values[index].Value;
+                        var type = values[index].Type!;
+                        if (IsManagedReferenceType(type))
+                        {
+                            builder.BuildStore(ConvertValue(builder, value, exceptionPointerType), rootSpills[index]);
+                            StoreRootEntry(rootIndex, rootSpills[index], null);
+                        }
+                        else if (IsValueType(type) && GetGCReferenceOffsets(type).Any())
+                        {
+                            StoreRootEntry(rootIndex, value, type);
+                        }
+                        else
+                        {
+                            StoreRootEntry(rootIndex, LLVMValueRef.CreateConstNull(exceptionPointerType), null);
+                        }
+                    }
+                }
+
+                void SynchronizeEvaluationStackRoots()
+                {
+                    SynchronizeRoots(stack.Reverse().Select(value =>
+                        (value, trackedTypes.TryGetValue(value, out var type) ? type : null)));
+                }
+
+                void StoreTemporaryRoot(int index, LLVMValueRef value, TypeReference type)
+                {
+                    var rootIndex = fixedRoots.Count + stackRootCapacity + index;
+                    if (IsManagedReferenceType(type))
+                    {
+                        builder.BuildStore(ConvertValue(builder, value, exceptionPointerType), temporaryRootSpills[index]);
+                        StoreRootEntry(rootIndex, temporaryRootSpills[index], null);
+                    }
+                    else if (IsValueType(type) && GetGCReferenceOffsets(type).Any())
+                    {
+                        StoreRootEntry(rootIndex, value, type);
+                    }
+                }
+
+                void PopGCFrame()
+                {
+                    if (tracksGCFrames)
+                        builder.BuildCall2(gcPopType, gcPopFunction, [rootFrame]);
+                }
+
+                var rootEntriesPointer = GetRootEntryAddress(0);
+                if (tracksGCFrames)
+                {
+                    builder.BuildCall2(gcPushType, gcPushFunction,
+                        [rootFrame, rootEntriesPointer, LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, (ulong)rootEntryCount, false)]);
+
+                    foreach (var staticField in localTypes.Values.SelectMany(type => type.Fields).Where(field => field.IsStatic))
+                    {
+                        var fieldType = staticField.FieldType;
+                        var descriptor = IsManagedReferenceType(fieldType)
+                            ? null
+                            : IsValueType(fieldType) && GetGCReferenceOffsets(fieldType).Any()
+                                ? fieldType
+                                : null;
+                        if (!IsManagedReferenceType(fieldType) && descriptor is null)
+                            continue;
+                        var storage = GetStaticField(staticField);
+                        builder.BuildCall2(gcRegisterStaticRootType, gcRegisterStaticRootFunction,
+                            [storage.Item1, descriptor is null
+                                ? LLVMValueRef.CreateConstNull(exceptionPointerType)
+                                : GetGCDescriptor(descriptor)]);
+                    }
+                }
+
+                if (cctorGuard is not null)
+                    builder.BuildCall2(LLVMTypeRef.CreateFunction(LLVMTypeRef.Void, []), cctorGuard.Value.Function, []);
 
                 var emittedExceptionSetups = new HashSet<ExceptionRegion>();
                 foreach (var instr in method.Value.Item4)
@@ -865,8 +1051,8 @@ LLVMValueRef exceptionThrowFunction = default;
                                 var size = LLVMValueRef.CreateConstInt(sizeType, (ulong)GetTypeSize(type));
                                 var count = ConvertValue(builder, stack.Pop(), sizeType, false);
                                 var arrayBaseSize = LLVMValueRef.CreateConstInt(sizeType, (ulong)GetTypeDefinitionSize(localTypes["System.Array"]), false);
-                                var ptr = builder.BuildCall2(allocationType, allocationFunction, [LLVMValueRef.CreateConstInt(sizeType, 1, false),
-                                    builder.BuildAdd(arrayBaseSize, builder.BuildMul(count, size))]);
+                                SynchronizeEvaluationStackRoots();
+                                var ptr = BuildAllocationSize(builder, builder.BuildAdd(arrayBaseSize, builder.BuildMul(count, size)));
                                 var lengthField = GetArrayLengthField();
                                 StoreField(builder, ptr, lengthField, count);
                                 InitializeRuntimeType(builder, ptr, new ArrayType(type));
@@ -891,8 +1077,11 @@ LLVMValueRef exceptionThrowFunction = default;
                                     var array = stack.Pop();
                                     var enumeratorType = new GenericInstanceType(arrayEnumeratorDefinition);
                                     enumeratorType.GenericArguments.Add(arrayReceiver.ElementType);
+                                    StoreTemporaryRoot(1, array, arrayReceiver);
+                                    SynchronizeEvaluationStackRoots();
                                     var enumerator = BuildAllocation(builder, GetObjectSize(enumeratorType));
                                     InitializeRuntimeType(builder, enumerator, enumeratorType);
+                                    StoreTemporaryRoot(0, enumerator, enumeratorType);
                                     builder.BuildCall2(constructorMethod.Item2, constructorMethod.Item1, [enumerator, array]);
                                     stack.Push(enumerator);
                                     TrackType(enumerator, enumeratorType);
@@ -959,84 +1148,6 @@ LLVMValueRef exceptionThrowFunction = default;
                                         : stack.Pop());
                                     break;
                                 }
-                                if (targetMethod.DeclaringType.FullName == "System.Runtime.CompilerServices.RuntimeHelpers" &&
-                                    targetMethod.Name == "InitializeArray")
-                                {
-                                    if (stack.Count != 0)
-                                        stack.Pop();
-                                    var array = stack.Count == 0 ? default : stack.Pop();
-                                    var field = instr.Previous?.OpCode.Code == Code.Ldtoken
-                                        ? (instr.Previous.Operand as FieldReference)?.Resolve()
-                                        : null;
-                                    if (field?.InitialValue is { Length: > 0 } initialValue &&
-                                        trackedTypes.TryGetValue(array, out var arrayType) && arrayType is ArrayType initializedArray)
-                                    {
-                                        var elementType = initializedArray.ElementType;
-                                        var elementLLVMType = GetLLVMTypeRef(elementType);
-                                        var elementSize = (int)GetLLVMTypeSize(elementLLVMType);
-                                        var elementCount = initializedArray.Rank == 1
-                                            ? initialValue.Length / Math.Max(1, elementSize)
-                                            : 0;
-                                        var dataOffset = GetTypeDefinitionSize(localTypes["System.Array"]);
-                                        for (int index = 0; index < elementCount; index++)
-                                        {
-                                            var offset = index * elementSize;
-                                            LLVMValueRef value;
-                                            if (elementType.MetadataType is MetadataType.Single)
-                                                value = LLVMValueRef.CreateConstReal(LLVMTypeRef.Float,
-                                                    BitConverter.ToSingle(initialValue, offset));
-                                            else if (elementType.MetadataType is MetadataType.Double)
-                                                value = LLVMValueRef.CreateConstReal(LLVMTypeRef.Double,
-                                                    BitConverter.ToDouble(initialValue, offset));
-                                            else
-                                            {
-                                                ulong bits = 0;
-                                                for (int byteIndex = 0; byteIndex < elementSize && byteIndex < 8; byteIndex++)
-                                                    bits |= (ulong)initialValue[offset + byteIndex] << (byteIndex * 8);
-                                                value = LLVMValueRef.CreateConstInt(elementLLVMType, bits, false);
-                                            }
-                                            var address = builder.BuildGEP2(LLVMTypeRef.Int8, array,
-                                                [LLVMValueRef.CreateConstInt(sizeType, (ulong)(dataOffset + offset), false)]);
-                                            builder.BuildStore(value, address);
-                                        }
-                                    }
-                                    break;
-                                }
-                                var isArrayRank = SameMethodDefinition(targetMethod, arrayRankMethod);
-                                var isArrayGetLength = SameMethodDefinition(targetMethod, arrayGetLengthMethod);
-                                var isArrayGetLowerBound = SameMethodDefinition(targetMethod, arrayGetLowerBoundMethod);
-                                var isArrayGetUpperBound = SameMethodDefinition(targetMethod, arrayGetUpperBoundMethod);
-                                if (isArrayRank || isArrayGetLength || isArrayGetLowerBound || isArrayGetUpperBound)
-                                {
-                                    var dimension = targetMethod.Parameters.Count == 0
-                                        ? default
-                                        : stack.Pop();
-                                    var array = stack.Pop();
-                                    LLVMValueRef arrayResult;
-                                    if (isArrayRank)
-                                        arrayResult = builder.BuildLoad2(GetLLVMTypeRef(targetMethod.ReturnType),
-                                            GetFieldAddress(builder, array, localTypes["System.Array"].Fields.First(field => field.Name == "_rank")));
-                                    else if (isArrayGetLowerBound)
-                                        arrayResult = LLVMValueRef.CreateConstInt(GetLLVMTypeRef(targetMethod.ReturnType), 0, false);
-                                    else
-                                    {
-                                        var lengths = Enumerable.Range(0, 3)
-                                            .Select(index => builder.BuildLoad2(GetLLVMTypeRef(targetMethod.ReturnType),
-                                                GetFieldAddress(builder, array, localTypes["System.Array"].Fields.First(field => field.Name == $"_length{index}"))))
-                                            .ToArray();
-                                        var nativeDimension = ConvertValue(builder, dimension, GetLLVMTypeRef(targetMethod.Parameters[0].ParameterType), false);
-                                        arrayResult = lengths[2];
-                                        arrayResult = builder.BuildSelect(builder.BuildICmp(LLVMIntPredicate.LLVMIntEQ, nativeDimension,
-                                            LLVMValueRef.CreateConstInt(nativeDimension.TypeOf, 0, false)), lengths[0], arrayResult);
-                                        arrayResult = builder.BuildSelect(builder.BuildICmp(LLVMIntPredicate.LLVMIntEQ, nativeDimension,
-                                            LLVMValueRef.CreateConstInt(nativeDimension.TypeOf, 1, false)), lengths[1], arrayResult);
-                                        if (isArrayGetUpperBound)
-                                            arrayResult = builder.BuildSub(arrayResult, LLVMValueRef.CreateConstInt(arrayResult.TypeOf, 1, false));
-                                    }
-                                    stack.Push(arrayResult);
-                                    TrackType(arrayResult, targetMethod.ReturnType);
-                                    break;
-                                }
                                 if (targetMethod.DeclaringType is ArrayType multidimensionalArray && multidimensionalArray.Rank > 1)
                                 {
                                     var elementType = GetLLVMTypeRef(multidimensionalArray.ElementType);
@@ -1047,22 +1158,20 @@ LLVMValueRef exceptionThrowFunction = default;
                                         var total = LLVMValueRef.CreateConstInt(sizeType, 1, false);
                                         foreach (var dimension in dimensions)
                                             total = builder.BuildMul(total, ConvertValue(builder, dimension, sizeType, false));
-                                        var array = builder.BuildCall2(allocationType, allocationFunction,
-                                            [LLVMValueRef.CreateConstInt(sizeType, 1, false),
-                                             builder.BuildAdd(LLVMValueRef.CreateConstInt(sizeType, (ulong)GetTypeDefinitionSize(localTypes["System.Array"]), false),
-                                                builder.BuildMul(total, LLVMValueRef.CreateConstInt(sizeType, (ulong)GetTypeSize(multidimensionalArray.ElementType), false)))]);
+                                        SynchronizeEvaluationStackRoots();
+                                        var array = BuildAllocationSize(builder,
+                                            builder.BuildAdd(LLVMValueRef.CreateConstInt(sizeType, (ulong)GetTypeDefinitionSize(localTypes["System.Array"]), false),
+                                                builder.BuildMul(total, LLVMValueRef.CreateConstInt(sizeType, (ulong)GetTypeSize(multidimensionalArray.ElementType), false))));
                                         StoreField(builder, array, GetArrayLengthField(), total);
-                                        StoreField(builder, array, localTypes["System.Array"].Fields.First(field => field.Name == "_rank"),
-                                            LLVMValueRef.CreateConstInt(sizeType, (ulong)multidimensionalArray.Rank, false));
-                                        for (int i = 0; i < dimensions.Length; i++)
-                                            StoreField(builder, array, localTypes["System.Array"].Fields.First(field => field.Name == $"_length{i}"),
-                                                ConvertValue(builder, dimensions[i], sizeType, false));
                                         InitializeRuntimeType(builder, array, multidimensionalArray);
+                                        StoreTemporaryRoot(0, array, multidimensionalArray);
+                                        var lengths = BuildArrayLengthTable(builder, dimensions);
+                                        StoreField(builder, array, GetArrayLengthsField(), lengths);
                                         stack.Push(array);
                                         TrackType(array, multidimensionalArray);
                                         break;
                                     }
-                                    if (targetMethod.Name is "Get" or "Set")
+                                    if (targetMethod.Name is "Get" or "Set" or "Address")
                                     {
                                         LLVMValueRef value = default;
                                         if (targetMethod.Name == "Set")
@@ -1073,9 +1182,19 @@ LLVMValueRef exceptionThrowFunction = default;
                                         var address = GetMultiArrayElementAddress(builder, array, indices, elementType,
                                             GetTypeSize(multidimensionalArray.ElementType));
                                         if (targetMethod.Name == "Set")
-                                            builder.BuildStore(ConvertValue(builder, value, elementType), address);
-                                        else
+                                        {
+                                            if (IsValueType(multidimensionalArray.ElementType))
+                                                CopyValue(builder, address, value, GetTypeSize(multidimensionalArray.ElementType));
+                                            else
+                                                builder.BuildStore(ConvertValue(builder, value, elementType), address);
+                                        }
+                                        else if (targetMethod.Name == "Get")
                                             stack.Push(builder.BuildLoad2(elementType, address));
+                                        else
+                                        {
+                                            stack.Push(address);
+                                            TrackType(address, new ByReferenceType(multidimensionalArray.ElementType));
+                                        }
                                         break;
                                     }
                                 }
@@ -1092,8 +1211,10 @@ LLVMValueRef exceptionThrowFunction = default;
                                             ? LLVMValueRef.CreateConstNull(LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0))
                                             : stack.Pop();
                                         var delegateType = targetMethod.DeclaringType.Resolve() ?? throw new NotSupportedException($"Delegate type is not defined: {targetMethod.DeclaringType.FullName}");
+                                        SynchronizeEvaluationStackRoots();
                                         ptr = BuildAllocation(builder, GetObjectSize(targetMethod.DeclaringType));
                                         InitializeRuntimeType(builder, ptr, targetMethod.DeclaringType);
+                                        StoreTemporaryRoot(0, ptr, targetMethod.DeclaringType);
                                         builder.BuildStore(delegateFunction, GetFieldAddress(builder, ptr, GetDelegateField(targetMethod.DeclaringType, "_function")));
                                         StoreField(builder, ptr, GetDelegateField(targetMethod.DeclaringType, "_target"), delegateTarget);
                                         stack.Push(ptr);
@@ -1104,8 +1225,10 @@ LLVMValueRef exceptionThrowFunction = default;
                                     int size = targetType is not null && localTypes.ContainsKey(targetType.FullName)
                                         ? GetObjectSize(targetMethod.DeclaringType)
                                         : pointerSize;
+                                    SynchronizeEvaluationStackRoots();
                                     ptr = BuildAllocation(builder, size);
                                     InitializeRuntimeType(builder, ptr, targetMethod.DeclaringType);
+                                    StoreTemporaryRoot(0, ptr, targetMethod.DeclaringType);
                                 }
 
                                 var m = GetRegisteredMethod(callTarget);
@@ -1166,6 +1289,22 @@ LLVMValueRef exceptionThrowFunction = default;
                                     callArgs = (LLVMValueRef[])targetArgs.Clone();
                                     callArgs[0] = GetBoxedValueAddress(builder, targetArgs[0]);
                                 }
+
+                                SynchronizeRoots(callArgs.Select((value, index) =>
+                                {
+                                    if (ptr != default)
+                                    {
+                                        if (index == 0)
+                                            return (value, (TypeReference?)targetMethod.DeclaringType);
+                                        index--;
+                                    }
+                                    if (instr.OpCode.Code != Code.Newobj && targetMethod.HasThis && index == 0)
+                                        return (value, (TypeReference?)targetMethod.DeclaringType);
+                                    var parameterIndex = index - (instr.OpCode.Code != Code.Newobj && targetMethod.HasThis ? 1 : 0);
+                                    return (value, parameterIndex >= 0 && parameterIndex < targetMethod.Parameters.Count
+                                        ? SubstituteGenericParameter(targetMethod.Parameters[parameterIndex].ParameterType, targetMethod)
+                                        : null);
+                                }));
 
                                 var result = instr.OpCode.Code == Code.Callvirt && targetMethod.HasThis && useRuntimeDispatch
                                     ? BuildVirtualDispatch(targetMethod, targetArgs, targetFuncCreated, targetFunc,
@@ -1292,12 +1431,15 @@ LLVMValueRef exceptionThrowFunction = default;
                             var returnType = SubstituteGenericParameter(method.Value.Item3.ReturnType, method.Value.Item3);
                             if (!IsVoidType(returnType))
                             {
-                                builder.BuildRet(ConvertValue(builder, stack.Count == 0
+                                var returnValue = ConvertValue(builder, stack.Count == 0
                                     ? LLVMValueRef.CreateConstNull(GetLLVMTypeRef(returnType))
-                                    : stack.Pop(), GetLLVMTypeRef(returnType)));
+                                    : stack.Pop(), GetLLVMTypeRef(returnType));
+                                PopGCFrame();
+                                builder.BuildRet(returnValue);
                             }
                             else
                             {
+                                PopGCFrame();
                                 builder.BuildRetVoid();
                             }
                             terminatedBlocks.Add(builder.InsertBlock);
@@ -1412,7 +1554,11 @@ LLVMValueRef exceptionThrowFunction = default;
                                 else
                                 {
                                     var value = stack.Count == 0 ? LLVMValueRef.CreateConstNull(ptr.Item2) : stack.Pop();
-                                    builder.BuildStore(ConvertValue(builder, value, ptr.Item2), ptr.Item1);
+                                    var fieldType = SubstituteFieldType(field, method.Value.Item3);
+                                    if (IsValueType(fieldType))
+                                        CopyValue(builder, ptr.Item1, value, GetTypeSize(fieldType));
+                                    else
+                                        builder.BuildStore(ConvertValue(builder, value, ptr.Item2), ptr.Item1);
                                 }
                             }
                             break;
@@ -1427,8 +1573,9 @@ LLVMValueRef exceptionThrowFunction = default;
                                 }
                                 var ptr = GetStaticField(field, method.Value.Item3);
                                 var fieldType = SubstituteFieldType(field, method.Value.Item3);
-                                var value = PromoteSmallIntegerLoad(builder,
-                                    builder.BuildLoad2(ptr.Item2, ptr.Item1), fieldType);
+                                var value = IsValueType(fieldType)
+                                    ? ptr.Item1
+                                    : PromoteSmallIntegerLoad(builder, builder.BuildLoad2(ptr.Item2, ptr.Item1), fieldType);
                                 stack.Push(value);
                                 TrackType(value, fieldType);
                             }
@@ -1436,7 +1583,9 @@ LLVMValueRef exceptionThrowFunction = default;
                         case Code.Ldstr:
                             {
                                 var value = (string)instr.Operand;
-                                var stringValue = BuildStringValue(builder, value);
+                                SynchronizeEvaluationStackRoots();
+                                var stringValue = BuildStringValue(builder, value,
+                                    (temporary, type) => StoreTemporaryRoot(0, temporary, type));
                                 stack.Push(stringValue);
                                 TrackType(stringValue, localTypes["System.String"]);
                             }
@@ -1744,7 +1893,7 @@ LLVMValueRef exceptionThrowFunction = default;
                         case Code.Ldind_I:
                         case Code.Ldind_Ref:
                             {
-                                var address = stack.Pop();
+                                var address = ConvertValue(builder, stack.Pop(), exceptionPointerType);
                                 var indirectType = GetIndirectType(address);
                                 var type = instr.OpCode.Code switch
                                 {
@@ -1778,7 +1927,7 @@ LLVMValueRef exceptionThrowFunction = default;
                         case Code.Stind_Ref:
                             {
                                 var value = stack.Pop();
-                                var address = stack.Pop();
+                                var address = ConvertValue(builder, stack.Pop(), exceptionPointerType);
                                 var indirectType = GetIndirectType(address);
                                 var type = instr.OpCode.Code switch
                                 {
@@ -1964,13 +2113,24 @@ LLVMValueRef exceptionThrowFunction = default;
                                 {
                                     tokenType = SubstituteGenericParameter(tokenType, method.Value.Item3);
                                     var type = localTypes["System.Type"];
+                                    SynchronizeEvaluationStackRoots();
                                     var typeObject = BuildAllocation(builder, GetTypeDefinitionSize(type));
                                     InitializeRuntimeType(builder, typeObject, type);
-                                    StoreField(builder, typeObject, type.Fields.First(field => field.Name == "Name"), BuildStringValue(builder, tokenType.Name));
+                                    StoreTemporaryRoot(0, typeObject, type);
+                                    StoreField(builder, typeObject, type.Fields.First(field => field.Name == "Name"), BuildStringValue(builder, tokenType.Name,
+                                        (temporary, temporaryType) => StoreTemporaryRoot(1, temporary, temporaryType)));
                                     StoreField(builder, typeObject, type.Fields.First(field => field.Name == "Namespace"),
-                                        string.IsNullOrEmpty(tokenType.Namespace) ? LLVMValueRef.CreateConstNull(LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0)) : BuildStringValue(builder, tokenType.Namespace));
-                                    StoreField(builder, typeObject, type.Fields.First(field => field.Name == "FullName"), BuildStringValue(builder, tokenType.FullName.Replace('/', '+')));
+                                        string.IsNullOrEmpty(tokenType.Namespace) ? LLVMValueRef.CreateConstNull(LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0)) : BuildStringValue(builder, tokenType.Namespace,
+                                            (temporary, temporaryType) => StoreTemporaryRoot(1, temporary, temporaryType)));
+                                    StoreField(builder, typeObject, type.Fields.First(field => field.Name == "FullName"), BuildStringValue(builder, tokenType.FullName.Replace('/', '+'),
+                                        (temporary, temporaryType) => StoreTemporaryRoot(1, temporary, temporaryType)));
                                     stack.Push(typeObject);
+                                }
+                                else if (instr.Operand is FieldReference field)
+                                {
+                                    var handle = GetRuntimeFieldHandle(builder, entryBuilder, field);
+                                    stack.Push(handle);
+                                    TrackType(handle, localTypes["System.RuntimeFieldHandle"]);
                                 }
                                 else
                                     stack.Push(LLVMValueRef.CreateConstNull(LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0)));
@@ -1980,6 +2140,8 @@ LLVMValueRef exceptionThrowFunction = default;
                             {
                                 var value = stack.Pop();
                                 var valueType = SubstituteGenericParameter((TypeReference)instr.Operand, method.Value.Item3);
+                                StoreTemporaryRoot(0, value, valueType);
+                                SynchronizeEvaluationStackRoots();
                                 if (TryGetNullableElementType(valueType, out var nullableElementType))
                                 {
                                     var nullableDefinition = valueType.Resolve() ??
@@ -2398,6 +2560,7 @@ LLVMValueRef exceptionThrowFunction = default;
                         continue;
                     builder.PositionAtEnd(block);
                     var returnType = SubstituteGenericParameter(method.Value.Item3.ReturnType, method.Value.Item3);
+                    PopGCFrame();
                     if (IsVoidType(returnType))
                         builder.BuildRetVoid();
                     else
@@ -2408,6 +2571,7 @@ LLVMValueRef exceptionThrowFunction = default;
                 {
                     builder.PositionAtEnd(entry);
                     var returnType = SubstituteGenericParameter(method.Value.Item3.ReturnType, method.Value.Item3);
+                    PopGCFrame();
                     if (IsVoidType(returnType))
                         builder.BuildRetVoid();
                     else
@@ -2477,36 +2641,35 @@ LLVMValueRef exceptionThrowFunction = default;
         var nativeIndex = ConvertValue(builder, index, sizeType, false);
         var elementOffset = builder.BuildMul(nativeIndex,
             LLVMValueRef.CreateConstInt(sizeType, elementSize.HasValue ? (ulong)elementSize.Value : GetLLVMTypeSize(elementType), false));
-        var dataOffset = LLVMValueRef.CreateConstInt(sizeType, (ulong)GetTypeDefinitionSize(GetArrayLengthField().DeclaringType), false);
-        var byteOffset = builder.BuildAdd(dataOffset, elementOffset);
-        return builder.BuildGEP2(LLVMTypeRef.Int8, array, [byteOffset]);
+        return builder.BuildGEP2(LLVMTypeRef.Int8, GetArrayDataPointer(builder, array), [elementOffset]);
     }
 
     LLVMValueRef GetMultiArrayElementAddress(LLVMBuilderRef builder, LLVMValueRef array, LLVMValueRef[] indices,
         LLVMTypeRef elementType, int? elementSize = null)
     {
         var elementIndex = LLVMValueRef.CreateConstInt(sizeType, 0, false);
+        var lengths = builder.BuildLoad2(GetLLVMTypeRef(GetArrayLengthsField().FieldType),
+            GetFieldAddress(builder, array, GetArrayLengthsField()));
         for (int i = 0; i < indices.Length; i++)
         {
-            var lengthField = localTypes["System.Array"].Fields.First(field => field.Name == $"_length{i}");
-            var length = ConvertValue(builder,
-                builder.BuildLoad2(GetLLVMTypeRef(lengthField.FieldType), GetFieldAddress(builder, array, lengthField)),
-                sizeType, false);
+            var length = ConvertValue(builder, builder.BuildLoad2(LLVMTypeRef.Int32,
+                GetArrayElementAddress(builder, lengths, LLVMValueRef.CreateConstInt(sizeType, (ulong)i, false), LLVMTypeRef.Int32)), sizeType, false);
             elementIndex = builder.BuildAdd(builder.BuildMul(elementIndex, length), ConvertValue(builder, indices[i], sizeType, false));
         }
         var elementOffset = builder.BuildMul(elementIndex,
             LLVMValueRef.CreateConstInt(sizeType, elementSize.HasValue ? (ulong)elementSize.Value : GetLLVMTypeSize(elementType), false));
-        var dataOffset = LLVMValueRef.CreateConstInt(sizeType, (ulong)GetTypeDefinitionSize(localTypes["System.Array"]), false);
-        return builder.BuildGEP2(LLVMTypeRef.Int8, array, [builder.BuildAdd(dataOffset, elementOffset)]);
+        return builder.BuildGEP2(LLVMTypeRef.Int8, GetArrayDataPointer(builder, array), [elementOffset]);
     }
 
-    LLVMValueRef BuildStringValue(LLVMBuilderRef builder, string value)
+    LLVMValueRef BuildStringValue(LLVMBuilderRef builder, string value, Action<LLVMValueRef, TypeReference>? storeTemporaryRoot = null)
     {
         var arrayBaseSize = GetTypeDefinitionSize(localTypes["System.Array"]);
-        var array = builder.BuildCall2(allocationType, allocationFunction,
-            [LLVMValueRef.CreateConstInt(sizeType, 1, false),
-             LLVMValueRef.CreateConstInt(sizeType, (ulong)(arrayBaseSize + (value.Length + 1) * GetMetadataTypeSize(MetadataType.Char)), false)]);
+        var charArrayType = new ArrayType(localTypes["System.Char"]);
+        var array = BuildAllocationSize(builder,
+            LLVMValueRef.CreateConstInt(sizeType, (ulong)(arrayBaseSize + (value.Length + 1) * GetMetadataTypeSize(MetadataType.Char)), false));
         StoreField(builder, array, GetArrayLengthField(), LLVMValueRef.CreateConstInt(sizeType, (ulong)value.Length, false));
+        InitializeRuntimeType(builder, array, charArrayType);
+        storeTemporaryRoot?.Invoke(array, charArrayType);
         for (int i = 0; i < value.Length; i++)
         {
             var address = GetArrayElementAddress(builder, array, LLVMValueRef.CreateConstInt(sizeType, (ulong)i, false), LLVMTypeRef.Int16);
@@ -2523,9 +2686,13 @@ LLVMValueRef exceptionThrowFunction = default;
 
     LLVMValueRef BuildAllocation(LLVMBuilderRef builder, int size)
     {
-        return builder.BuildCall2(allocationType, allocationFunction,
-            [LLVMValueRef.CreateConstInt(sizeType, 1, false),
-             LLVMValueRef.CreateConstInt(sizeType, (ulong)Math.Max(1, size), false)]);
+        return BuildAllocationSize(builder, LLVMValueRef.CreateConstInt(sizeType, (ulong)Math.Max(1, size), false));
+    }
+
+    LLVMValueRef BuildAllocationSize(LLVMBuilderRef builder, LLVMValueRef size)
+    {
+        return builder.BuildCall2(gcAllocateType, gcAllocateFunction,
+            [ConvertValue(builder, size, sizeType, false)]);
     }
 
     LLVMValueRef BuildBoxedValue(LLVMBuilderRef builder, LLVMValueRef value, TypeReference valueType)
@@ -2573,8 +2740,41 @@ LLVMValueRef exceptionThrowFunction = default;
     {
         var chars = builder.BuildLoad2(LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0),
             GetFieldAddress(builder, value, GetStringCharsField()));
-        return builder.BuildGEP2(LLVMTypeRef.Int8, chars,
-            [LLVMValueRef.CreateConstInt(sizeType, (ulong)GetTypeDefinitionSize(GetArrayLengthField().DeclaringType), false)]);
+        return GetArrayDataPointer(builder, chars);
+    }
+
+    FieldDefinition GetArrayDataField()
+    {
+        return localTypes["System.Array"].Fields.First(field => field.Name == "m_pData");
+    }
+
+    FieldDefinition GetArrayLengthsField()
+    {
+        return localTypes["System.Array"].Fields.First(field => field.Name == "_lengths");
+    }
+
+    LLVMValueRef BuildArrayLengthTable(LLVMBuilderRef builder, LLVMValueRef[] dimensions)
+    {
+        var elementType = localTypes["System.Int32"];
+        var arrayType = new ArrayType(elementType);
+        var array = BuildAllocationSize(builder, builder.BuildAdd(
+            LLVMValueRef.CreateConstInt(sizeType, (ulong)GetTypeDefinitionSize(localTypes["System.Array"]), false),
+            LLVMValueRef.CreateConstInt(sizeType, (ulong)(dimensions.Length * GetTypeSize(elementType)), false)));
+        StoreField(builder, array, GetArrayLengthField(), LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, (ulong)dimensions.Length, false));
+        InitializeRuntimeType(builder, array, arrayType);
+        for (int index = 0; index < dimensions.Length; index++)
+        {
+            var address = GetArrayElementAddress(builder, array,
+                LLVMValueRef.CreateConstInt(sizeType, (ulong)index, false), LLVMTypeRef.Int32);
+            builder.BuildStore(ConvertValue(builder, dimensions[index], LLVMTypeRef.Int32, false), address);
+        }
+        return array;
+    }
+
+    LLVMValueRef GetArrayDataPointer(LLVMBuilderRef builder, LLVMValueRef array)
+    {
+        return builder.BuildLoad2(LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0),
+            GetFieldAddress(builder, array, GetArrayDataField()));
     }
 
     LLVMValueRef GetFieldAddress(LLVMBuilderRef builder, LLVMValueRef obj, FieldDefinition field,
@@ -2667,6 +2867,11 @@ LLVMValueRef exceptionThrowFunction = default;
             LLVMValueRef.CreateConstInt(sizeType, GetRuntimeTypeId(type), false));
         StoreField(builder, obj, GetObjectGCDescriptorField(),
             LLVMValueRef.CreateConstPtrToInt(GetGCDescriptor(type), sizeType));
+        if (type is ArrayType)
+        {
+            StoreField(builder, obj, GetArrayDataField(), builder.BuildGEP2(LLVMTypeRef.Int8, obj,
+                [LLVMValueRef.CreateConstInt(sizeType, (ulong)GetTypeDefinitionSize(localTypes["System.Array"]), false)]));
+        }
     }
 
     int GetBoxedObjectHeaderSize()
@@ -2817,6 +3022,8 @@ LLVMValueRef exceptionThrowFunction = default;
     IEnumerable<int> GetGCReferenceOffsets(TypeReference type)
     {
         var references = new List<int>();
+        if (type is ArrayType)
+            type = localTypes["System.Array"];
         Collect(type, 0, true);
         return references;
 
@@ -3336,9 +3543,12 @@ LLVMValueRef exceptionThrowFunction = default;
             return IsManagedReferenceType(optionalModifier.ElementType);
         if (type is PinnedType pinned)
             return IsManagedReferenceType(pinned.ElementType);
+        if (type.FullName is "System.IntPtr" or "System.UIntPtr")
+            return false;
         if (type is ArrayType || type.MetadataType is MetadataType.Object or MetadataType.Class or MetadataType.String or MetadataType.Array)
             return true;
-        if (type is ByReferenceType or PointerType || GetEnumUnderlyingType(type) is not null)
+        if (type is ByReferenceType or PointerType || type.MetadataType is MetadataType.IntPtr or MetadataType.UIntPtr ||
+            GetEnumUnderlyingType(type) is not null)
             return false;
         return type.Resolve() is { IsValueType: false };
     }
@@ -3978,7 +4188,17 @@ LLVMValueRef exceptionThrowFunction = default;
         var fieldName = $"{GetFriendlyTypeName(declaringType)}_{SanitizeSymbolPart(field.Name)}";
         if (staticFields.TryGetValue(fieldName, out var existing))
             return existing;
-        var fieldType = GetLLVMTypeRef(SubstituteFieldType(field, context));
+        var fieldReferenceType = SubstituteFieldType(field, context);
+        var fieldType = GetLLVMTypeRef(fieldReferenceType);
+        if (IsValueType(fieldReferenceType))
+        {
+            var storageType = LLVMTypeRef.CreateArray(LLVMTypeRef.Int8, (uint)Math.Max(1, GetTypeSize(fieldReferenceType)));
+            var storage = module.AddGlobal(storageType, fieldName);
+            storage.Initializer = LLVMValueRef.CreateConstNull(storageType);
+            var storageResult = new Tuple<LLVMValueRef, LLVMTypeRef>(storage, fieldType);
+            staticFields.Add(fieldName, storageResult);
+            return storageResult;
+        }
         var fieldValue = module.AddGlobal(fieldType, fieldName);
         fieldValue.Initializer = LLVMValueRef.CreateConstNull(fieldType);
         var result = new Tuple<LLVMValueRef, LLVMTypeRef>(fieldValue, fieldType);
@@ -3986,11 +4206,38 @@ LLVMValueRef exceptionThrowFunction = default;
         return result;
     }
 
+    LLVMValueRef GetRuntimeFieldHandle(LLVMBuilderRef builder, LLVMBuilderRef allocationBuilder, FieldReference field)
+    {
+        var definition = GetLocalField(field);
+        var key = definition.FullName;
+        var initialValue = definition.InitialValue ?? [];
+        var dataType = LLVMTypeRef.CreateArray(LLVMTypeRef.Int8, (uint)Math.Max(1, initialValue.Length));
+        if (!runtimeFieldData.TryGetValue(key, out var data))
+        {
+            data = module.AddGlobal(dataType, $"__field_data_{runtimeFieldData.Count}");
+            data.Initializer = LLVMValueRef.CreateConstArray(LLVMTypeRef.Int8,
+                initialValue.Length == 0
+                    ? [LLVMValueRef.CreateConstNull(LLVMTypeRef.Int8)]
+                    : initialValue.Select(value => LLVMValueRef.CreateConstInt(LLVMTypeRef.Int8, value, false)).ToArray());
+            runtimeFieldData.Add(key, data);
+        }
+
+        var handleType = localTypes["System.RuntimeFieldHandle"];
+        var storage = CreateLocalStorage(allocationBuilder, handleType);
+        var handle = builder.BuildLoad2(storage.Item2, storage.Item1);
+        var dataPointer = builder.BuildGEP2(dataType, data,
+            [LLVMValueRef.CreateConstInt(sizeType, 0, false), LLVMValueRef.CreateConstInt(sizeType, 0, false)]);
+        StoreField(builder, handle, handleType.Fields.First(candidate => candidate.Name == "Data"), dataPointer);
+        StoreField(builder, handle, handleType.Fields.First(candidate => candidate.Name == "Length"),
+            LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, (ulong)(definition.InitialValue?.Length ?? 0), false));
+        return handle;
+    }
+
     void RegisterMethodFunction(LLVMModuleRef module, MethodReference method, Collection<Instruction>? instructions,
         string? symbolName = null)
     {
         if (method.DeclaringType is ArrayType array && array.Rank > 1 &&
-            method.Name is ".ctor" or "Get" or "Set")
+            method.Name is ".ctor" or "Get" or "Set" or "Address")
             return;
         if (method.DeclaringType.Resolve()?.IsInterface == true)
             return;
@@ -4007,7 +4254,11 @@ LLVMValueRef exceptionThrowFunction = default;
         }
 
         var funcType = CreateLLVMFunction(module, method);
-        var funcValue = module.AddFunction(symbolName ?? friendlyName, funcType);
+        var importedName = method.Resolve()?.PInvokeInfo?.EntryPoint;
+        var nativeSymbolName = !string.IsNullOrEmpty(importedName) && importedName != method.Name
+            ? importedName
+            : null;
+        var funcValue = module.AddFunction(symbolName ?? nativeSymbolName ?? friendlyName, funcType);
         moduleMethods.Add(friendlyName, new(funcValue, funcType, method, instructions));
     }
 }
