@@ -1254,7 +1254,7 @@ namespace System.Collections.Generic
         public List(int capacity)
         {
             if (capacity < 0)
-                    throw new ArgumentException("The list capacity cannot be negative.");
+                throw new ArgumentException("The list capacity cannot be negative.");
             _items = new T[capacity];
         }
 
