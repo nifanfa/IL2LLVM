@@ -28,14 +28,14 @@ C# project + CoreLib
 | --- | --- |
 | `IL2LLVM/` | The IL-to-LLVM translator. |
 | `CoreLib/` | Shared custom CoreLib compiled into managed input assemblies. |
-| `ConsoleApp1/` | Managed test program, including language-feature and GC validation. |
+| `ConsoleAppExample/` | Managed test program, including language-feature and GC validation. |
 | `apphost/` | Minimal C entry point and host implementations for the console test. |
 | `LinuxKernelModuleExample/` | Linux x86-64 kernel-module host, linker inputs, and Kbuild Makefile. |
 
 ## Build requirements
 
 - .NET 10 SDK
-- LLVM native runtime packages restored by `IL2LLVM/IL2LLVM.csproj`
+- Vendored NuGet packages under `packages/`; `nuget.config` restores them to `obj/packages`
 - A native linker and host runtime appropriate for the output target
 - For `LinuxKernelModuleExample`: GCC, make, and Linux headers matching the kernel that will load the module
 
@@ -60,8 +60,8 @@ Examples:
 
 ```powershell
 dotnet IL2LLVM\bin\Debug\net10.0\IL2LLVM.dll `
-  ConsoleApp1\bin\Debug\net10.0\ConsoleApp1.dll `
-  ConsoleApp1\bin\Debug\net10.0\ConsoleApp1.obj `
+  ConsoleAppExample\bin\Debug\net10.0\ConsoleAppExample.dll `
+  ConsoleAppExample\bin\Debug\net10.0\ConsoleAppExample.obj `
   x86_64-pc-windows-msvc
 
 dotnet IL2LLVM\bin\Debug\net10.0\IL2LLVM.dll `
@@ -89,7 +89,7 @@ The built-in collector uses GC descriptors emitted by IL2LLVM and registers stat
 Build the managed console input first:
 
 ```powershell
-dotnet build ConsoleApp1\ConsoleApp1.csproj
+dotnet build ConsoleAppExample\ConsoleAppExample.csproj
 ```
 
 Generate an object with one of the console launch profiles or with the command above. Link that object with `apphost/apphost.c`, `apphost/CoreLib.c`, and a native toolchain for the selected target. `apphost` calls `Program_Main` directly; it does not start `dotnet` or load a CLR.
