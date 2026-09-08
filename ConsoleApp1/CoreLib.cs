@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
 namespace System
@@ -178,7 +179,7 @@ namespace System
         }
     }
 
-    public abstract class ValueType : Object { }
+    public abstract class ValueType { }
     public abstract class Enum : ValueType { }
     public struct Nullable<T> where T : struct
     {
@@ -189,8 +190,8 @@ namespace System
         public T Value => _hasValue ? _value : throw new InvalidOperationException();
         public T GetValueOrDefault() => _value;
         public T GetValueOrDefault(T defaultValue) => _hasValue ? _value : defaultValue;
-        public static implicit operator Nullable<T>(T value) => new Nullable<T>(value);
-        public static explicit operator T(Nullable<T> value) => value.Value;
+        public static implicit operator T?(T value) => new T?(value);
+        public static explicit operator T(T? value) => value.Value;
     }
     public abstract unsafe class Array
     {
@@ -280,10 +281,10 @@ namespace System
         }
 
         public static void Sort<T>(T[] array) => Sort(array, 0, array == null ? 0 : array.Length, null);
-        public static void Sort<T>(T[] array, System.Collections.Generic.IComparer<T> comparer)
+        public static void Sort<T>(T[] array, Collections.Generic.IComparer<T> comparer)
             => Sort(array, 0, array == null ? 0 : array.Length, comparer);
 
-        public static void Sort<T>(T[] array, int index, int length, System.Collections.Generic.IComparer<T> comparer)
+        public static void Sort<T>(T[] array, int index, int length, Collections.Generic.IComparer<T> comparer)
         {
             ValidateRange(array, index, length);
             for (int i = index + 1; i < index + length; i++)
@@ -308,20 +309,20 @@ namespace System
         }
     }
 
-    public sealed class ArrayEnumerator<T> : Object, System.Collections.Generic.IEnumerator<T>
+    public sealed class ArrayEnumerator<T> : Collections.Generic.IEnumerator<T>
     {
         private T[] _array;
         private int _index = -1;
 
         public ArrayEnumerator(T[] array) { _array = array; }
         public T Current => _array[_index];
-        object System.Collections.IEnumerator.Current => Current;
+        object Collections.IEnumerator.Current => Current;
         public bool MoveNext() => ++_index < _array.Length;
         public void Reset() { _index = -1; }
         public void Dispose() { }
     }
 
-    public sealed class String : Object
+    public sealed class String
     {
         public int Length;
         private char[] _chars;
@@ -500,7 +501,7 @@ namespace System
         }
     }
 
-    public class Exception : Object
+    public class Exception
     {
         public string Message;
         public Exception InnerException;
@@ -617,7 +618,7 @@ namespace System
     public delegate TResult Func<T1, T2, T3, TResult>(T1 arg1, T2 arg2, T3 arg3);
     public delegate TResult Func<T1, T2, T3, T4, TResult>(T1 arg1, T2 arg2, T3 arg3, T4 arg4);
 
-    public class Delegate : Object
+    public class Delegate
     {
         private IntPtr _function;
         private object _target;
@@ -626,7 +627,7 @@ namespace System
     }
     public class MulticastDelegate : Delegate { }
 
-    public sealed class Type : Object
+    public sealed class Type
     {
         public string Name;
         public string Namespace;
@@ -804,12 +805,12 @@ namespace System.Runtime.CompilerServices
     }
     public struct AsyncTaskMethodBuilder
     {
-        private System.Threading.Tasks.Task _task;
-        public static AsyncTaskMethodBuilder Create() => new AsyncTaskMethodBuilder { _task = new System.Threading.Tasks.Task() };
-        public System.Threading.Tasks.Task Task => _task;
+        private Threading.Tasks.Task _task;
+        public static AsyncTaskMethodBuilder Create() => new AsyncTaskMethodBuilder { _task = new Threading.Tasks.Task() };
+        public Threading.Tasks.Task Task => _task;
         public void SetStateMachine(IAsyncStateMachine stateMachine) { }
         public void SetResult() { _task?.SetResult(); }
-        public void SetException(System.Exception exception) { _task?.SetException(exception); }
+        public void SetException(Exception exception) { _task?.SetException(exception); }
         public void Start<TStateMachine>(ref TStateMachine stateMachine) where TStateMachine : IAsyncStateMachine => stateMachine.MoveNext();
         public void AwaitUnsafeOnCompleted<TAwaiter, TStateMachine>(ref TAwaiter awaiter, ref TStateMachine stateMachine)
             where TAwaiter : ICriticalNotifyCompletion where TStateMachine : IAsyncStateMachine
@@ -820,12 +821,12 @@ namespace System.Runtime.CompilerServices
     }
     public struct AsyncTaskMethodBuilder<TResult>
     {
-        private System.Threading.Tasks.Task<TResult> _task;
-        public static AsyncTaskMethodBuilder<TResult> Create() => new AsyncTaskMethodBuilder<TResult> { _task = new System.Threading.Tasks.Task<TResult>() };
-        public System.Threading.Tasks.Task<TResult> Task => _task;
+        private Threading.Tasks.Task<TResult> _task;
+        public static AsyncTaskMethodBuilder<TResult> Create() => new AsyncTaskMethodBuilder<TResult> { _task = new Threading.Tasks.Task<TResult>() };
+        public Threading.Tasks.Task<TResult> Task => _task;
         public void SetStateMachine(IAsyncStateMachine stateMachine) { }
         public void SetResult(TResult result) { _task?.SetResult(result); }
-        public void SetException(System.Exception exception) { _task?.SetException(exception); }
+        public void SetException(Exception exception) { _task?.SetException(exception); }
         public void Start<TStateMachine>(ref TStateMachine stateMachine) where TStateMachine : IAsyncStateMachine => stateMachine.MoveNext();
         public void AwaitUnsafeOnCompleted<TAwaiter, TStateMachine>(ref TAwaiter awaiter, ref TStateMachine stateMachine)
             where TAwaiter : ICriticalNotifyCompletion where TStateMachine : IAsyncStateMachine
@@ -1029,11 +1030,6 @@ namespace System.Runtime
         }
     }
 
-    public sealed class RuntimeExportAttribute : Attribute
-    {
-        public RuntimeExportAttribute(string name) { }
-    }
-
     public static unsafe class ExceptionRuntime
     {
         private static void* _top;
@@ -1193,7 +1189,7 @@ namespace System.Collections.Generic
         void UnionWith(IEnumerable<T> other);
     }
 
-    public abstract class Comparer<T> : Object, IComparer<T>
+    public abstract class Comparer<T> : IComparer<T>
     {
         public static Comparer<T> Default => new DefaultComparer();
         public abstract int Compare(T left, T right);
@@ -1217,7 +1213,7 @@ namespace System.Collections.Generic
         }
     }
 
-    public abstract class EqualityComparer<T> : Object, IEqualityComparer<T>
+    public abstract class EqualityComparer<T> : IEqualityComparer<T>
     {
         public static EqualityComparer<T> Default => new DefaultEqualityComparer();
         public abstract bool Equals(T left, T right);
@@ -1240,7 +1236,7 @@ namespace System.Collections.Generic
         new IEnumerator<T> GetEnumerator();
     }
 
-    public class List<T> : Object, IList<T>, IReadOnlyList<T>
+    public class List<T> : IList<T>, IReadOnlyList<T>
     {
         private T[] _items;
         private int _count;
@@ -1480,7 +1476,7 @@ namespace System.Collections.Generic
 
         public Enumerator GetEnumerator() => new Enumerator(this);
         IEnumerator<T> IEnumerable<T>.GetEnumerator() => new Enumerator(this);
-        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+        IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
 
         private void EnsureCapacity(int minimum)
         {
@@ -1513,7 +1509,7 @@ namespace System.Collections.Generic
             private T _current;
             internal Enumerator(List<T> list) { _list = list; _index = 0; _current = default; }
             public T Current => _current;
-            object System.Collections.IEnumerator.Current => Current;
+            object IEnumerator.Current => Current;
             public bool MoveNext()
             {
                 if (_index >= _list._count)
@@ -1536,7 +1532,7 @@ namespace System.Collections.Generic
         public override int Compare(T left, T right) => _comparison(left, right);
     }
 
-    public class Dictionary<TKey, TValue> : Object, IDictionary<TKey, TValue>
+    public class Dictionary<TKey, TValue> : IDictionary<TKey, TValue>
     {
         private KeyValuePair<TKey, TValue>[] _items;
         private int _count;
@@ -1663,7 +1659,7 @@ namespace System.Collections.Generic
         }
         public Enumerator GetEnumerator() => new Enumerator(this);
         IEnumerator<KeyValuePair<TKey, TValue>> IEnumerable<KeyValuePair<TKey, TValue>>.GetEnumerator() => GetEnumerator();
-        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+        IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
 
         private int FindIndex(TKey key)
         {
@@ -1705,7 +1701,7 @@ namespace System.Collections.Generic
                 _current = default;
             }
             public KeyValuePair<TKey, TValue> Current => _current;
-            object System.Collections.IEnumerator.Current => _current;
+            object IEnumerator.Current => _current;
             public bool MoveNext()
             {
                 if (_index >= _dictionary._count)
@@ -1721,7 +1717,7 @@ namespace System.Collections.Generic
         }
     }
 
-    public class HashSet<T> : Object, ISet<T>
+    public class HashSet<T> : ISet<T>
     {
         private readonly List<T> _items;
         private readonly IEqualityComparer<T> _comparer;
@@ -1831,7 +1827,7 @@ namespace System.Collections.Generic
         }
     }
 
-    public class Queue<T> : Object, IEnumerable<T>
+    public class Queue<T> : IEnumerable<T>
     {
         private readonly List<T> _items = new List<T>();
         public int Count => _items.Count;
@@ -1861,7 +1857,7 @@ namespace System.Collections.Generic
         IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
     }
 
-    public class Stack<T> : Object, IEnumerable<T>
+    public class Stack<T> : IEnumerable<T>
     {
         private readonly List<T> _items = new List<T>();
         public int Count => _items.Count;
@@ -1893,7 +1889,7 @@ namespace System.Linq
 
     public static class Enumerable
     {
-        public static System.Collections.Generic.IEnumerable<TResult> Select<TSource, TResult>(this System.Collections.Generic.IEnumerable<TSource> source, Func<TSource, TResult> selector)
+        public static IEnumerable<TResult> Select<TSource, TResult>(this IEnumerable<TSource> source, Func<TSource, TResult> selector)
         {
             if (source == null || selector == null)
                 throw new ArgumentNullException("The source and selector cannot be null.");
@@ -1908,7 +1904,7 @@ namespace System.Linq
             return result;
         }
 
-        public static System.Collections.Generic.IEnumerable<TResult> Select<TSource, TResult>(this TSource[] source, Func<TSource, TResult> selector)
+        public static IEnumerable<TResult> Select<TSource, TResult>(this TSource[] source, Func<TSource, TResult> selector)
         {
             if (source == null || selector == null)
                 throw new ArgumentNullException("The source and selector cannot be null.");
@@ -1918,7 +1914,7 @@ namespace System.Linq
             return result;
         }
 
-        public static System.Collections.Generic.IEnumerable<TSource> Where<TSource>(this System.Collections.Generic.IEnumerable<TSource> source, Func<TSource, bool> predicate)
+        public static IEnumerable<TSource> Where<TSource>(this IEnumerable<TSource> source, Func<TSource, bool> predicate)
         {
             if (source == null || predicate == null)
                 throw new ArgumentNullException("The source and predicate cannot be null.");
@@ -1934,7 +1930,7 @@ namespace System.Linq
             return result;
         }
 
-        public static System.Collections.Generic.IEnumerable<TSource> Where<TSource>(this TSource[] source, Func<TSource, bool> predicate)
+        public static IEnumerable<TSource> Where<TSource>(this TSource[] source, Func<TSource, bool> predicate)
         {
             if (source == null || predicate == null)
                 throw new ArgumentNullException("The source and predicate cannot be null.");
@@ -1945,7 +1941,7 @@ namespace System.Linq
             return result;
         }
 
-        public static bool Any<TSource>(this System.Collections.Generic.IEnumerable<TSource> source)
+        public static bool Any<TSource>(this IEnumerable<TSource> source)
         {
             if (source == null)
                 throw new ArgumentNullException("The source cannot be null.");
@@ -1954,7 +1950,7 @@ namespace System.Linq
             finally { iterator.Dispose(); }
         }
 
-        public static bool Any<TSource>(this System.Collections.Generic.IEnumerable<TSource> source, Func<TSource, bool> predicate)
+        public static bool Any<TSource>(this IEnumerable<TSource> source, Func<TSource, bool> predicate)
         {
             if (source == null || predicate == null)
                 throw new ArgumentNullException("The source and predicate cannot be null.");
@@ -1969,7 +1965,7 @@ namespace System.Linq
             finally { iterator.Dispose(); }
         }
 
-        public static bool Contains<TSource>(this System.Collections.Generic.IEnumerable<TSource> source, TSource value)
+        public static bool Contains<TSource>(this IEnumerable<TSource> source, TSource value)
         {
             if (source == null)
                 throw new ArgumentNullException("The source cannot be null.");
@@ -1984,7 +1980,7 @@ namespace System.Linq
             finally { iterator.Dispose(); }
         }
 
-        public static TSource[] ToArray<TSource>(this System.Collections.Generic.IEnumerable<TSource> source)
+        public static TSource[] ToArray<TSource>(this IEnumerable<TSource> source)
         {
             if (source == null)
                 throw new ArgumentNullException("The source cannot be null.");
@@ -1999,10 +1995,10 @@ namespace System.Linq
             return result.ToArray();
         }
 
-        public static List<TSource> ToList<TSource>(this System.Collections.Generic.IEnumerable<TSource> source)
+        public static List<TSource> ToList<TSource>(this IEnumerable<TSource> source)
             => new List<TSource>(source);
 
-        public static int Count<TSource>(this System.Collections.Generic.IEnumerable<TSource> source)
+        public static int Count<TSource>(this IEnumerable<TSource> source)
         {
             if (source == null)
                 throw new ArgumentNullException("The source cannot be null.");
@@ -2017,7 +2013,7 @@ namespace System.Linq
             return count;
         }
 
-        public static int Count<TSource>(this System.Collections.Generic.IEnumerable<TSource> source, Func<TSource, bool> predicate)
+        public static int Count<TSource>(this IEnumerable<TSource> source, Func<TSource, bool> predicate)
         {
             if (source == null || predicate == null)
                 throw new ArgumentNullException("The source and predicate cannot be null.");
@@ -2033,7 +2029,7 @@ namespace System.Linq
             return count;
         }
 
-        public static TSource First<TSource>(this System.Collections.Generic.IEnumerable<TSource> source)
+        public static TSource First<TSource>(this IEnumerable<TSource> source)
         {
             if (source == null)
                 throw new ArgumentNullException("The source cannot be null.");
@@ -2047,7 +2043,7 @@ namespace System.Linq
             throw new InvalidOperationException("The source contains no elements.");
         }
 
-        public static TSource FirstOrDefault<TSource>(this System.Collections.Generic.IEnumerable<TSource> source)
+        public static TSource FirstOrDefault<TSource>(this IEnumerable<TSource> source)
         {
             if (source == null)
                 throw new ArgumentNullException("The source cannot be null.");
@@ -2056,7 +2052,7 @@ namespace System.Linq
             finally { iterator.Dispose(); }
         }
 
-        public static TSource FirstOrDefault<TSource>(this System.Collections.Generic.IEnumerable<TSource> source, Func<TSource, bool> predicate)
+        public static TSource FirstOrDefault<TSource>(this IEnumerable<TSource> source, Func<TSource, bool> predicate)
         {
             if (source == null || predicate == null)
                 throw new ArgumentNullException("The source and predicate cannot be null.");
@@ -2071,7 +2067,7 @@ namespace System.Linq
             finally { iterator.Dispose(); }
         }
 
-        public static System.Collections.Generic.IEnumerable<TSource> Skip<TSource>(this System.Collections.Generic.IEnumerable<TSource> source, int count)
+        public static IEnumerable<TSource> Skip<TSource>(this IEnumerable<TSource> source, int count)
         {
             if (source == null)
                 throw new ArgumentNullException("The source cannot be null.");
@@ -2085,7 +2081,7 @@ namespace System.Linq
             return result;
         }
 
-        public static System.Collections.Generic.IEnumerable<TSource> Take<TSource>(this System.Collections.Generic.IEnumerable<TSource> source, int count)
+        public static IEnumerable<TSource> Take<TSource>(this IEnumerable<TSource> source, int count)
         {
             if (source == null)
                 throw new ArgumentNullException("The source cannot be null.");
@@ -2102,7 +2098,7 @@ namespace System.Linq
             return result;
         }
 
-        public static int Sum(this System.Collections.Generic.IEnumerable<int> source)
+        public static int Sum(this IEnumerable<int> source)
         {
             if (source == null)
                 throw new ArgumentNullException("The source cannot be null.");
@@ -2130,7 +2126,7 @@ namespace System.Threading
         }
     }
 
-    public sealed class CancellationTokenSource : Object, IDisposable
+    public sealed class CancellationTokenSource : IDisposable
     {
         private bool _canceled;
         public CancellationToken Token => new CancellationToken(_canceled);
@@ -2146,8 +2142,10 @@ namespace System.Threading
 
     public static class Monitor
     {
-        public static void Enter(object value) { }
-        public static void Exit(object value) { }
+        [DllImport("*")]
+        public static extern void Enter(object value);
+        [DllImport("*")]
+        public static extern void Exit(object value);
     }
 }
 
@@ -2165,7 +2163,7 @@ namespace System.Threading.Tasks
         Faulted
     }
 
-    public class Task : Object
+    public class Task
     {
         private const int Pending = 0;
         private const int Completed = 1;
@@ -2258,7 +2256,7 @@ namespace System.Threading.Tasks
             task.TrySetException(exception);
             return task;
         }
-        public static Task FromCanceled(System.Threading.CancellationToken cancellationToken)
+        public static Task FromCanceled(CancellationToken cancellationToken)
         {
             Task task = new Task();
             task.TrySetCanceled();
@@ -2271,7 +2269,7 @@ namespace System.Threading.Tasks
             task.SetException(exception);
             return task;
         }
-        public static Task<TResult> FromCanceled<TResult>(System.Threading.CancellationToken cancellationToken)
+        public static Task<TResult> FromCanceled<TResult>(CancellationToken cancellationToken)
         {
             Task<TResult> task = new Task<TResult>();
             task.SetCanceled();
@@ -2327,7 +2325,7 @@ namespace System.Threading.Tasks
         public static Task<TResult> FromResult(TResult result) { Task<TResult> task = new Task<TResult>(); task.SetResult(result); return task; }
     }
 
-    public class TaskCompletionSource : Object
+    public class TaskCompletionSource
     {
         private readonly Task _task = new Task();
         public Task Task => _task;
@@ -2339,7 +2337,7 @@ namespace System.Threading.Tasks
         public bool TrySetCanceled() => _task.TrySetCanceled();
     }
 
-    public class TaskCompletionSource<TResult> : Object
+    public class TaskCompletionSource<TResult>
     {
         private readonly Task<TResult> _task = new Task<TResult>();
         public Task<TResult> Task => _task;
@@ -2351,7 +2349,7 @@ namespace System.Threading.Tasks
         public bool TrySetCanceled() => _task.TrySetCanceled();
     }
 
-    public struct TaskAwaiter : System.Runtime.CompilerServices.ICriticalNotifyCompletion
+    public struct TaskAwaiter : ICriticalNotifyCompletion
     {
         private readonly Task _task;
         public TaskAwaiter(Task task) { _task = task; }
@@ -2361,7 +2359,7 @@ namespace System.Threading.Tasks
         public void UnsafeOnCompleted(Action continuation) => _task.OnCompleted(continuation);
     }
 
-    public struct TaskAwaiter<TResult> : System.Runtime.CompilerServices.ICriticalNotifyCompletion
+    public struct TaskAwaiter<TResult> : ICriticalNotifyCompletion
     {
         private readonly Task<TResult> _task;
         public TaskAwaiter(Task<TResult> task) { _task = task; }

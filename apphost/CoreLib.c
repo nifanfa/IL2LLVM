@@ -23,3 +23,13 @@ void System_Console_WriteLine_IntPtr(size_t value)
 {
     printf("%zu\n", value);
 }
+
+void System_Threading_Monitor_Enter_Object(void* obj)
+{
+    // TO-DO
+}
+
+void System_Threading_Monitor_Exit_Object(void* obj)
+{
+	// TO-DO
+}
