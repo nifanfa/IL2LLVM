@@ -15,7 +15,11 @@ LLVM.InitializeAllAsmPrinters();
 var context = LLVMContextRef.Global;
 var module = context.CreateModuleWithName(Path.GetFileNameWithoutExtension(fileName));
 
-module.Target = "i386-pc-windows-msvc";
+#if false
+module.Target = "i686-pc-windows-msvc";
+#else
+module.Target = "x86_64-pc-windows-msvc";
+#endif
 
 var target = LLVMTargetRef.GetTargetFromTriple(module.Target);
 var machine = target.CreateTargetMachine(module.Target, "generic", "", LLVMCodeGenOptLevel.LLVMCodeGenLevelDefault,
@@ -32,25 +36,16 @@ Dictionary<string, ulong> runtimeTypeIds = new(StringComparer.Ordinal);
 Dictionary<string, LLVMValueRef> gcDescriptors = new(StringComparer.Ordinal);
 ulong nextRuntimeTypeId = 1;
 int nextVirtualDispatchId = 0;
-var exceptionPointerType = LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0);
-var allocationType = LLVMTypeRef.CreateFunction(exceptionPointerType, [sizeType, sizeType]);
-var allocationFunction = module.AddFunction("calloc", allocationType);
 LLVMTypeRef exceptionPushType = default;
 LLVMValueRef exceptionPushFunction = default;
 LLVMTypeRef exceptionPopType = default;
 LLVMValueRef exceptionPopFunction = default;
 LLVMTypeRef exceptionBufferType = default;
 LLVMValueRef exceptionBufferFunction = default;
-LLVMTypeRef exceptionTopType = default;
-LLVMValueRef exceptionTopFunction = default;
 LLVMTypeRef exceptionCurrentType = default;
 LLVMValueRef exceptionCurrentFunction = default;
 LLVMTypeRef setjmpType = default;
 LLVMValueRef setjmpFunction = default;
-LLVMTypeRef longjmpType = default;
-LLVMValueRef longjmpFunction = default;
-LLVMTypeRef exceptionAbortType = default;
-LLVMValueRef exceptionAbortFunction = default;
 LLVMTypeRef exceptionThrowType = default;
 LLVMValueRef exceptionThrowFunction = default;
 
@@ -86,6 +81,9 @@ LLVMValueRef exceptionThrowFunction = default;
     RegisterMethodFunction(module, exceptionCurrentMethod, exceptionCurrentMethod.Body.Instructions);
     RegisterMethodFunction(module, longjmpMethod, null, "longjmp");
     RegisterMethodFunction(module, exceptionAbortMethod, null, "abort");
+    var exceptionPointerType = LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0);
+    var allocationType = LLVMTypeRef.CreateFunction(exceptionPointerType, [sizeType, sizeType]);
+    var allocationFunction = module.AddFunction("calloc", allocationType);
     RegisterMethodFunction(module, exceptionThrowMethod, exceptionThrowMethod.Body.Instructions);
     var registeredExceptionPush = GetRegisteredMethod(exceptionPushMethod)!;
     exceptionPushFunction = registeredExceptionPush.Item1;
@@ -96,20 +94,11 @@ LLVMValueRef exceptionThrowFunction = default;
     var registeredExceptionBuffer = GetRegisteredMethod(exceptionBufferMethod)!;
     exceptionBufferFunction = registeredExceptionBuffer.Item1;
     exceptionBufferType = registeredExceptionBuffer.Item2;
-    var registeredExceptionTop = GetRegisteredMethod(exceptionTopMethod)!;
-    exceptionTopFunction = registeredExceptionTop.Item1;
-    exceptionTopType = registeredExceptionTop.Item2;
     var registeredExceptionCurrent = GetRegisteredMethod(exceptionCurrentMethod)!;
     exceptionCurrentFunction = registeredExceptionCurrent.Item1;
     exceptionCurrentType = registeredExceptionCurrent.Item2;
-    setjmpType = LLVMTypeRef.CreateFunction(LLVMTypeRef.Int32, [exceptionPointerType, LLVMTypeRef.Int32], true);
-    setjmpFunction = module.AddFunction("_setjmp3", setjmpType);
-    var registeredLongJump = GetRegisteredMethod(longjmpMethod)!;
-    longjmpFunction = registeredLongJump.Item1;
-    longjmpType = registeredLongJump.Item2;
-    var registeredExceptionAbort = GetRegisteredMethod(exceptionAbortMethod)!;
-    exceptionAbortFunction = registeredExceptionAbort.Item1;
-    exceptionAbortType = registeredExceptionAbort.Item2;
+    setjmpType = LLVMTypeRef.CreateFunction(LLVMTypeRef.Int32, [exceptionPointerType, exceptionPointerType]);
+    setjmpFunction = module.AddFunction("_setjmp", setjmpType);
     var registeredExceptionThrow = GetRegisteredMethod(exceptionThrowMethod)!;
     exceptionThrowFunction = registeredExceptionThrow.Item1;
     exceptionThrowType = registeredExceptionThrow.Item2;
@@ -266,12 +255,62 @@ LLVMValueRef exceptionThrowFunction = default;
         foreach (var method in arrayEnumeratorType.Methods.Where(method => method.HasBody))
             RegisterMethodFunction(module, method, method.Body.Instructions);
 
+    bool ContainsGenericParameter(TypeReference type)
+    {
+        return type switch
+        {
+            GenericParameter => true,
+            GenericInstanceType generic => generic.GenericArguments.Any(ContainsGenericParameter),
+            ArrayType array => ContainsGenericParameter(array.ElementType),
+            ByReferenceType byReference => ContainsGenericParameter(byReference.ElementType),
+            PointerType pointer => ContainsGenericParameter(pointer.ElementType),
+            RequiredModifierType requiredModifier => ContainsGenericParameter(requiredModifier.ElementType),
+            OptionalModifierType optionalModifier => ContainsGenericParameter(optionalModifier.ElementType),
+            PinnedType pinned => ContainsGenericParameter(pinned.ElementType),
+            _ => false
+        };
+    }
+
+    bool RegisterClosedVirtualMethods()
+    {
+        bool added = false;
+        var targets = moduleMethods.Values.SelectMany(method => (method.Item4 ?? [])
+                .Where(instruction => instruction.OpCode.Code == Code.Callvirt)
+                .Select(instruction => SpecializeMethodReference((MethodReference)instruction.Operand, method.Item3)))
+            .Where(target => target.HasThis && target.Resolve() is { IsVirtual: true } or { IsAbstract: true })
+            .DistinctBy(target => GetFriendlyMethodName(target))
+            .ToList();
+        foreach (var declaringType in moduleMethods.Values
+                     .Select(method => method.Item3.DeclaringType)
+                     .OfType<GenericInstanceType>()
+                     .Where(type => !ContainsGenericParameter(type))
+                     .DistinctBy(GetRuntimeTypeKey)
+                     .ToList())
+        {
+            foreach (var target in targets)
+            {
+                var implementation = FindMethodImplementation(declaringType, target);
+                if (implementation is null || GetRegisteredMethod(implementation) is not null)
+                    continue;
+                var definition = FindLocalMethod(implementation, localMethods);
+                if (definition?.HasBody != true)
+                    continue;
+                RegisterMethodFunction(module, implementation, definition.Body.Instructions);
+                added = true;
+            }
+        }
+        return added;
+    }
+
+    while (RegisterClosedVirtualMethods())
+    {
+    }
+
     LLVMBuilderRef entryBuilder = default;
     foreach (var method in moduleMethods)
     {
         if (method.Value.Item4?.Any() == true)
         {
-            Console.WriteLine($"Method: {method.Value.Item3}, FriendlyMethodName: {GetFriendlyMethodName(method.Value.Item3)}");
             var allocaBlock = method.Value.Item1.AppendBasicBlock("alloca");
             var entry = method.Value.Item1.AppendBasicBlock(GetLabelName(method.Value.Item4.First()));
             var builder = context.CreateBuilder();
@@ -345,10 +384,10 @@ LLVMValueRef exceptionThrowFunction = default;
                 }
 
                 LLVMValueRef BuildVirtualDispatch(MethodReference targetMethod, LLVMValueRef[] targetArgs,
-                    LLVMTypeRef targetFunctionType, LLVMValueRef targetFunction, List<(TypeDefinition RuntimeType, MethodReference Implementation)> implementations,
+                    LLVMTypeRef targetFunctionType, LLVMValueRef targetFunction, List<(TypeReference RuntimeType, MethodReference Implementation)> implementations,
                     bool allowArraySpecial = true)
                 {
-                    LLVMValueRef[] GetImplementationArgs(TypeDefinition runtimeType)
+                    LLVMValueRef[] GetImplementationArgs(TypeReference runtimeType)
                     {
                         if (!runtimeType.IsValueType || targetArgs.Length == 0)
                             return targetArgs;
@@ -471,10 +510,13 @@ LLVMValueRef exceptionThrowFunction = default;
                     return phi;
                 }
 
-                LLVMValueRef BuildEntryAlloca(LLVMTypeRef type)
+                LLVMValueRef BuildEntryAlloca(LLVMTypeRef type, uint alignment = 0)
                 {
                     entryBuilder.PositionAtEnd(allocaBlock);
-                    return entryBuilder.BuildAlloca(type);
+                    var value = entryBuilder.BuildAlloca(type);
+                    if (alignment != 0)
+                        value.Alignment = alignment;
+                    return value;
                 }
 
                 void SaveStack(LLVMBasicBlockRef block)
@@ -579,7 +621,7 @@ LLVMValueRef exceptionThrowFunction = default;
                     builder.BuildCall2(exceptionPushType, exceptionPushFunction, [region.Frame, region.Buffer]);
                     var jumpResult = builder.BuildCall2(setjmpType, setjmpFunction,
                         [builder.BuildCall2(exceptionBufferType, exceptionBufferFunction, [region.Frame]),
-                         LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, 0, false)]);
+                         LLVMValueRef.CreateConstNull(exceptionPointerType)]);
                     builder.BuildCondBr(builder.BuildICmp(LLVMIntPredicate.LLVMIntEQ, jumpResult,
                         LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, 0, false)), normal, dispatch);
                     terminatedBlocks.Add(source);
@@ -747,8 +789,8 @@ LLVMValueRef exceptionThrowFunction = default;
                     foreach (var regionGroup in methodDefinition.Body.ExceptionHandlers
                                  .GroupBy(handler => (handler.TryStart.Offset, handler.TryEnd.Offset)))
                     {
-                        var frame = BuildEntryAlloca(LLVMTypeRef.CreateArray(LLVMTypeRef.Int8, (uint)(pointerSize * 2)));
-                        var buffer = BuildEntryAlloca(LLVMTypeRef.CreateArray(LLVMTypeRef.Int8, 256));
+                        var frame = BuildEntryAlloca(LLVMTypeRef.CreateArray(LLVMTypeRef.Int8, (uint)(pointerSize * 2)), 16);
+                        var buffer = BuildEntryAlloca(LLVMTypeRef.CreateArray(LLVMTypeRef.Int8, 256), 16);
                         var region = new ExceptionRegion
                         {
                             Start = regionGroup.Key.Item1,
@@ -775,7 +817,6 @@ LLVMValueRef exceptionThrowFunction = default;
                 var emittedExceptionSetups = new HashSet<ExceptionRegion>();
                 foreach (var instr in method.Value.Item4)
                 {
-                        Console.WriteLine($"{GetLabelName(instr)}\t\t{instr.OpCode}\t{instr.Operand}");
                         if (label.ContainsKey(instr.Offset))
                         {
                             var curr = label[instr.Offset];
@@ -1597,7 +1638,7 @@ LLVMValueRef exceptionThrowFunction = default;
                             }
                             break;
                         case Code.Ldc_I4_M1:
-                            stack.Push(LLVMValueRef.CreateConstInt(sizeType, unchecked((ulong)-1), true));
+                            stack.Push(LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, unchecked((ulong)-1), true));
                             break;
                         case Code.Ldc_I4_0:
                         case Code.Ldc_I4_1:
@@ -1611,7 +1652,7 @@ LLVMValueRef exceptionThrowFunction = default;
                         case Code.Ldc_I4:
                         case Code.Ldc_I4_S:
                             {
-                                var value = LLVMValueRef.CreateConstInt(sizeType, (ulong)(instr.OpCode.Code switch
+                                var value = LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, (ulong)(instr.OpCode.Code switch
                                 {
                                     Code.Ldc_I4_0 => 0,
                                     Code.Ldc_I4_1 => 1,
@@ -2013,7 +2054,7 @@ LLVMValueRef exceptionThrowFunction = default;
                                 SaveStack(defaultBlock);
                                 var switchValue = builder.BuildSwitch(value, defaultBlock, (uint)targets.Length);
                                 for (uint i = 0; i < targets.Length; i++)
-                                    switchValue.AddCase(LLVMValueRef.CreateConstInt(sizeType, i, false), label[targets[i].Offset]);
+                                    switchValue.AddCase(LLVMValueRef.CreateConstInt(value.TypeOf, i, false), label[targets[i].Offset]);
                                 if (instr.Next is not null)
                                 {
                                     builder.PositionAtEnd(defaultBlock);
@@ -2121,7 +2162,7 @@ LLVMValueRef exceptionThrowFunction = default;
                                 var val2 = stack.Pop();
                                 var val1 = stack.Pop();
                                  var cond = BuildComparison(builder, instr.OpCode.Code, val1, val2);
-                                 var result = builder.BuildZExt(cond, sizeType);
+                                 var result = builder.BuildZExt(cond, LLVMTypeRef.Int32);
 
                                 stack.Push(result);
                             }
@@ -2448,7 +2489,9 @@ LLVMValueRef exceptionThrowFunction = default;
         for (int i = 0; i < indices.Length; i++)
         {
             var lengthField = localTypes["System.Array"].Fields.First(field => field.Name == $"_length{i}");
-            var length = builder.BuildLoad2(sizeType, GetFieldAddress(builder, array, lengthField));
+            var length = ConvertValue(builder,
+                builder.BuildLoad2(GetLLVMTypeRef(lengthField.FieldType), GetFieldAddress(builder, array, lengthField)),
+                sizeType, false);
             elementIndex = builder.BuildAdd(builder.BuildMul(elementIndex, length), ConvertValue(builder, indices[i], sizeType, false));
         }
         var elementOffset = builder.BuildMul(elementIndex,
@@ -2829,21 +2872,25 @@ LLVMValueRef exceptionThrowFunction = default;
         return false;
     }
 
-    List<(TypeDefinition RuntimeType, MethodReference Implementation)> GetVirtualImplementations(
+    List<(TypeReference RuntimeType, MethodReference Implementation)> GetVirtualImplementations(
         MethodReference targetMethod, TypeReference contractType)
     {
-        var implementations = new List<(TypeDefinition RuntimeType, MethodReference Implementation)>();
+        var implementations = new List<(TypeReference RuntimeType, MethodReference Implementation)>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
         foreach (var type in localTypes.Values.Where(candidate => !candidate.IsInterface)
                      .OrderByDescending(GetTypeDepth))
         {
             if (!IsRuntimeTypeCompatible(type, contractType))
                 continue;
-            var implementation = FindMethodImplementation(type, targetMethod);
+            TypeReference runtimeType = type;
+            if (type.HasGenericParameters &&
+                TryCloseRuntimeType(type, contractType, out var closedType))
+                runtimeType = closedType;
+            var implementation = FindMethodImplementation(runtimeType, targetMethod);
             if (implementation is null || FindLocalMethod(implementation, localMethods)?.HasBody != true ||
-                !seen.Add(GetRuntimeTypeKey(type)))
+                !seen.Add(GetRuntimeTypeKey(runtimeType)))
                 continue;
-            implementations.Add((type, implementation));
+            implementations.Add((runtimeType, implementation));
         }
         return implementations;
     }
@@ -3582,7 +3629,8 @@ LLVMValueRef exceptionThrowFunction = default;
         foreach (var implementedInterface in GetImplementedInterfaces(type))
         {
             var bindings = new Dictionary<int, TypeReference>();
-            if (!TryBindTypePattern(implementedInterface, contractType, type, bindings))
+            var matches = TryBindTypePattern(implementedInterface, contractType, type, bindings);
+            if (!matches)
                 continue;
             if (!type.HasGenericParameters)
                 return true;
@@ -3963,8 +4011,6 @@ LLVMValueRef exceptionThrowFunction = default;
         moduleMethods.Add(friendlyName, new(funcValue, funcType, method, instructions));
     }
 }
-
-module.Dump();
 
 if (!module.TryVerify(LLVMVerifierFailureAction.LLVMReturnStatusAction, out var verificationError))
     throw new InvalidOperationException(verificationError);
