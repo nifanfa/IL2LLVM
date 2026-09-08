@@ -4,7 +4,25 @@ using Mono.Cecil.Cil;
 using Mono.Collections.Generic;
 using System.Diagnostics;
 
-string fileName = "../../../../ConsoleApp1/bin/Debug/net10.0/ConsoleApp1.dll";
+if (args.Length != 3)
+    throw new ArgumentException("Expected an input file, output file, and target triple.");
+
+string fileName = Path.GetFullPath(args[0]);
+string outputFileName = Path.GetFullPath(args[1]);
+var targetSpecification = args[2].Split(';', StringSplitOptions.TrimEntries);
+if (targetSpecification.Length is < 1 or > 2 || string.IsNullOrEmpty(targetSpecification[0]))
+    throw new ArgumentException("Target must be a target triple optionally followed by a code model.");
+string targetTriple = targetSpecification[0];
+var codeModel = targetSpecification.Length == 1 ? LLVMCodeModel.LLVMCodeModelDefault : targetSpecification[1] switch
+{
+    "default" => LLVMCodeModel.LLVMCodeModelDefault,
+    "tiny" => LLVMCodeModel.LLVMCodeModelTiny,
+    "small" => LLVMCodeModel.LLVMCodeModelSmall,
+    "kernel" => LLVMCodeModel.LLVMCodeModelKernel,
+    "medium" => LLVMCodeModel.LLVMCodeModelMedium,
+    "large" => LLVMCodeModel.LLVMCodeModelLarge,
+    _ => throw new ArgumentException($"Unsupported LLVM code model '{targetSpecification[1]}'.")
+};
 
 LLVM.InitializeAllTargetInfos();
 LLVM.InitializeAllTargets();
@@ -15,15 +33,11 @@ LLVM.InitializeAllAsmPrinters();
 var context = LLVMContextRef.Global;
 var module = context.CreateModuleWithName(Path.GetFileNameWithoutExtension(fileName));
 
-#if false
-module.Target = "i686-pc-windows-msvc";
-#else
-module.Target = "x86_64-pc-windows-msvc";
-#endif
+module.Target = targetTriple;
 
 var target = LLVMTargetRef.GetTargetFromTriple(module.Target);
 var machine = target.CreateTargetMachine(module.Target, "generic", "", LLVMCodeGenOptLevel.LLVMCodeGenLevelDefault,
-                                         LLVMRelocMode.LLVMRelocDefault, LLVMCodeModel.LLVMCodeModelDefault);
+                                         LLVMRelocMode.LLVMRelocStatic, codeModel);
 
 int pointerSize = (int)machine.CreateTargetDataLayout().ABISizeOfType(LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0));
 LLVMTypeRef sizeType = LLVMTypeRef.CreateIntPtr(machine.CreateTargetDataLayout());
@@ -35,6 +49,7 @@ Dictionary<string, TypeDefinition> localTypes = new(StringComparer.Ordinal);
 Dictionary<string, ulong> runtimeTypeIds = new(StringComparer.Ordinal);
 Dictionary<string, LLVMValueRef> gcDescriptors = new(StringComparer.Ordinal);
 Dictionary<string, LLVMValueRef> runtimeFieldData = new(StringComparer.Ordinal);
+Dictionary<string, LLVMValueRef> missingVirtualFunctionPointers = new(StringComparer.Ordinal);
 ulong nextRuntimeTypeId = 1;
 int nextVirtualDispatchId = 0;
 LLVMTypeRef exceptionPushType = default;
@@ -137,6 +152,16 @@ LLVMValueRef gcRegisterStaticRootFunction = default;
     var registeredSetjmp = GetRegisteredMethod(setjmpMethod)!;
     setjmpFunction = registeredSetjmp.Item1;
     setjmpType = registeredSetjmp.Item2;
+    ReadOnlySpan<byte> returnsTwiceName = "returns_twice"u8;
+    unsafe
+    {
+        fixed (byte* name = returnsTwiceName)
+        {
+            var kind = LLVM.GetEnumAttributeKindForName((sbyte*)name, (nuint)returnsTwiceName.Length);
+            setjmpFunction.AddAttributeAtIndex(LLVMAttributeIndex.LLVMAttributeFunctionIndex,
+                context.CreateEnumAttribute(kind, 0));
+        }
+    }
     var registeredExceptionThrow = GetRegisteredMethod(exceptionThrowMethod)!;
     exceptionThrowFunction = registeredExceptionThrow.Item1;
     exceptionThrowType = registeredExceptionThrow.Item2;
@@ -145,40 +170,6 @@ LLVMValueRef gcRegisterStaticRootFunction = default;
         new ArrayType(localTypes["System.Char"]));
     var typeGetTypeFromHandleMethod = GetRequiredMethod(localTypes["System.Type"], "GetTypeFromHandle", false,
         localTypes["System.Type"], localTypes["System.RuntimeTypeHandle"]);
-    HashSet<string> reachableMethods = new(StringComparer.Ordinal);
-    Queue<MethodDefinition> pendingMethods = new();
-    HashSet<string> rootMethods = new(StringComparer.Ordinal);
-    if (assembly.EntryPoint is not null)
-        rootMethods.Add(assembly.EntryPoint.FullName);
-
-    foreach (var rootMethod in localMethods.Values.Where(method => rootMethods.Contains(method.FullName)))
-    {
-        reachableMethods.Add(rootMethod.FullName);
-        pendingMethods.Enqueue(rootMethod);
-    }
-    foreach (var cctor in localMethods.Values.Where(method => method.Name == ".cctor" && method.HasBody))
-    {
-        if (reachableMethods.Add(cctor.FullName))
-            pendingMethods.Enqueue(cctor);
-    }
-
-    while (pendingMethods.Count != 0)
-    {
-        var current = pendingMethods.Dequeue();
-        if (!current.HasBody || current.Body is null)
-            continue;
-        foreach (var instruction in current.Body.Instructions ?? [])
-        {
-            if (instruction.OpCode.Code is not (Code.Call or Code.Callvirt or Code.Newobj or Code.Ldftn or Code.Ldvirtftn))
-                continue;
-            var reference = (MethodReference)instruction.Operand;
-            var localTargetMethod = ResolveCallTarget(reference);
-            var localTarget = FindLocalMethod(localTargetMethod, localMethods);
-            if (localTarget is not null && reachableMethods.Add(localTarget.FullName))
-                pendingMethods.Enqueue(localTarget);
-        }
-    }
-
     foreach (TypeDefinition type in GetAllTypes(assembly.MainModule.Types))
     {
         var fields = type.Fields;
@@ -194,8 +185,6 @@ LLVMValueRef gcRegisterStaticRootFunction = default;
         foreach (MethodDefinition method in type.Methods)
         {
             if (!method.HasBody) continue;
-            if (!reachableMethods.Contains(method.FullName))
-                continue;
             RegisterMethodFunction(module, method, method.Body.Instructions);
 
             foreach (var instr in method.Body.Instructions)
@@ -246,7 +235,7 @@ LLVMValueRef gcRegisterStaticRootFunction = default;
     while (pendingReferences.Count != 0)
     {
         var reference = pendingReferences.Dequeue();
-        if (!processedReferences.Add(reference.FullName))
+        if (!processedReferences.Add(GetFriendlyMethodName(reference)))
             continue;
         var localTarget = FindLocalMethod(reference, localMethods);
         if (localTarget is null)
@@ -336,8 +325,14 @@ LLVMValueRef gcRegisterStaticRootFunction = default;
     }
 
     LLVMBuilderRef entryBuilder = default;
-    foreach (var method in moduleMethods)
+    HashSet<LLVMValueRef> translatedMethods = new();
+    while (true)
     {
+        var method = moduleMethods.FirstOrDefault(candidate => candidate.Value.Item4?.Any() == true &&
+            !translatedMethods.Contains(candidate.Value.Item1));
+        if (method.Value is null)
+            break;
+        translatedMethods.Add(method.Value.Item1);
         if (method.Value.Item4?.Any() == true)
         {
             var allocaBlock = method.Value.Item1.AppendBasicBlock("alloca");
@@ -474,6 +469,11 @@ LLVMValueRef gcRegisterStaticRootFunction = default;
                         }
                         if (targetFunction != default)
                             return builder.BuildCall2(targetFunctionType, targetFunction, targetArgs);
+                        var abort = GetRegisteredMethod(exceptionAbortMethod) ??
+                            throw new NotSupportedException($"Method is not defined in the input module: {exceptionAbortMethod.FullName}");
+                        builder.BuildCall2(abort.Item2, abort.Item1, []);
+                        builder.BuildUnreachable();
+                        terminatedBlocks.Add(builder.InsertBlock);
                         return IsVoidType(targetMethod.ReturnType)
                             ? default
                             : LLVMValueRef.CreateConstNull(GetLLVMTypeRef(SubstituteGenericParameter(targetMethod.ReturnType, targetMethod)));
@@ -517,24 +517,95 @@ LLVMValueRef gcRegisterStaticRootFunction = default;
                         builder.PositionAtEnd(nextBlock);
                     }
 
-                    if (!IsVoidType(targetMethod.ReturnType))
+                    if (!IsVoidType(targetMethod.ReturnType) && targetFunction != default)
                     {
-                        var fallback = targetFunction == default
-                            ? LLVMValueRef.CreateConstNull(GetLLVMTypeRef(SubstituteGenericParameter(targetMethod.ReturnType, targetMethod)))
-                            : ConvertValue(builder, builder.BuildCall2(targetFunctionType, targetFunction, targetArgs),
-                                GetLLVMTypeRef(SubstituteGenericParameter(targetMethod.ReturnType, targetMethod)));
+                        var fallback = ConvertValue(builder, builder.BuildCall2(targetFunctionType, targetFunction, targetArgs),
+                            GetLLVMTypeRef(SubstituteGenericParameter(targetMethod.ReturnType, targetMethod)));
                         incomingValues.Add(fallback);
                         incomingBlocks.Add(builder.InsertBlock);
+                        builder.BuildBr(continuation);
                     }
                     else if (targetFunction != default)
+                    {
                         builder.BuildCall2(targetFunctionType, targetFunction, targetArgs);
-                    builder.BuildBr(continuation);
+                        builder.BuildBr(continuation);
+                    }
+                    else
+                    {
+                        var abort = GetRegisteredMethod(exceptionAbortMethod) ??
+                            throw new NotSupportedException($"Method is not defined in the input module: {exceptionAbortMethod.FullName}");
+                        builder.BuildCall2(abort.Item2, abort.Item1, []);
+                        builder.BuildUnreachable();
+                        terminatedBlocks.Add(builder.InsertBlock);
+                    }
                     builder.PositionAtEnd(continuation);
                     if (IsVoidType(targetMethod.ReturnType))
                         return default;
                     var phi = builder.BuildPhi(GetLLVMTypeRef(SubstituteGenericParameter(targetMethod.ReturnType, targetMethod)), "virt.result");
                     phi.AddIncoming(incomingValues.ToArray(), incomingBlocks.ToArray(), (uint)incomingValues.Count);
                     return phi;
+                }
+
+                LLVMValueRef BuildVirtualFunctionPointer(MethodReference targetMethod, LLVMValueRef receiver)
+                {
+                    var implementations = GetVirtualImplementations(targetMethod, targetMethod.DeclaringType)
+                        .Select(candidate => (candidate.RuntimeType, Method: GetRegisteredMethod(candidate.Implementation)))
+                        .Where(candidate => candidate.Method is not null)
+                        .ToList();
+                    if (implementations.Count == 0)
+                    {
+                        var key = GetFriendlyMethodName(targetMethod);
+                        if (!missingVirtualFunctionPointers.TryGetValue(key, out var missingFunction))
+                        {
+                            var abortMethod = GetRegisteredMethod(exceptionAbortMethod) ??
+                                throw new NotSupportedException($"Method is not defined in the input module: {exceptionAbortMethod.FullName}");
+                            missingFunction = module.AddFunction($"__missing_virtual_{missingVirtualFunctionPointers.Count}",
+                                CreateLLVMFunction(module, targetMethod));
+                            missingFunction.Linkage = LLVMLinkage.LLVMInternalLinkage;
+                            var block = missingFunction.AppendBasicBlock("entry");
+                            var missingBuilder = context.CreateBuilder();
+                            missingBuilder.PositionAtEnd(block);
+                            missingBuilder.BuildCall2(abortMethod.Item2, abortMethod.Item1, []);
+                            missingBuilder.BuildUnreachable();
+                            missingVirtualFunctionPointers.Add(key, missingFunction);
+                        }
+                        return missingFunction;
+                    }
+                    if (implementations.Count == 1)
+                        return implementations[0].Method!.Item1;
+
+                    var methodTable = builder.BuildLoad2(sizeType,
+                        GetFieldAddress(builder, receiver, GetObjectMethodTableField()));
+                    var continuation = method.Value.Item1.AppendBasicBlock($"virt.ftn.cont.{nextVirtualDispatchId++}");
+                    var incomingValues = new List<LLVMValueRef>();
+                    var incomingBlocks = new List<LLVMBasicBlockRef>();
+                    foreach (var implementation in implementations)
+                    {
+                        var callBlock = method.Value.Item1.AppendBasicBlock($"virt.ftn.value.{nextVirtualDispatchId++}");
+                        var nextBlock = method.Value.Item1.AppendBasicBlock($"virt.ftn.next.{nextVirtualDispatchId++}");
+                        var typeId = LLVMValueRef.CreateConstInt(sizeType,
+                            GetRuntimeTypeId(implementation.RuntimeType), false);
+                        builder.BuildCondBr(builder.BuildICmp(LLVMIntPredicate.LLVMIntEQ, methodTable, typeId),
+                            callBlock, nextBlock);
+                        terminatedBlocks.Add(builder.InsertBlock);
+
+                        builder.PositionAtEnd(callBlock);
+                        incomingValues.Add(implementation.Method!.Item1);
+                        incomingBlocks.Add(callBlock);
+                        builder.BuildBr(continuation);
+                        terminatedBlocks.Add(callBlock);
+
+                        builder.PositionAtEnd(nextBlock);
+                    }
+                    var abort = GetRegisteredMethod(exceptionAbortMethod) ??
+                        throw new NotSupportedException($"Method is not defined in the input module: {exceptionAbortMethod.FullName}");
+                    builder.BuildCall2(abort.Item2, abort.Item1, []);
+                    builder.BuildUnreachable();
+                    terminatedBlocks.Add(builder.InsertBlock);
+                    builder.PositionAtEnd(continuation);
+                    var function = builder.BuildPhi(LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0), "virt.ftn");
+                    function.AddIncoming(incomingValues.ToArray(), incomingBlocks.ToArray(), (uint)incomingValues.Count);
+                    return function;
                 }
 
                 LLVMValueRef BuildEntryAlloca(LLVMTypeRef type, uint alignment = 0)
@@ -816,7 +887,9 @@ LLVMValueRef gcRegisterStaticRootFunction = default;
                                  .GroupBy(handler => (handler.TryStart.Offset, handler.TryEnd.Offset)))
                     {
                         var frame = BuildEntryAlloca(LLVMTypeRef.CreateArray(LLVMTypeRef.Int8, (uint)(pointerSize * 3)), 16);
-                        var buffer = BuildEntryAlloca(LLVMTypeRef.CreateArray(LLVMTypeRef.Int8, 256), 16);
+                        var jumpBufferType = localTypes["System.Runtime.JumpBuffer"];
+                        var buffer = BuildEntryAlloca(LLVMTypeRef.CreateArray(LLVMTypeRef.Int8,
+                            (uint)GetTypeSize(jumpBufferType)), (uint)pointerSize);
                         var region = new ExceptionRegion
                         {
                             Start = regionGroup.Key.Item1,
@@ -1234,11 +1307,20 @@ LLVMValueRef gcRegisterStaticRootFunction = default;
                                 var m = GetRegisteredMethod(callTarget);
                                 if (m is null && callTarget.DeclaringType.Resolve()?.IsInterface == true)
                                     m = new(default, CreateLLVMFunction(module, callTarget), callTarget, null);
+                                if (m is null && FindLocalMethod(callTarget, localMethods) is { HasBody: true } definition)
+                                {
+                                    RegisterMethodFunction(module, callTarget, definition.Body.Instructions);
+                                    m = GetRegisteredMethod(callTarget);
+                                }
                                 if (m is null)
-                                    throw new NotSupportedException($"Method is not defined in the input module: {callTarget.FullName}");
+                                    throw new NotSupportedException($"Method is not defined in the input module: {callTarget.FullName}, called from {method.Value.Item3.FullName} at IL_{instr.Offset:X4}.");
 
                                 var targetFuncCreated = m.Item2;
-                                var targetFunc = m.Item1;
+                                var targetFunc = FindLocalMethod(callTarget, localMethods)?.IsAbstract == true ||
+                                    FindLocalMethod(m.Item3, localMethods)?.IsAbstract == true ||
+                                    callTarget.Resolve()?.IsAbstract == true || m.Item3.Resolve()?.IsAbstract == true
+                                    ? default
+                                    : m.Item1;
                                 var targetArgsList = new List<LLVMValueRef>();
                                 int parameterCount = instr.OpCode.Code == Code.Newobj
                                     ? targetMethod.Parameters.Count
@@ -1306,7 +1388,8 @@ LLVMValueRef gcRegisterStaticRootFunction = default;
                                         : null);
                                 }));
 
-                                var result = instr.OpCode.Code == Code.Callvirt && targetMethod.HasThis && useRuntimeDispatch
+                                var result = instr.OpCode.Code == Code.Callvirt && targetMethod.HasThis &&
+                                    (useRuntimeDispatch || targetFunc == default)
                                     ? BuildVirtualDispatch(targetMethod, targetArgs, targetFuncCreated, targetFunc,
                                         GetVirtualImplementations(targetMethod, virtualContractType ?? targetMethod.DeclaringType))
                                     : builder.BuildCall2(targetFuncCreated, targetFunc, callArgs);
@@ -1360,6 +1443,12 @@ LLVMValueRef gcRegisterStaticRootFunction = default;
                                     var receiver = stack.Pop();
                                     if (trackedTypes.TryGetValue(receiver, out var receiverType))
                                         callTarget = ResolveVirtualTarget(targetMethod, receiverType);
+                                    if (callTarget.Resolve()?.IsAbstract == true ||
+                                        callTarget.DeclaringType.Resolve()?.IsInterface == true)
+                                    {
+                                        stack.Push(BuildVirtualFunctionPointer(targetMethod, receiver));
+                                        break;
+                                    }
                                 }
                                 var registeredMethod = GetRegisteredMethod(callTarget) ??
                                     throw new NotSupportedException($"Method is not defined in the input module: {callTarget.FullName}");
@@ -2598,7 +2687,12 @@ LLVMValueRef gcRegisterStaticRootFunction = default;
         return type.Methods.Any(method => method.IsConstructor && !method.IsStatic && method.Parameters.Count == 1 &&
             method.Parameters[0].ParameterType is ArrayType array &&
             array.ElementType is GenericParameter parameter && parameter.Type == GenericParameterType.Type &&
-            parameter.Owner is TypeReference owner && SameTypeDefinition(owner, type));
+            parameter.Owner is TypeReference owner && SameTypeDefinition(owner, type) &&
+            type.Interfaces.Any(@interface => @interface.InterfaceType is GenericInstanceType genericInterface &&
+                genericInterface.GenericArguments.Count == 1 && SameType(genericInterface.GenericArguments[0], parameter) &&
+                genericInterface.Resolve()?.Properties.Any(property => property.Name == "Current" &&
+                    property.PropertyType is GenericParameter current && current.Type == GenericParameterType.Type &&
+                    current.Position == 0) == true));
     }
 
     bool TryGetArrayEnumerator(MethodReference targetMethod, out TypeReference elementType,
@@ -2907,7 +3001,7 @@ LLVMValueRef gcRegisterStaticRootFunction = default;
             return null;
 
         var suffix = $"{SanitizeSymbolPart(GetRuntimeTypeKey(type))}_{cctorGuards.Count}";
-        var state = module.AddGlobal(LLVMTypeRef.Int8, $"__cctor_state_{suffix}");
+        var state = AddInternalGlobal(LLVMTypeRef.Int8, $"__cctor_state_{suffix}");
         state.Initializer = LLVMValueRef.CreateConstNull(LLVMTypeRef.Int8);
         var guardType = LLVMTypeRef.CreateFunction(LLVMTypeRef.Void, []);
         var guard = module.AddFunction($"__cctor_guard_{suffix}", guardType);
@@ -3004,7 +3098,7 @@ LLVMValueRef gcRegisterStaticRootFunction = default;
                 elementReferences.Select(offset => LLVMValueRef.CreateConstInt(LLVMTypeRef.Int16, (ulong)offset, false)).ToArray()));
         }
         var descriptorType = LLVMTypeRef.CreateStruct(fieldTypes.ToArray(), false);
-        descriptor = module.AddGlobal(descriptorType, $"__gc_desc_{gcDescriptors.Count}");
+        descriptor = AddInternalGlobal(descriptorType, $"__gc_desc_{gcDescriptors.Count}");
         descriptor.Initializer = LLVMValueRef.CreateConstStruct(values.ToArray(), false);
         gcDescriptors.Add(key, descriptor);
         return descriptor;
@@ -3087,8 +3181,6 @@ LLVMValueRef gcRegisterStaticRootFunction = default;
         foreach (var type in localTypes.Values.Where(candidate => !candidate.IsInterface)
                      .OrderByDescending(GetTypeDepth))
         {
-            if (!IsRuntimeTypeCompatible(type, contractType))
-                continue;
             TypeReference runtimeType = type;
             if (type.HasGenericParameters &&
                 TryCloseRuntimeType(type, contractType, out var closedType))
@@ -3451,7 +3543,7 @@ LLVMValueRef gcRegisterStaticRootFunction = default;
         }
         if (SameTypeDefinition(definition, GetObjectMethodTableField().DeclaringType))
             offset = Math.Max(offset, GetObjectHeaderSize());
-        return AlignUp(offset, alignment);
+        return Math.Max(AlignUp(offset, alignment), definition.ClassSize);
     }
 
     int GetTypeSize(TypeReference type)
@@ -3476,7 +3568,7 @@ LLVMValueRef gcRegisterStaticRootFunction = default;
                 offset += GetTypeSize(fieldType);
                 alignment = Math.Max(alignment, fieldAlignment);
             }
-            return AlignUp(offset, alignment);
+            return Math.Max(AlignUp(offset, alignment), genericDefinition.ClassSize);
         }
         var enumUnderlyingType = GetEnumUnderlyingType(type);
         if (enumUnderlyingType is not null)
@@ -3507,7 +3599,7 @@ LLVMValueRef gcRegisterStaticRootFunction = default;
         }
         if (SameTypeDefinition(type, GetObjectMethodTableField().DeclaringType))
             offset = Math.Max(offset, GetObjectHeaderSize());
-        return AlignUp(offset, alignment);
+        return Math.Max(AlignUp(offset, alignment), type.ClassSize);
     }
 
     int GetTypeDefinitionAlignment(TypeDefinition type)
@@ -3807,7 +3899,7 @@ LLVMValueRef gcRegisterStaticRootFunction = default;
                 continue;
 
             var implementation = FindMethodImplementation(type, targetMethod);
-            if (implementation is not null)
+            if (implementation is not null && implementation.Resolve()?.IsAbstract != true)
                 return implementation;
         }
 
@@ -3822,7 +3914,9 @@ LLVMValueRef gcRegisterStaticRootFunction = default;
         if (definition is null)
             return ResolveCallTarget(targetMethod);
         var implementation = FindMethodImplementation(definition, targetMethod);
-        return implementation ?? ResolveCallTarget(targetMethod);
+        return implementation is not null && implementation.Resolve()?.IsAbstract != true
+            ? implementation
+            : ResolveCallTarget(targetMethod);
     }
 
     bool ImplementsInterface(TypeDefinition type, TypeReference interfaceType)
@@ -4193,13 +4287,13 @@ LLVMValueRef gcRegisterStaticRootFunction = default;
         if (IsValueType(fieldReferenceType))
         {
             var storageType = LLVMTypeRef.CreateArray(LLVMTypeRef.Int8, (uint)Math.Max(1, GetTypeSize(fieldReferenceType)));
-            var storage = module.AddGlobal(storageType, fieldName);
+            var storage = AddInternalGlobal(storageType, fieldName);
             storage.Initializer = LLVMValueRef.CreateConstNull(storageType);
             var storageResult = new Tuple<LLVMValueRef, LLVMTypeRef>(storage, fieldType);
             staticFields.Add(fieldName, storageResult);
             return storageResult;
         }
-        var fieldValue = module.AddGlobal(fieldType, fieldName);
+        var fieldValue = AddInternalGlobal(fieldType, fieldName);
         fieldValue.Initializer = LLVMValueRef.CreateConstNull(fieldType);
         var result = new Tuple<LLVMValueRef, LLVMTypeRef>(fieldValue, fieldType);
         staticFields.Add(fieldName, result);
@@ -4214,7 +4308,7 @@ LLVMValueRef gcRegisterStaticRootFunction = default;
         var dataType = LLVMTypeRef.CreateArray(LLVMTypeRef.Int8, (uint)Math.Max(1, initialValue.Length));
         if (!runtimeFieldData.TryGetValue(key, out var data))
         {
-            data = module.AddGlobal(dataType, $"__field_data_{runtimeFieldData.Count}");
+            data = AddInternalGlobal(dataType, $"__field_data_{runtimeFieldData.Count}");
             data.Initializer = LLVMValueRef.CreateConstArray(LLVMTypeRef.Int8,
                 initialValue.Length == 0
                     ? [LLVMValueRef.CreateConstNull(LLVMTypeRef.Int8)]
@@ -4249,7 +4343,11 @@ LLVMValueRef gcRegisterStaticRootFunction = default;
         if (moduleMethods.TryGetValue(friendlyName, out var existing))
         {
             if (SameMethodInstantiation(existing.Item3, method))
+            {
+                if (existing.Item4 is null && instructions is not null)
+                    moduleMethods[friendlyName] = new(existing.Item1, existing.Item2, existing.Item3, instructions);
                 return;
+            }
             throw new InvalidOperationException($"LLVM method symbol collision: {existing.Item3.FullName} and {method.FullName}.");
         }
 
@@ -4261,12 +4359,19 @@ LLVMValueRef gcRegisterStaticRootFunction = default;
         var funcValue = module.AddFunction(symbolName ?? nativeSymbolName ?? friendlyName, funcType);
         moduleMethods.Add(friendlyName, new(funcValue, funcType, method, instructions));
     }
+
+    LLVMValueRef AddInternalGlobal(LLVMTypeRef type, string name)
+    {
+        var value = module.AddGlobal(type, name);
+        value.Linkage = LLVMLinkage.LLVMInternalLinkage;
+        return value;
+    }
 }
 
 if (!module.TryVerify(LLVMVerifierFailureAction.LLVMReturnStatusAction, out var verificationError))
     throw new InvalidOperationException(verificationError);
 
-machine.EmitToFile(module, $"{Path.GetFileNameWithoutExtension(fileName)}.obj", LLVMCodeGenFileType.LLVMObjectFile);
+machine.EmitToFile(module, outputFileName, LLVMCodeGenFileType.LLVMObjectFile);
 
 sealed class ExceptionRegion
 {

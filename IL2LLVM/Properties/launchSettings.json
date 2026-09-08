@@ -1,0 +1,16 @@
+{
+  "profiles": {
+    "Build ConsoleApp1(x86)": {
+      "commandName": "Project",
+      "commandLineArgs": "../../../../ConsoleApp1/bin/Debug/net10.0/ConsoleApp1.dll ../../../../ConsoleApp1/bin/Debug/net10.0/ConsoleApp1.obj i686-pc-windows-msvc"
+    },
+    "Build ConsoleApp1(x64)": {
+      "commandName": "Project",
+      "commandLineArgs": "../../../../ConsoleApp1/bin/Debug/net10.0/ConsoleApp1.dll ../../../../ConsoleApp1/bin/Debug/net10.0/ConsoleApp1.obj x86_64-pc-windows-msvc"
+    },
+    "Build LinuxKernelModuleExample(x86_64)": {
+      "commandName": "Project",
+      "commandLineArgs": "../../../../LinuxKernelModuleExample/bin/Debug/net10.0/LinuxKernelModuleExample.dll ../../../../LinuxKernelModuleExample/bin/Debug/net10.0/LinuxKernelModuleExample.obj x86_64-unknown-linux-gnu;kernel"
+    }
+  }
+}

@@ -1,13 +1,15 @@
 <Project>
+	
   <PropertyGroup>
     <NoStdLib>true</NoStdLib>
     <NoConfig>true</NoConfig>
     <ImplicitUsings>disable</ImplicitUsings>
-    <RuntimeMetadataVersion>v4.0.30319</RuntimeMetadataVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
     <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
-    <IlcSystemModule>CoreLib</IlcSystemModule>
   </PropertyGroup>
+
+  <Import Project="CoreLib\CoreLib.projitems" Label="Shared" />
 
   <Target Name="CustomizeReferences" BeforeTargets="BeforeCompile" AfterTargets="FindReferenceAssembliesForReferences">
     <ItemGroup>
@@ -15,4 +17,5 @@
       <ReferencePath Remove="@(ReferencePath)" />
     </ItemGroup>
   </Target>
+	
 </Project>

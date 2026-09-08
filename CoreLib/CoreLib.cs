@@ -1030,6 +1030,11 @@ namespace System.Runtime
         }
     }
 
+    [StructLayout(LayoutKind.Sequential, Size = 256)]
+    internal struct JumpBuffer
+    {
+    }
+
     public static unsafe class ExceptionRuntime
     {
         private static void* _top;

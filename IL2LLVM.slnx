@@ -4,7 +4,12 @@
     <Platform Name="x64" />
     <Platform Name="x86" />
   </Configurations>
-  <Project Path="ConsoleApp1/ConsoleApp1.csproj" />
+  <Folder Name="/Targets/">
+    <File Path="Directory.Build.targets" />
+  </Folder>
   <Project Path="apphost/apphost.vcxproj" Id="0b0b4474-bfaf-4227-b2c4-c7258e73d299" />
+  <Project Path="ConsoleApp1/ConsoleApp1.csproj" />
+  <Project Path="CoreLib/CoreLib.shproj" Id="d04e297f-240e-43a9-b12c-8d25570a8c94" />
   <Project Path="IL2LLVM/IL2LLVM.csproj" />
+  <Project Path="LinuxKernelModuleExample/LinuxKernelModuleExample.csproj" Id="48722b83-b692-40cb-aa11-ad45acbc7936" />
 </Solution>
