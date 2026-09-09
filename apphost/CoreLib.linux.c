@@ -21,15 +21,15 @@ void System_Console_WriteLine_String(const unsigned short* str)
     putwchar(L'\n');
 }
 
-void System_Console_Write_System_ReadOnlySpan_1_System_Byte(const char* value)
+void System_Console_Write_System_ReadOnlySpan_System_Byte(const char* value)
 {
     if (value != NULL)
         fputs(value, stdout);
 }
 
-void System_Console_WriteLine_System_ReadOnlySpan_1_System_Byte(const char* value)
+void System_Console_WriteLine_System_ReadOnlySpan_System_Byte(const char* value)
 {
-    System_Console_Write_System_ReadOnlySpan_1_System_Byte(value);
+    System_Console_Write_System_ReadOnlySpan_System_Byte(value);
     fputc('\n', stdout);
 }
 

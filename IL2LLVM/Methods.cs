@@ -348,7 +348,7 @@ sealed partial class Translator
         TypeReference declareType = methodDeclareType ?? method.DeclaringType;
         List<string> names = [GetFriendlyTypeName(declareType), SanitizeSymbolPart(method.Name)];
         if (method is GenericInstanceMethod genericMethod)
-            names.AddRange(genericMethod.GenericArguments.Select(GetFriendlyTypeName));
+            names.AddRange(genericMethod.GenericArguments.Select(argument => GetFriendlyTypeName(argument)));
         else if (method.GenericParameters.Count != 0)
             names.Add($"G{method.GenericParameters.Count}");
         names.AddRange(method.Parameters.Select(parameter =>
@@ -356,16 +356,16 @@ sealed partial class Translator
         return string.Join("_", names);
     }
 
-    string GetFriendlyTypeName(TypeReference type)
+    string GetFriendlyTypeName(TypeReference type, bool includeGenericMarker = true)
     {
         if (type is RequiredModifierType requiredModifier)
-            return GetFriendlyTypeName(requiredModifier.ElementType);
+            return GetFriendlyTypeName(requiredModifier.ElementType, includeGenericMarker);
         if (type is OptionalModifierType optionalModifier)
-            return GetFriendlyTypeName(optionalModifier.ElementType);
+            return GetFriendlyTypeName(optionalModifier.ElementType, includeGenericMarker);
         if (type is PinnedType pinned)
-            return GetFriendlyTypeName(pinned.ElementType);
+            return GetFriendlyTypeName(pinned.ElementType, includeGenericMarker);
         if (type is GenericInstanceType generic)
-            return GetFriendlyTypeName(generic.ElementType) + "_" + string.Join("_", generic.GenericArguments.Select(GetFriendlyTypeName));
+            return GetFriendlyTypeName(generic.ElementType, false) + "_" + string.Join("_", generic.GenericArguments.Select(argument => GetFriendlyTypeName(argument)));
         if (type is ArrayType array)
             return $"{GetFriendlyTypeName(array.ElementType)}_Array{array.Rank}";
         if (type is ByReferenceType byReference)
@@ -374,7 +374,26 @@ sealed partial class Translator
             return GetFriendlyTypeName(pointer.ElementType) + "_Pointer";
         if (type is GenericParameter parameter)
             return $"{parameter.Type}{parameter.Position}";
-        return SanitizeSymbolPart(type.FullName);
+        var name = RemoveGenericArity(type.FullName);
+        if (includeGenericMarker && type.Resolve() is { GenericParameters.Count: > 0 } definition)
+            name += "_" + string.Join("_", definition.GenericParameters.Select(parameter => SanitizeSymbolPart(parameter.Name)));
+        return SanitizeSymbolPart(name);
+    }
+
+    static string RemoveGenericArity(string value)
+    {
+        var result = new System.Text.StringBuilder(value.Length);
+        for (int index = 0; index < value.Length; index++)
+        {
+            if (value[index] == '`' && index + 1 < value.Length && char.IsDigit(value[index + 1]))
+            {
+                while (index + 1 < value.Length && char.IsDigit(value[index + 1]))
+                    index++;
+                continue;
+            }
+            result.Append(value[index]);
+        }
+        return result.ToString();
     }
 
     string GetFriendlyParameterTypeName(TypeReference type)
@@ -406,7 +425,7 @@ sealed partial class Translator
             hash ^= character;
             hash *= 16777619;
         }
-        return $"{SanitizeSymbolPart(value)}_{hash:X8}";
+        return $"{SanitizeSymbolPart(RemoveGenericArity(value))}_{hash:X8}";
     }
 
     Tuple<LLVMValueRef, LLVMTypeRef> GetStaticField(FieldReference field, MethodReference? context = null)
