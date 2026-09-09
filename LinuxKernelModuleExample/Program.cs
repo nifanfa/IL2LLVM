@@ -6,5 +6,8 @@ internal static class Program
     private static void Main()
     {
         Console.WriteLine("Hello, World!");
+        Console.WriteLine("Hello, World!(u8)"u8);
+        LanguageFeatureValidation.Run();
+        GarbageCollectionValidation.Run();
     }
 }

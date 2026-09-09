@@ -13,7 +13,7 @@
   <ItemGroup>
     <PackageReference Include="libLLVM" Version="21.1.8" />
     <PackageReference Include="libLLVM.runtime.win-x64" Version="21.1.8" />
-    <PackageReference Include="LLVMSharp" Version="20.1.2" />
+    <PackageReference Include="LLVMSharp" Version="21.1.8.1" />
     <PackageReference Include="Mono.Cecil" Version="0.11.6" />
   </ItemGroup>
 

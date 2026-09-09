@@ -317,19 +317,28 @@ sealed partial class Translator
         return null;
     }
 
+    bool UsesValueReturnBuffer(MethodReference method)
+    {
+        return !IsExternalMethod(method) && IsValueType(SubstituteGenericParameter(method.ReturnType, method));
+    }
+
     LLVMTypeRef CreateLLVMFunction(LLVMModuleRef module, MethodReference method)
     {
         List<LLVMTypeRef> paramTypes = new List<LLVMTypeRef>();
+        if (UsesValueReturnBuffer(method))
+            paramTypes.Add(LLVMTypeRef.CreatePointer(int8Type, 0));
         if (method.HasThis)
         {
             // "this" will be a parameter
-            paramTypes.Add(LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0));
+            paramTypes.Add(LLVMTypeRef.CreatePointer(int8Type, 0));
         }
         foreach (var p in method.Parameters)
         {
             paramTypes.Add(GetLLVMTypeRef(SubstituteGenericParameter(p.ParameterType, method)));
         }
-        LLVMTypeRef returnType = GetLLVMTypeRef(SubstituteGenericParameter(method.ReturnType, method));
+        LLVMTypeRef returnType = UsesValueReturnBuffer(method)
+            ? voidType
+            : GetLLVMTypeRef(SubstituteGenericParameter(method.ReturnType, method));
         var func = LLVMTypeRef.CreateFunction(returnType, paramTypes.ToArray());
         return func;
     }
@@ -389,6 +398,17 @@ sealed partial class Translator
             : '_').ToArray());
     }
 
+    string GetStableSymbolSuffix(string value)
+    {
+        uint hash = 2166136261;
+        foreach (var character in value)
+        {
+            hash ^= character;
+            hash *= 16777619;
+        }
+        return $"{SanitizeSymbolPart(value)}_{hash:X8}";
+    }
+
     Tuple<LLVMValueRef, LLVMTypeRef> GetStaticField(FieldReference field, MethodReference? context = null)
     {
         var declaringType = context is null ? field.DeclaringType : ResolveGenericType(field.DeclaringType, context);
@@ -399,17 +419,19 @@ sealed partial class Translator
         var fieldType = GetLLVMTypeRef(fieldReferenceType);
         if (IsValueType(fieldReferenceType))
         {
-            var storageType = LLVMTypeRef.CreateArray(LLVMTypeRef.Int8, (uint)Math.Max(1, GetTypeSize(fieldReferenceType)));
+            var storageType = LLVMTypeRef.CreateArray(int8Type, (uint)Math.Max(1, GetTypeSize(fieldReferenceType)));
             var storage = AddInternalGlobal(storageType, fieldName);
             storage.Initializer = LLVMValueRef.CreateConstNull(storageType);
             var storageResult = new Tuple<LLVMValueRef, LLVMTypeRef>(storage, fieldType);
             staticFields.Add(fieldName, storageResult);
+            staticFieldTypes.Add(fieldName, fieldReferenceType);
             return storageResult;
         }
         var fieldValue = AddInternalGlobal(fieldType, fieldName);
         fieldValue.Initializer = LLVMValueRef.CreateConstNull(fieldType);
         var result = new Tuple<LLVMValueRef, LLVMTypeRef>(fieldValue, fieldType);
         staticFields.Add(fieldName, result);
+        staticFieldTypes.Add(fieldName, fieldReferenceType);
         return result;
     }
 
@@ -418,14 +440,14 @@ sealed partial class Translator
         var definition = GetLocalField(field);
         var key = definition.FullName;
         var initialValue = definition.InitialValue ?? [];
-        var dataType = LLVMTypeRef.CreateArray(LLVMTypeRef.Int8, (uint)Math.Max(1, initialValue.Length));
+        var dataType = LLVMTypeRef.CreateArray(int8Type, (uint)Math.Max(1, initialValue.Length));
         if (!runtimeFieldData.TryGetValue(key, out var data))
         {
-            data = AddInternalGlobal(dataType, $"__field_data_{runtimeFieldData.Count}");
-            data.Initializer = LLVMValueRef.CreateConstArray(LLVMTypeRef.Int8,
+            data = AddInternalGlobal(dataType, $"__field_data_{GetStableSymbolSuffix(key)}");
+            data.Initializer = LLVMValueRef.CreateConstArray(int8Type,
                 initialValue.Length == 0
-                    ? [LLVMValueRef.CreateConstNull(LLVMTypeRef.Int8)]
-                    : initialValue.Select(value => LLVMValueRef.CreateConstInt(LLVMTypeRef.Int8, value, false)).ToArray());
+                    ? [LLVMValueRef.CreateConstNull(int8Type)]
+                    : initialValue.Select(value => LLVMValueRef.CreateConstInt(int8Type, value, false)).ToArray());
             runtimeFieldData.Add(key, data);
         }
 
@@ -436,7 +458,7 @@ sealed partial class Translator
             [LLVMValueRef.CreateConstInt(sizeType, 0, false), LLVMValueRef.CreateConstInt(sizeType, 0, false)]);
         StoreField(builder, handle, handleType.Fields.First(candidate => candidate.Name == "Data"), dataPointer);
         StoreField(builder, handle, handleType.Fields.First(candidate => candidate.Name == "Length"),
-            LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, (ulong)(definition.InitialValue?.Length ?? 0), false));
+            LLVMValueRef.CreateConstInt(int32Type, (ulong)(definition.InitialValue?.Length ?? 0), false));
         return handle;
     }
 
@@ -469,7 +491,12 @@ sealed partial class Translator
         var nativeSymbolName = !string.IsNullOrEmpty(importedName) && importedName != method.Name
             ? importedName
             : null;
-        var funcValue = module.AddFunction(symbolName ?? nativeSymbolName ?? friendlyName, funcType);
+        var exportedName = entryPoint is not null && SameMethodDefinition(method, entryPoint)
+            ? "managed_Main"
+            : symbolName ?? nativeSymbolName ?? friendlyName;
+        var funcValue = module.AddFunction(exportedName, funcType);
+        if (method.Resolve()?.HasBody == true && (entryPoint is null || !SameMethodDefinition(method, entryPoint)))
+            funcValue.Linkage = LLVMLinkage.LLVMInternalLinkage;
         moduleMethods.Add(friendlyName, new(funcValue, funcType, method, instructions));
     }
 
@@ -478,5 +505,10 @@ sealed partial class Translator
         var value = module.AddGlobal(type, name);
         value.Linkage = LLVMLinkage.LLVMInternalLinkage;
         return value;
+    }
+
+    unsafe LLVMTypeRef GetFunctionType(LLVMValueRef function)
+    {
+        return new LLVMTypeRef((IntPtr)LLVM.GlobalGetValueType((LLVMOpaqueValue*)function.Handle));
     }
 }

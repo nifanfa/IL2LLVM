@@ -329,6 +329,7 @@ public static partial class LanguageFeatureValidation
         VerifyStructures();
         VerifyLatestSyntax();
         VerifyModernLanguageFeatures(values);
+        VerifySpans();
         VerifyArrays();
         VerifyDelegatesAndLinq(values);
         VerifyControlFlow(values);
@@ -805,6 +806,26 @@ public static partial class LanguageFeatureValidation
             StaticLocalFunction(RuntimeValue(2), RuntimeValue(3)) != RuntimeValue(6) ||
             doubleValue(RuntimeValue(5)) != RuntimeValue(10))
             Fail("local function or function pointer");
+    }
+
+    private static void VerifySpans()
+    {
+        int[] values = [RuntimeValue(1), RuntimeValue(2), RuntimeValue(3), RuntimeValue(4), RuntimeValue(5)];
+        Span<int> span = values;
+        span[RuntimeValue(1)] = RuntimeValue(9);
+        Span<int> slice = span.Slice(RuntimeValue(1), RuntimeValue(3));
+        ReadOnlySpan<int> readOnly = values;
+        ReadOnlySpan<int> converted = span;
+        ReadOnlySpan<int> readOnlySlice = readOnly.Slice(RuntimeValue(2));
+        ReadOnlySpan<byte> utf8 = "IL2LLVM"u8;
+
+        if (span.Length != RuntimeValue(5) || span.IsEmpty || values[1] != RuntimeValue(9) ||
+            slice.Length != RuntimeValue(3) || slice[0] != RuntimeValue(9) || slice[2] != RuntimeValue(4) ||
+            readOnly.Length != RuntimeValue(5) || readOnly[1] != RuntimeValue(9) ||
+            converted[4] != RuntimeValue(5) || readOnlySlice.Length != RuntimeValue(3) ||
+            readOnlySlice[0] != RuntimeValue(3) || utf8.Length != RuntimeValue(7) ||
+            utf8[0] != (byte)'I' || utf8[2] != (byte)'2' || utf8[6] != (byte)'M')
+            Fail("span or UTF-8 string literal");
     }
 
     private static void VerifyArrays()

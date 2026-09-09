@@ -9,10 +9,10 @@ MODULE_AUTHOR("Your Name");
 MODULE_DESCRIPTION("A Simple Linux Kernel Module");
 MODULE_VERSION("1.0");
 
-extern void Program_Main(void);
+extern void managed_Main(void);
 
 int my_thread(void* dummy){
-    Program_Main();
+    managed_Main();
     return 0;
 }
 
@@ -26,6 +26,19 @@ static int __init my_module_init(void)
 static void __exit my_module_exit(void)
 {
     printk(KERN_INFO "My Module: Unloaded successfully!\n");
+}
+
+void System_Console_Write_System_ReadOnlySpan_1_System_Byte(const char* str)
+{
+    if (str == NULL)
+        return;
+    printk(KERN_INFO "%s", str);
+}
+
+void System_Console_WriteLine_System_ReadOnlySpan_1_System_Byte(const char* str)
+{
+    System_Console_Write_System_ReadOnlySpan_1_System_Byte(str);
+    printk(KERN_INFO "\n");
 }
 
 void System_Console_Write_String(const short *str)

@@ -1,7 +1,7 @@
-void Program_Main(void);
+void managed_Main(void);
 
 int main()
 {
-    Program_Main();
+    managed_Main();
     return 0;
 }

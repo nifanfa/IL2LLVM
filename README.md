@@ -92,7 +92,7 @@ Build the managed console input first:
 dotnet build ConsoleAppExample\ConsoleAppExample.csproj
 ```
 
-Generate an object with one of the console launch profiles or with the command above. Link that object with `apphost/apphost.c`, `apphost/CoreLib.c`, and a native toolchain for the selected target. `apphost` calls `Program_Main` directly; it does not start `dotnet` or load a CLR.
+Generate an object with one of the console launch profiles or with the command above. Link that object with `apphost/apphost.c`, `apphost/CoreLib.c`, and a native toolchain for the selected target. `apphost` calls `managed_Main` directly; it does not start `dotnet` or load a CLR.
 
 For a Linux x86-64 user-mode executable, select `Build ConsoleAppExample(Linux x86_64)` or generate the object with `x86_64-unknown-linux-gnu`, then run:
 
@@ -106,7 +106,7 @@ The Makefile links the existing object with `CoreLib.linux.c`. It does not build
 
 ## Linux kernel module
 
-`LinuxKernelModuleExample` is an x86-64 example. It calls `Program_Main` from the module init function and supplies the runtime boundary in `my_module_main.c` plus `runtime_jump_x86_64.S`.
+`LinuxKernelModuleExample` is an x86-64 example. It calls `managed_Main` from the module init function and supplies the runtime boundary in `my_module_main.c` plus `runtime_jump_x86_64.S`.
 
 Generate the managed object using the `kernel` code model:
 

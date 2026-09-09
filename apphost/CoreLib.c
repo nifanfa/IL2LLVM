@@ -1,6 +1,19 @@
 #include <stdio.h>
 #include <wchar.h>
 
+void System_Console_Write_System_ReadOnlySpan_1_System_Byte(const char* str)
+{
+    if (str == NULL)
+        return;
+    printf("%s", str);
+}
+
+void System_Console_WriteLine_System_ReadOnlySpan_1_System_Byte(const char* str)
+{
+    System_Console_Write_System_ReadOnlySpan_1_System_Byte(str);
+    printf("\n");
+}
+
 void System_Console_Write_String(const wchar_t* str)
 {
     if (str == NULL)

@@ -5,8 +5,7 @@ namespace System
 {
     public class Object
     {
-        internal IntPtr m_pMethodTable;
-        internal unsafe GCDesc* m_pGCDesc;
+        internal unsafe TypeDescriptor* m_pTypeDescriptor;
 
         public Object() { }
 
@@ -15,7 +14,14 @@ namespace System
         public static bool Equals(object left, object right) => left == null ? right == null : left.Equals(right);
         public virtual int GetHashCode() => 1;
         public virtual string ToString() => GetType().FullName;
-        public Type GetType() => Type.GetTypeFromHandle(default);
+        public unsafe Type GetType() => Type.GetTypeFromDescriptor(m_pTypeDescriptor);
+    }
+
+    public unsafe struct TypeDescriptor
+    {
+        internal int RuntimeTypeId;
+        internal GCDesc* GCDescriptor;
+        internal Type Type;
     }
 
     public unsafe struct GCDesc
@@ -26,7 +32,7 @@ namespace System
         public IntPtr ArrayLengthOffset;
         public IntPtr ArrayElementSize;
         public IntPtr ArrayElementReferenceCount;
-        public fixed ushort FixedReferenceOffsets[1];
+        public fixed ushort ReferenceOffsets[1];
     }
 
     public static class GC
@@ -197,7 +203,7 @@ namespace System
     {
         public int Length;
         private int[] _lengths;
-        internal void* m_pData;
+        internal byte* m_pData;
 
         public virtual int Rank => _lengths == null ? 1 : _lengths.Length;
         public virtual int GetLength(int dimension)
@@ -307,6 +313,89 @@ namespace System
             if (index < 0 || length < 0 || index > array.Length - length)
                 throw new ArgumentException("The array range is invalid.");
         }
+    }
+
+    public ref struct Span<T>
+    {
+        private T[] _array;
+        private int _start;
+        private int _length;
+
+        public Span(T[] array)
+            : this(array, 0, array == null ? 0 : array.Length) { }
+
+        public Span(T[] array, int start, int length)
+        {
+            if (array == null)
+                throw new ArgumentNullException("The array cannot be null.");
+            if (start < 0 || length < 0 || start > array.Length - length)
+                throw new ArgumentException("The span range is invalid.");
+            _array = array;
+            _start = start;
+            _length = length;
+        }
+
+        public int Length => _length;
+        public bool IsEmpty => _length == 0;
+
+        public ref T this[int index]
+        {
+            get
+            {
+                if ((uint)index >= (uint)_length)
+                    throw new IndexOutOfRangeException("The span index is outside the span.");
+                return ref _array[_start + index];
+            }
+        }
+
+        public Span<T> Slice(int start) => Slice(start, _length - start);
+
+        public Span<T> Slice(int start, int length) => new Span<T>(_array, _start + start, length);
+
+        public static implicit operator Span<T>(T[] array) => new Span<T>(array);
+        public static implicit operator ReadOnlySpan<T>(Span<T> span)
+            => new ReadOnlySpan<T>(span._array, span._start, span._length);
+    }
+
+    public readonly ref struct ReadOnlySpan<T>
+    {
+        private readonly T[] _array;
+        private readonly int _start;
+        private readonly int _length;
+
+        public ReadOnlySpan(T[] array)
+            : this(array, 0, array == null ? 0 : array.Length) { }
+
+        public ReadOnlySpan(T[] array, int start, int length)
+        {
+            if (array == null)
+                throw new ArgumentNullException("The array cannot be null.");
+            if (start < 0 || length < 0 || start > array.Length - length)
+                throw new ArgumentException("The span range is invalid.");
+            _array = array;
+            _start = start;
+            _length = length;
+        }
+
+        public int Length => _length;
+        public bool IsEmpty => _length == 0;
+
+        public ref readonly T this[int index]
+        {
+            get
+            {
+                if ((uint)index >= (uint)_length)
+                    throw new IndexOutOfRangeException("The span index is outside the span.");
+                return ref _array[_start + index];
+            }
+        }
+
+        public ReadOnlySpan<T> Slice(int start) => Slice(start, _length - start);
+
+        public ReadOnlySpan<T> Slice(int start, int length)
+            => new ReadOnlySpan<T>(_array, _start + start, length);
+
+        public static implicit operator ReadOnlySpan<T>(T[] array) => new ReadOnlySpan<T>(array);
     }
 
     public sealed class ArrayEnumerator<T> : Collections.Generic.IEnumerator<T>
@@ -622,8 +711,39 @@ namespace System
     {
         private IntPtr _function;
         private object _target;
-        public static Delegate Combine(Delegate left, Delegate right) => right ?? left;
-        public static Delegate Remove(Delegate source, Delegate value) => source;
+        private Delegate _next;
+
+        public static Delegate Combine(Delegate left, Delegate right)
+        {
+            if (left == null)
+                return right;
+            if (right == null)
+                return left;
+            Delegate current = left;
+            while (current._next != null)
+                current = current._next;
+            current._next = right;
+            return left;
+        }
+
+        public static Delegate Remove(Delegate source, Delegate value)
+        {
+            if (source == null || value == null)
+                return source;
+            if (ReferenceEquals(source, value))
+                return source._next;
+            Delegate current = source;
+            while (current._next != null)
+            {
+                if (ReferenceEquals(current._next, value))
+                {
+                    current._next = current._next._next;
+                    break;
+                }
+                current = current._next;
+            }
+            return source;
+        }
     }
     public class MulticastDelegate : Delegate { }
 
@@ -641,6 +761,7 @@ namespace System
         }
 
         public static Type GetTypeFromHandle(RuntimeTypeHandle handle) => handle.Type;
+        internal static unsafe Type GetTypeFromDescriptor(TypeDescriptor* descriptor) => descriptor->Type;
     }
 
     public struct RuntimeTypeHandle
@@ -651,66 +772,84 @@ namespace System
     public struct RuntimeMethodHandle { }
     public unsafe struct RuntimeFieldHandle
     {
-        internal void* Data;
+        internal byte* Data;
         internal int Length;
     }
 
-    public static class AppContext
-    {
-        public static void SetData(string name, object value) { }
-        public static object GetData(string name) => null;
-    }
-
     public class Attribute { }
+    [AttributeUsage(AttributeTargets.Enum)]
     public sealed class FlagsAttribute : Attribute { }
-    public enum AttributeTargets { }
+    [Flags]
+    public enum AttributeTargets
+    {
+        Assembly = 1,
+        Module = 2,
+        Class = 4,
+        Struct = 8,
+        Enum = 16,
+        Constructor = 32,
+        Method = 64,
+        Property = 128,
+        Field = 256,
+        Event = 512,
+        Interface = 1024,
+        Parameter = 2048,
+        Delegate = 4096,
+        ReturnValue = 8192,
+        GenericParameter = 16384,
+        All = 32767
+    }
+    [AttributeUsage(AttributeTargets.All, Inherited = true)]
     public sealed class AttributeUsageAttribute : Attribute
     {
-        public AttributeUsageAttribute(AttributeTargets validOn) { }
+        private readonly AttributeTargets _validOn;
+
+        public AttributeUsageAttribute(AttributeTargets validOn)
+        {
+            _validOn = validOn;
+            Inherited = true;
+        }
+
+        public AttributeTargets ValidOn => _validOn;
         public bool AllowMultiple { get; set; }
         public bool Inherited { get; set; }
     }
 
+    [AttributeUsage(AttributeTargets.Parameter)]
     public sealed class ParamArrayAttribute : Attribute { }
     public sealed class Console
     {
         [DllImport("*")]
-        public static extern void Write([MarshalAs(UnmanagedType.LPWStr)] string value);
+        public static extern void Write(string value);
         [DllImport("*")]
-        public static extern void WriteLine([MarshalAs(UnmanagedType.LPWStr)] string value);
+        public static extern void WriteLine(string value);
+        [DllImport("*")]
+        public static extern void Write(ReadOnlySpan<byte> value);
+        [DllImport("*")]
+        public static extern void WriteLine(ReadOnlySpan<byte> value);
         [DllImport("*")]
         public static extern void WriteLine(int value);
         [DllImport("*")]
-        public static extern void WriteLine(IntPtr value);
+        public static extern void WriteLine(nint value);
     }
 }
 
 namespace System.Runtime.InteropServices
 {
-    public enum UnmanagedType
-    {
-        LPWStr = 21
-    }
-
+    [AttributeUsage(AttributeTargets.Method)]
     public sealed class DllImportAttribute : Attribute
     {
         public DllImportAttribute(string dllName) { }
         public string EntryPoint { get; set; }
     }
 
-    public sealed class MarshalAsAttribute : Attribute
-    {
-        public MarshalAsAttribute(UnmanagedType unmanagedType)
-        {
-            Value = unmanagedType;
-        }
-
-        public UnmanagedType Value { get; }
-    }
-
+    [AttributeUsage(AttributeTargets.Method)]
     public sealed class UnmanagedCallersOnlyAttribute : Attribute { }
+    [AttributeUsage(AttributeTargets.Parameter)]
     public sealed class InAttribute : Attribute { }
+    [AttributeUsage(AttributeTargets.Parameter)]
     public sealed class OutAttribute : Attribute { }
+    [AttributeUsage(AttributeTargets.Class | AttributeTargets.Struct)]
     public sealed class StructLayoutAttribute : Attribute
     {
         public StructLayoutAttribute(LayoutKind layoutKind) { Value = layoutKind; }
@@ -718,6 +857,7 @@ namespace System.Runtime.InteropServices
         public int Pack;
         public int Size;
     }
+    [AttributeUsage(AttributeTargets.Field)]
     public sealed class FieldOffsetAttribute : Attribute
     {
         public FieldOffsetAttribute(int value) { Value = value; }
@@ -750,6 +890,8 @@ namespace System.Runtime.CompilerServices
     }
     public sealed class IsExternalInit { }
     public sealed class IsVolatile { }
+    public sealed class IsByRefLikeAttribute : Attribute { }
+    public sealed class IsReadOnlyAttribute : Attribute { }
     public sealed class MethodImplAttribute : Attribute
     {
         public MethodImplAttribute(MethodImplOptions options) { }
@@ -769,7 +911,6 @@ namespace System.Runtime.CompilerServices
 
     public static unsafe class RuntimeHelpers
     {
-        public static int OffsetToStringData => 0;
         public static void InitializeArray(Array array, RuntimeFieldHandle fieldHandle)
         {
             if (array == null || fieldHandle.Data == null || fieldHandle.Length == 0)
@@ -778,6 +919,13 @@ namespace System.Runtime.CompilerServices
             byte* destination = (byte*)array.m_pData;
             for (int index = 0; index < fieldHandle.Length; index++)
                 destination[index] = source[index];
+        }
+
+        public static ReadOnlySpan<T> CreateSpan<T>(RuntimeFieldHandle fieldHandle)
+        {
+            T[] values = new T[fieldHandle.Length + 1];
+            InitializeArray(values, fieldHandle);
+            return new ReadOnlySpan<T>(values, 0, fieldHandle.Length);
         }
     }
 
@@ -849,7 +997,7 @@ namespace System.Runtime
 {
     internal unsafe struct GCRoot
     {
-        public void* Address;
+        public Object** Address;
         public GCDesc* Descriptor;
     }
 
@@ -869,14 +1017,13 @@ namespace System.Runtime
 
     internal unsafe struct GCObjectHeader
     {
-        public IntPtr m_pMethodTable;
-        public GCDesc* m_pGCDesc;
+        public TypeDescriptor* TypeDescriptor;
     }
 
     internal unsafe struct GCStaticRoot
     {
         public GCStaticRoot* Next;
-        public void* Address;
+        public Object** Address;
         public GCDesc* Descriptor;
     }
 
@@ -890,12 +1037,12 @@ namespace System.Runtime
         private static int s_collectionCount;
 
         [DllImport("*", EntryPoint = "calloc")]
-        private static extern void* Calloc(nuint count, nuint size);
+        private static extern byte* Calloc(nuint count, nuint size);
 
         [DllImport("*", EntryPoint = "free")]
-        private static extern void Free(void* value);
+        private static extern void Free(GCAllocation* value);
 
-        public static void* Allocate(nuint size)
+        public static Object* Allocate(nuint size)
         {
             if (s_allocatedBytes >= s_collectionThreshold)
                 Collect();
@@ -907,7 +1054,7 @@ namespace System.Runtime
             allocation->Size = size;
             s_allocations = allocation;
             s_allocatedBytes += (int)size;
-            return (byte*)allocation + sizeof(GCAllocation);
+            return (Object*)((byte*)allocation + sizeof(GCAllocation));
         }
 
         public static void Push(GCFrame* frame, GCRoot* roots, int rootCount)
@@ -927,21 +1074,6 @@ namespace System.Runtime
 
         public static void UnwindTo(GCFrame* frame) => s_frames = frame;
 
-        public static void RegisterStaticRoot(void* address, GCDesc* descriptor)
-        {
-            for (GCStaticRoot* existing = s_staticRoots; existing != null; existing = existing->Next)
-                if (existing->Address == address)
-                    return;
-
-            GCStaticRoot* registered = (GCStaticRoot*)Calloc(1, (nuint)sizeof(GCStaticRoot));
-            if (registered == null)
-                ExceptionRuntime.Abort();
-            registered->Address = address;
-            registered->Descriptor = descriptor;
-            registered->Next = s_staticRoots;
-            s_staticRoots = registered;
-        }
-
         public static void Collect()
         {
             for (GCStaticRoot* root = s_staticRoots; root != null; root = root->Next)
@@ -949,7 +1081,7 @@ namespace System.Runtime
                 if (root->Descriptor == null)
                     MarkRoot(root->Address, null);
                 else
-                    ScanValue(root->Address, root->Descriptor);
+                    ScanValue((byte*)root->Address, root->Descriptor);
             }
             for (GCFrame* frame = s_frames; frame != null; frame = frame->Previous)
                 for (int index = 0; index < frame->RootCount; index++)
@@ -982,17 +1114,17 @@ namespace System.Runtime
 
         public static int CollectionCount(int generation) => s_collectionCount;
 
-        private static void MarkRoot(void* address, GCDesc* descriptor)
+        private static void MarkRoot(Object** address, GCDesc* descriptor)
         {
             if (address == null)
                 return;
             if (descriptor == null)
-                MarkObject(*(void**)address);
+                MarkObject(*address);
             else
-                ScanValue(address, descriptor);
+                ScanValue((byte*)address, descriptor);
         }
 
-        private static void MarkObject(void* value)
+        private static void MarkObject(Object* value)
         {
             if (value == null)
                 return;
@@ -1000,18 +1132,18 @@ namespace System.Runtime
             if (allocation->Marked != 0)
                 return;
             allocation->Marked = 1;
-            GCDesc* descriptor = ((GCObjectHeader*)value)->m_pGCDesc;
+            GCDesc* descriptor = ((GCObjectHeader*)value)->TypeDescriptor->GCDescriptor;
             if (descriptor != null)
-                ScanValue(value, descriptor);
+                ScanValue((byte*)value, descriptor);
         }
 
-        private static void ScanValue(void* value, GCDesc* descriptor)
+        private static void ScanValue(byte* value, GCDesc* descriptor)
         {
-            byte* data = (byte*)value;
-            ushort* offsets = (ushort*)((byte*)descriptor + sizeof(nuint) * 6);
+            byte* data = value;
+            ushort* offsets = descriptor->ReferenceOffsets;
             int fixedReferenceCount = (int)descriptor->FixedReferenceCount;
             for (int index = 0; index < fixedReferenceCount; index++)
-                MarkObject(*(void**)(data + offsets[index]));
+                MarkObject(*(Object**)(data + offsets[index]));
 
             int arrayElementSize = (int)descriptor->ArrayElementSize;
             if (arrayElementSize == 0)
@@ -1025,67 +1157,76 @@ namespace System.Runtime
             {
                 byte* element = elements + (nint)elementIndex * arrayElementSize;
                 for (int referenceIndex = 0; referenceIndex < arrayElementReferenceCount; referenceIndex++)
-                    MarkObject(*(void**)(element + elementOffsets[referenceIndex]));
+                {
+                    MarkObject(*(Object**)(element + elementOffsets[referenceIndex]));
+                }
             }
         }
     }
 
+    internal struct StackPointer { }
+
     [StructLayout(LayoutKind.Sequential, Size = 256)]
-    internal struct JumpBuffer
+    internal struct JumpBuffer { }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal unsafe struct ExceptionFrame
     {
+        public ExceptionFrame* Previous;
+        public JumpBuffer* Buffer;
+        public GCFrame* GCFrame;
     }
 
-    public static unsafe class ExceptionRuntime
+    internal static unsafe class ExceptionRuntime
     {
-        private static void* _top;
+        private static ExceptionFrame* _top;
         private static Exception _current;
 
-        public static void Push(void* frame, void* buffer)
+        public static void Push(ExceptionFrame* frame, JumpBuffer* buffer)
         {
-            void** fields = (void**)frame;
-            fields[0] = _top;
-            fields[1] = buffer;
-            fields[2] = GCHeap.GetTopFrame();
+            frame->Previous = _top;
+            frame->Buffer = buffer;
+            frame->GCFrame = GCHeap.GetTopFrame();
             _top = frame;
         }
 
-        public static void Pop(void* frame)
+        public static void Pop(ExceptionFrame* frame)
         {
             if (_top == frame)
-                _top = *(void**)frame;
+                _top = frame->Previous;
         }
 
-        public static void* GetBuffer(void* frame) => ((void**)frame)[1];
+        public static JumpBuffer* GetBuffer(ExceptionFrame* frame) => frame->Buffer;
 
-        public static void* GetTop() => _top;
+        public static ExceptionFrame* GetTop() => _top;
 
         public static Exception GetCurrent() => _current;
 
         public static void SetCurrent(Exception exception) => _current = exception;
 
         [DllImport("*", EntryPoint = "setjmp")]
-        public static extern int SetJump(void* buffer);
+        public static extern int SetJump(JumpBuffer* buffer, StackPointer* stackPointer);
         [DllImport("*", EntryPoint = "longjmp")]
-        public static extern void LongJump(void* buffer, int value);
+        public static extern void LongJump(JumpBuffer* buffer, int value);
         [DllImport("*", EntryPoint = "abort")]
         public static extern void Abort();
 
         public static void Throw(Exception exception)
         {
             SetCurrent(exception);
-            void* top = GetTop();
+            ExceptionFrame* top = GetTop();
             if (top == null)
             {
                 if (_current != null && _current.Message != null)
-                    Console.WriteLine(_current.Message);
+                    Console.WriteLine("Unhandled exception. " + _current.ToString() + ": " + (_current.Message ?? string.Empty));
                 else
                     Console.WriteLine("Unhandled exception.");
                 Abort();
             }
             else
             {
-                GCHeap.UnwindTo((GCFrame*)((void**)top)[2]);
-                LongJump(GetBuffer(top), 1);
+                GCHeap.UnwindTo(top->GCFrame);
+                LongJump(top->Buffer, 1);
             }
         }
     }

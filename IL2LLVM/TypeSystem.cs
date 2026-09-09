@@ -74,9 +74,9 @@ sealed partial class Translator
         if (type is ByReferenceType byReference)
             return LLVMTypeRef.CreatePointer(GetLLVMTypeRef(byReference.ElementType), 0);
         if (type is PointerType)
-            return LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0);
+            return LLVMTypeRef.CreatePointer(int8Type, 0);
         if (type is ArrayType)
-            return LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0);
+            return LLVMTypeRef.CreatePointer(int8Type, 0);
         if (type is GenericParameter)
             return sizeType;
         return GetLLVMTypeRefFromMetadataType(type.MetadataType);
@@ -193,14 +193,24 @@ sealed partial class Translator
         return SubstituteGenericParameter(definition.Body.Variables[index].VariableType, method);
     }
 
-    FieldDefinition GetObjectMethodTableField()
+    FieldDefinition GetObjectTypeDescriptorField()
     {
-        return localTypes["System.Object"].Fields.First(field => field.Name == "m_pMethodTable");
+        return localTypes["System.Object"].Fields.First(field => field.Name == "m_pTypeDescriptor");
     }
 
-    FieldDefinition GetObjectGCDescriptorField()
+    FieldDefinition GetTypeDescriptorRuntimeTypeIdField()
     {
-        return localTypes["System.Object"].Fields.First(field => field.Name == "m_pGCDesc");
+        return localTypes["System.TypeDescriptor"].Fields.First(field => field.Name == "RuntimeTypeId");
+    }
+
+    FieldDefinition GetTypeDescriptorGCDescriptorField()
+    {
+        return localTypes["System.TypeDescriptor"].Fields.First(field => field.Name == "GCDescriptor");
+    }
+
+    FieldDefinition GetTypeDescriptorTypeField()
+    {
+        return localTypes["System.TypeDescriptor"].Fields.First(field => field.Name == "Type");
     }
 
     int GetObjectHeaderSize()
@@ -368,7 +378,7 @@ sealed partial class Translator
             offset += GetTypeSize(fieldType);
             alignment = Math.Max(alignment, GetTypeAlignment(fieldType));
         }
-        if (SameTypeDefinition(definition, GetObjectMethodTableField().DeclaringType))
+        if (SameTypeDefinition(definition, GetObjectTypeDescriptorField().DeclaringType))
             offset = Math.Max(offset, GetObjectHeaderSize());
         return Math.Max(AlignUp(offset, alignment), definition.ClassSize);
     }
@@ -424,7 +434,7 @@ sealed partial class Translator
             offset += GetTypeSize(field.FieldType);
             alignment = Math.Max(alignment, fieldAlignment);
         }
-        if (SameTypeDefinition(type, GetObjectMethodTableField().DeclaringType))
+        if (SameTypeDefinition(type, GetObjectTypeDescriptorField().DeclaringType))
             offset = Math.Max(offset, GetObjectHeaderSize());
         return Math.Max(AlignUp(offset, alignment), type.ClassSize);
     }

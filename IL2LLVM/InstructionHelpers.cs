@@ -12,7 +12,8 @@ sealed partial class Translator
         }
         if (source.Kind == LLVMTypeKind.LLVMIntegerTypeKind && target.Kind is LLVMTypeKind.LLVMFloatTypeKind or LLVMTypeKind.LLVMDoubleTypeKind)
             return signed ? builder.BuildSIToFP(value, target) : builder.BuildUIToFP(value, target);
-        if (source.Kind == LLVMTypeKind.LLVMFloatTypeKind && target.Kind == LLVMTypeKind.LLVMIntegerTypeKind)
+        if (source.Kind is LLVMTypeKind.LLVMFloatTypeKind or LLVMTypeKind.LLVMDoubleTypeKind &&
+            target.Kind == LLVMTypeKind.LLVMIntegerTypeKind)
             return signed ? builder.BuildFPToSI(value, target) : builder.BuildFPToUI(value, target);
         if (source.Kind == LLVMTypeKind.LLVMFloatTypeKind && target.Kind == LLVMTypeKind.LLVMDoubleTypeKind)
             return builder.BuildFPExt(value, target);
@@ -22,6 +23,8 @@ sealed partial class Translator
             return builder.BuildIntToPtr(value, target);
         if (source.Kind == LLVMTypeKind.LLVMPointerTypeKind && target.Kind == LLVMTypeKind.LLVMIntegerTypeKind)
             return builder.BuildPtrToInt(value, target);
+        if (source.Kind == LLVMTypeKind.LLVMPointerTypeKind && target.Kind == LLVMTypeKind.LLVMPointerTypeKind)
+            return builder.BuildPointerCast(value, target);
         return value;
     }
 
@@ -41,9 +44,9 @@ sealed partial class Translator
         type = GetEnumUnderlyingType(type) ?? type;
         return type.MetadataType switch
         {
-            MetadataType.SByte or MetadataType.Int16 => ConvertValue(builder, value, LLVMTypeRef.Int32),
+            MetadataType.SByte or MetadataType.Int16 => ConvertValue(builder, value, int32Type),
             MetadataType.Boolean or MetadataType.Byte or MetadataType.Char or MetadataType.UInt16 =>
-                ConvertValue(builder, value, LLVMTypeRef.Int32, false),
+                ConvertValue(builder, value, int32Type, false),
             _ => value
         };
     }
@@ -65,8 +68,8 @@ sealed partial class Translator
             rightType.Kind is LLVMTypeKind.LLVMFloatTypeKind or LLVMTypeKind.LLVMDoubleTypeKind)
         {
             var target = leftType.Kind == LLVMTypeKind.LLVMDoubleTypeKind || rightType.Kind == LLVMTypeKind.LLVMDoubleTypeKind
-                ? LLVMTypeRef.Double
-                : LLVMTypeRef.Float;
+                ? doubleType
+                : floatType;
             return (ConvertValue(builder, left, target), ConvertValue(builder, right, target));
         }
 
@@ -88,8 +91,8 @@ sealed partial class Translator
                 rightType.Kind is LLVMTypeKind.LLVMFloatTypeKind or LLVMTypeKind.LLVMDoubleTypeKind)
             {
                 var target = leftType.Kind == LLVMTypeKind.LLVMDoubleTypeKind || rightType.Kind == LLVMTypeKind.LLVMDoubleTypeKind
-                    ? LLVMTypeRef.Double
-                    : LLVMTypeRef.Float;
+                    ? doubleType
+                    : floatType;
                 left = ConvertValue(builder, left, target);
                 right = ConvertValue(builder, right, target);
             }
@@ -110,11 +113,15 @@ sealed partial class Translator
             var predicate = code switch
             {
                 Code.Ceq or Code.Beq or Code.Beq_S => LLVMRealPredicate.LLVMRealOEQ,
-                Code.Cgt or Code.Cgt_Un or Code.Bgt or Code.Bgt_S or Code.Bgt_Un or Code.Bgt_Un_S => LLVMRealPredicate.LLVMRealOGT,
-                Code.Clt or Code.Clt_Un or Code.Blt or Code.Blt_S or Code.Blt_Un or Code.Blt_Un_S => LLVMRealPredicate.LLVMRealOLT,
-                Code.Bge or Code.Bge_S or Code.Bge_Un or Code.Bge_Un_S => LLVMRealPredicate.LLVMRealOGE,
-                Code.Ble or Code.Ble_S or Code.Ble_Un or Code.Ble_Un_S => LLVMRealPredicate.LLVMRealOLE,
-                Code.Bne_Un or Code.Bne_Un_S => LLVMRealPredicate.LLVMRealONE,
+                Code.Cgt or Code.Bgt or Code.Bgt_S => LLVMRealPredicate.LLVMRealOGT,
+                Code.Cgt_Un or Code.Bgt_Un or Code.Bgt_Un_S => LLVMRealPredicate.LLVMRealUGT,
+                Code.Clt or Code.Blt or Code.Blt_S => LLVMRealPredicate.LLVMRealOLT,
+                Code.Clt_Un or Code.Blt_Un or Code.Blt_Un_S => LLVMRealPredicate.LLVMRealULT,
+                Code.Bge or Code.Bge_S => LLVMRealPredicate.LLVMRealOGE,
+                Code.Bge_Un or Code.Bge_Un_S => LLVMRealPredicate.LLVMRealUGE,
+                Code.Ble or Code.Ble_S => LLVMRealPredicate.LLVMRealOLE,
+                Code.Ble_Un or Code.Ble_Un_S => LLVMRealPredicate.LLVMRealULE,
+                Code.Bne_Un or Code.Bne_Un_S => LLVMRealPredicate.LLVMRealUNE,
                 _ => LLVMRealPredicate.LLVMRealOEQ
             };
             return builder.BuildFCmp(predicate, left, right);
@@ -167,29 +174,29 @@ sealed partial class Translator
 
     LLVMTypeRef GetLLVMTypeRefFromMetadataType(MetadataType type) => type switch
     {
-        MetadataType.Void => LLVMTypeRef.Void,
-        MetadataType.Boolean => LLVMTypeRef.Int8,
-        MetadataType.SByte => LLVMTypeRef.Int8,
-        MetadataType.Byte => LLVMTypeRef.Int8,
-        MetadataType.Char => LLVMTypeRef.Int16,
-        MetadataType.Int16 => LLVMTypeRef.Int16,
-        MetadataType.UInt16 => LLVMTypeRef.Int16,
-        MetadataType.Int32 => LLVMTypeRef.Int32,
-        MetadataType.UInt32 => LLVMTypeRef.Int32,
-        MetadataType.Int64 => LLVMTypeRef.Int64,
-        MetadataType.UInt64 => LLVMTypeRef.Int64,
-        MetadataType.Single => LLVMTypeRef.Float,
-        MetadataType.Double => LLVMTypeRef.Double,
+        MetadataType.Void => voidType,
+        MetadataType.Boolean => int8Type,
+        MetadataType.SByte => int8Type,
+        MetadataType.Byte => int8Type,
+        MetadataType.Char => int16Type,
+        MetadataType.Int16 => int16Type,
+        MetadataType.UInt16 => int16Type,
+        MetadataType.Int32 => int32Type,
+        MetadataType.UInt32 => int32Type,
+        MetadataType.Int64 => int64Type,
+        MetadataType.UInt64 => int64Type,
+        MetadataType.Single => floatType,
+        MetadataType.Double => doubleType,
         MetadataType.IntPtr => sizeType,
         MetadataType.UIntPtr => sizeType,
-        MetadataType.Pointer => LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0),
-        MetadataType.ByReference => LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0),
-        MetadataType.Array => LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0),
-        MetadataType.Class => LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0),
-        MetadataType.Object => LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0),
-        MetadataType.String => LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0),
-        MetadataType.ValueType => LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0),
-        _ => LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0)
+        MetadataType.Pointer => LLVMTypeRef.CreatePointer(int8Type, 0),
+        MetadataType.ByReference => LLVMTypeRef.CreatePointer(int8Type, 0),
+        MetadataType.Array => LLVMTypeRef.CreatePointer(int8Type, 0),
+        MetadataType.Class => LLVMTypeRef.CreatePointer(int8Type, 0),
+        MetadataType.Object => LLVMTypeRef.CreatePointer(int8Type, 0),
+        MetadataType.String => LLVMTypeRef.CreatePointer(int8Type, 0),
+        MetadataType.ValueType => LLVMTypeRef.CreatePointer(int8Type, 0),
+        _ => LLVMTypeRef.CreatePointer(int8Type, 0)
     };
 
     int GetMethodParameterCount(MethodReference method)

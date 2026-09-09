@@ -1,24 +1,38 @@
 sealed partial class Translator
 {
+    private static readonly object initializationLock = new();
+    private static bool llvmInitialized;
     private LLVMContextRef context;
     private LLVMModuleRef module;
     private LLVMTargetMachineRef machine;
     private int pointerSize;
+    private LLVMTypeRef int1Type;
+    private LLVMTypeRef int8Type;
+    private LLVMTypeRef int16Type;
+    private LLVMTypeRef int32Type;
+    private LLVMTypeRef int64Type;
+    private LLVMTypeRef floatType;
+    private LLVMTypeRef doubleType;
+    private LLVMTypeRef voidType;
     private LLVMTypeRef sizeType;
     private Dictionary<string, Tuple<LLVMValueRef, LLVMTypeRef, MethodReference, Collection<Instruction>?>> moduleMethods = new();
     private Dictionary<string, Tuple<LLVMValueRef, LLVMTypeRef>> staticFields = new();
+    private Dictionary<string, TypeReference> staticFieldTypes = new(StringComparer.Ordinal);
     private Dictionary<string, (LLVMValueRef Function, LLVMValueRef State)> cctorGuards = new(StringComparer.Ordinal);
     private Dictionary<string, MethodDefinition> localMethods = new(StringComparer.Ordinal);
     private Dictionary<string, TypeDefinition> localTypes = new(StringComparer.Ordinal);
-    private Dictionary<string, ulong> runtimeTypeIds = new(StringComparer.Ordinal);
+    private Dictionary<string, int> runtimeTypeIds = new(StringComparer.Ordinal);
+    private Dictionary<string, TypeReference> runtimeTypes = new(StringComparer.Ordinal);
+    private Dictionary<string, LLVMValueRef> typeDescriptors = new(StringComparer.Ordinal);
     private Dictionary<string, LLVMValueRef> gcDescriptors = new(StringComparer.Ordinal);
     private Dictionary<string, LLVMValueRef> runtimeFieldData = new(StringComparer.Ordinal);
     private Dictionary<string, LLVMValueRef> missingVirtualFunctionPointers = new(StringComparer.Ordinal);
     private List<TypeDefinition> arrayEnumeratorTypes = [];
+    private MethodDefinition? entryPoint;
     private MethodDefinition stringConstructor = null!;
     private LLVMTypeRef gcAllocateType;
     private LLVMValueRef gcAllocateFunction;
-    private ulong nextRuntimeTypeId;
+    private int nextRuntimeTypeId;
     private int nextVirtualDispatchId;
 
     public void Translate(string[] args)
@@ -26,46 +40,46 @@ sealed partial class Translator
         if (args.Length != 3)
             throw new ArgumentException("Expected an input file, output file, and target triple.");
 
+        InitializeLLVM();
+        TranslateModule(args);
+    }
+
+    private void TranslateModule(string[] args)
+    {
+        if (args.Length != 3)
+            throw new ArgumentException("Expected an input file, output file, and target triple.");
+
         string fileName = Path.GetFullPath(args[0]);
         string outputFileName = Path.GetFullPath(args[1]);
-        var targetSpecification = args[2].Split(';', StringSplitOptions.TrimEntries);
-        if (targetSpecification.Length is < 1 or > 2 || string.IsNullOrEmpty(targetSpecification[0]))
-            throw new ArgumentException("Target must be a target triple optionally followed by a code model.");
-        string targetTriple = targetSpecification[0];
-        var codeModel = targetSpecification.Length == 1 ? LLVMCodeModel.LLVMCodeModelDefault : targetSpecification[1] switch
-        {
-            "default" => LLVMCodeModel.LLVMCodeModelDefault,
-            "tiny" => LLVMCodeModel.LLVMCodeModelTiny,
-            "small" => LLVMCodeModel.LLVMCodeModelSmall,
-            "kernel" => LLVMCodeModel.LLVMCodeModelKernel,
-            "medium" => LLVMCodeModel.LLVMCodeModelMedium,
-            "large" => LLVMCodeModel.LLVMCodeModelLarge,
-            _ => throw new ArgumentException($"Unsupported LLVM code model '{targetSpecification[1]}'.")
-        };
+        var (targetTriple, codeModel) = ParseTargetSpecification(args[2]);
 
-        LLVM.InitializeAllTargetInfos();
-        LLVM.InitializeAllTargets();
-        LLVM.InitializeAllTargetMCs();
-        LLVM.InitializeAllAsmParsers();
-        LLVM.InitializeAllAsmPrinters();
-
-        context = LLVMContextRef.Global;
+        context = LLVMContextRef.Create();
         module = context.CreateModuleWithName(Path.GetFileNameWithoutExtension(fileName));
 
         module.Target = targetTriple;
 
-        var target = LLVMTargetRef.GetTargetFromTriple(module.Target);
-        machine = target.CreateTargetMachine(module.Target, "generic", "", LLVMCodeGenOptLevel.LLVMCodeGenLevelDefault,
-                                                 LLVMRelocMode.LLVMRelocStatic, codeModel);
+        machine = CreateTargetMachine(targetTriple, codeModel);
 
-        pointerSize = (int)machine.CreateTargetDataLayout().ABISizeOfType(LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0));
-        sizeType = LLVMTypeRef.CreateIntPtr(machine.CreateTargetDataLayout());
+        int1Type = context.Int1Type;
+        int8Type = context.Int8Type;
+        int16Type = context.Int16Type;
+        int32Type = context.Int32Type;
+        int64Type = context.Int64Type;
+        floatType = context.FloatType;
+        doubleType = context.DoubleType;
+        voidType = context.VoidType;
+        var targetData = machine.CreateTargetDataLayout();
+        pointerSize = (int)targetData.ABISizeOfType(LLVMTypeRef.CreatePointer(int8Type, 0));
+        sizeType = context.GetIntPtrType(targetData);
 
         moduleMethods = new();
         staticFields = new();
+        staticFieldTypes = new(StringComparer.Ordinal);
         cctorGuards = new(StringComparer.Ordinal);
         localTypes = new(StringComparer.Ordinal);
         runtimeTypeIds = new(StringComparer.Ordinal);
+        runtimeTypes = new(StringComparer.Ordinal);
+        typeDescriptors = new(StringComparer.Ordinal);
         gcDescriptors = new(StringComparer.Ordinal);
         runtimeFieldData = new(StringComparer.Ordinal);
         missingVirtualFunctionPointers = new(StringComparer.Ordinal);
@@ -89,32 +103,35 @@ sealed partial class Translator
         LLVMValueRef gcPushFunction = default;
         LLVMTypeRef gcPopType = default;
         LLVMValueRef gcPopFunction = default;
-        LLVMTypeRef gcRegisterStaticRootType = default;
-        LLVMValueRef gcRegisterStaticRootFunction = default;
 
         {
             var assembly = AssemblyDefinition.ReadAssembly(fileName);
+            entryPoint = assembly.EntryPoint;
             localMethods = GetAllTypes(assembly.MainModule.Types)
                 .SelectMany(t => t.Methods)
                 .ToDictionary(m => m.FullName, StringComparer.Ordinal);
             localTypes = GetAllTypes(assembly.MainModule.Types)
                 .ToDictionary(t => t.FullName, StringComparer.Ordinal);
             var exceptionRuntimeType = localTypes["System.Runtime.ExceptionRuntime"];
-            var voidPointerType = new PointerType(localTypes["System.Void"]);
+            var objectPointerType = new PointerType(localTypes["System.Object"]);
+            var objectReferenceSlotPointerType = new PointerType(objectPointerType);
+            var exceptionFramePointerType = new PointerType(localTypes["System.Runtime.ExceptionFrame"]);
+            var jumpBufferPointerType = new PointerType(localTypes["System.Runtime.JumpBuffer"]);
+            var stackPointerPointerType = new PointerType(localTypes["System.Runtime.StackPointer"]);
             var exceptionPushMethod = GetRequiredMethod(exceptionRuntimeType, "Push", false,
-                localTypes["System.Void"], voidPointerType, voidPointerType);
+                localTypes["System.Void"], exceptionFramePointerType, jumpBufferPointerType);
             var exceptionPopMethod = GetRequiredMethod(exceptionRuntimeType, "Pop", false,
-                localTypes["System.Void"], voidPointerType);
+                localTypes["System.Void"], exceptionFramePointerType);
             var exceptionBufferMethod = GetRequiredMethod(exceptionRuntimeType, "GetBuffer", false,
-                voidPointerType, voidPointerType);
+                jumpBufferPointerType, exceptionFramePointerType);
             var exceptionTopMethod = GetRequiredMethod(exceptionRuntimeType, "GetTop", false,
-                voidPointerType);
+                exceptionFramePointerType);
             var exceptionCurrentMethod = GetRequiredMethod(exceptionRuntimeType, "GetCurrent", false,
                 localTypes["System.Exception"]);
             var setjmpMethod = GetRequiredMethod(exceptionRuntimeType, "SetJump", false,
-                localTypes["System.Int32"], voidPointerType);
+                localTypes["System.Int32"], jumpBufferPointerType, stackPointerPointerType);
             var longjmpMethod = GetRequiredMethod(exceptionRuntimeType, "LongJump", false,
-                localTypes["System.Void"], voidPointerType, localTypes["System.Int32"]);
+                localTypes["System.Void"], jumpBufferPointerType, localTypes["System.Int32"]);
             var exceptionAbortMethod = GetRequiredMethod(exceptionRuntimeType, "Abort", false,
                 localTypes["System.Void"]);
             var exceptionThrowMethod = GetRequiredMethod(exceptionRuntimeType, "Throw", false,
@@ -127,23 +144,22 @@ sealed partial class Translator
             RegisterMethodFunction(module, setjmpMethod, null);
             RegisterMethodFunction(module, longjmpMethod, null);
             RegisterMethodFunction(module, exceptionAbortMethod, null);
-            var exceptionPointerType = LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0);
+            var exceptionPointerType = LLVMTypeRef.CreatePointer(int8Type, 0);
+            var stackSaveType = LLVMTypeRef.CreateFunction(exceptionPointerType, []);
+            var stackSaveFunction = module.AddFunction("llvm.stacksave.p0", stackSaveType);
             RegisterMethodFunction(module, exceptionThrowMethod, exceptionThrowMethod.Body.Instructions);
             var gcHeapType = localTypes["System.Runtime.GCHeap"];
             var gcFramePointerType = new PointerType(localTypes["System.Runtime.GCFrame"]);
             var gcRootPointerType = new PointerType(localTypes["System.Runtime.GCRoot"]);
             var gcDescPointerType = new PointerType(localTypes["System.GCDesc"]);
-            var gcAllocateMethod = GetRequiredMethod(gcHeapType, "Allocate", false, voidPointerType,
+            var gcAllocateMethod = GetRequiredMethod(gcHeapType, "Allocate", false, objectPointerType,
                 localTypes["System.UIntPtr"]);
             var gcPushMethod = GetRequiredMethod(gcHeapType, "Push", false, localTypes["System.Void"],
                 gcFramePointerType, gcRootPointerType, localTypes["System.Int32"]);
             var gcPopMethod = GetRequiredMethod(gcHeapType, "Pop", false, localTypes["System.Void"], gcFramePointerType);
-            var gcRegisterStaticRootMethod = GetRequiredMethod(gcHeapType, "RegisterStaticRoot", false,
-                localTypes["System.Void"], voidPointerType, gcDescPointerType);
             RegisterMethodFunction(module, gcAllocateMethod, gcAllocateMethod.Body.Instructions);
             RegisterMethodFunction(module, gcPushMethod, gcPushMethod.Body.Instructions);
             RegisterMethodFunction(module, gcPopMethod, gcPopMethod.Body.Instructions);
-            RegisterMethodFunction(module, gcRegisterStaticRootMethod, gcRegisterStaticRootMethod.Body.Instructions);
             var registeredGCAllocate = GetRegisteredMethod(gcAllocateMethod)!;
             gcAllocateFunction = registeredGCAllocate.Item1;
             gcAllocateType = registeredGCAllocate.Item2;
@@ -153,9 +169,6 @@ sealed partial class Translator
             var registeredGCPop = GetRegisteredMethod(gcPopMethod)!;
             gcPopFunction = registeredGCPop.Item1;
             gcPopType = registeredGCPop.Item2;
-            var registeredGCRegisterStaticRoot = GetRegisteredMethod(gcRegisterStaticRootMethod)!;
-            gcRegisterStaticRootFunction = registeredGCRegisterStaticRoot.Item1;
-            gcRegisterStaticRootType = registeredGCRegisterStaticRoot.Item2;
             var registeredExceptionPush = GetRegisteredMethod(exceptionPushMethod)!;
             exceptionPushFunction = registeredExceptionPush.Item1;
             exceptionPushType = registeredExceptionPush.Item2;
@@ -177,8 +190,8 @@ sealed partial class Translator
                 fixed (byte* name = returnsTwiceName)
                 {
                     var kind = LLVM.GetEnumAttributeKindForName((sbyte*)name, (nuint)returnsTwiceName.Length);
-                    setjmpFunction.AddAttributeAtIndex(LLVMAttributeIndex.LLVMAttributeFunctionIndex,
-                        context.CreateEnumAttribute(kind, 0));
+                    var attribute = context.CreateEnumAttribute(kind, 0);
+                    setjmpFunction.AddAttributeAtIndex(LLVMAttributeIndex.LLVMAttributeFunctionIndex, attribute);
                 }
             }
             var registeredExceptionThrow = GetRegisteredMethod(exceptionThrowMethod)!;
@@ -189,6 +202,9 @@ sealed partial class Translator
                 new ArrayType(localTypes["System.Char"]));
             var typeGetTypeFromHandleMethod = GetRequiredMethod(localTypes["System.Type"], "GetTypeFromHandle", false,
                 localTypes["System.Type"], localTypes["System.RuntimeTypeHandle"]);
+            var typeDescriptorPointerType = new PointerType(localTypes["System.TypeDescriptor"]);
+            var typeGetTypeFromDescriptorMethod = GetRequiredMethod(localTypes["System.Type"], "GetTypeFromDescriptor", false,
+                localTypes["System.Type"], typeDescriptorPointerType);
             foreach (TypeDefinition type in GetAllTypes(assembly.MainModule.Types))
             {
                 var fields = type.Fields;
@@ -343,6 +359,31 @@ sealed partial class Translator
             {
             }
 
+            foreach (var type in localTypes.Values)
+                GetRuntimeTypeId(type);
+            foreach (var method in moduleMethods.Values)
+            {
+                foreach (var instruction in method.Item4 ?? [])
+                {
+                    switch (instruction.OpCode.Code)
+                    {
+                        case Code.Newarr:
+                            GetRuntimeTypeId(new ArrayType(SubstituteGenericParameter((TypeReference)instruction.Operand, method.Item3)));
+                            break;
+                        case Code.Newobj:
+                            GetRuntimeTypeId(SpecializeMethodReference((MethodReference)instruction.Operand, method.Item3).DeclaringType);
+                            break;
+                        case Code.Box:
+                        case Code.Ldtoken when instruction.Operand is TypeReference:
+                            GetRuntimeTypeId(SubstituteGenericParameter((TypeReference)instruction.Operand, method.Item3));
+                            break;
+                    }
+                }
+            }
+            GetRuntimeTypeId(new ArrayType(localTypes["System.Char"]));
+            foreach (var type in runtimeTypes.Values.Where(type => type.Resolve()?.IsInterface != true && !IsVoidType(type)).ToArray())
+                GetTypeDescriptor(type);
+
             LLVMBuilderRef entryBuilder = default;
             HashSet<LLVMValueRef> translatedMethods = new();
             while (true)
@@ -354,8 +395,8 @@ sealed partial class Translator
                 translatedMethods.Add(method.Value.Item1);
                 if (method.Value.Item4?.Any() == true)
                 {
-                    var allocaBlock = method.Value.Item1.AppendBasicBlock("alloca");
-                    var entry = method.Value.Item1.AppendBasicBlock(GetLabelName(method.Value.Item4.First()));
+                    var allocaBlock = context.AppendBasicBlock(method.Value.Item1, "alloca");
+                    var entry = context.AppendBasicBlock(method.Value.Item1, GetLabelName(method.Value.Item4.First()));
                     var builder = context.CreateBuilder();
                     entryBuilder = context.CreateBuilder();
                     entryBuilder.PositionAtEnd(allocaBlock);
@@ -366,6 +407,7 @@ sealed partial class Translator
                     {
                         Stack<LLVMValueRef> stack = new();
                         Dictionary<LLVMBasicBlockRef, List<(LLVMBasicBlockRef Source, List<LLVMValueRef> Values)>> incomingStacks = new();
+                        Dictionary<LLVMBasicBlockRef, List<List<TypeReference?>>> incomingStackTypes = new();
                         Dictionary<LLVMBasicBlockRef, Dictionary<int, Tuple<LLVMValueRef, LLVMTypeRef>>> spillSlots = new();
                         Dictionary<int, Tuple<LLVMValueRef, LLVMTypeRef>> local = new();
                         Dictionary<LLVMValueRef, TypeReference> trackedTypes = new();
@@ -381,6 +423,22 @@ sealed partial class Translator
                         TypeReference? constrainedType = null;
                         uint unalignedAlignment = 0;
                         var methodDefinition = FindLocalMethod(method.Value.Item3, localMethods) ?? method.Value.Item3.Resolve();
+                        if (methodDefinition?.Body.ExceptionHandlers.Any() == true)
+                        {
+                            ReadOnlySpan<byte> framePointerName = "frame-pointer"u8;
+                            ReadOnlySpan<byte> framePointerValue = "all"u8;
+                            unsafe
+                            {
+                                fixed (byte* name = framePointerName)
+                                fixed (byte* value = framePointerValue)
+                                {
+                                    var attribute = new LLVMAttributeRef((IntPtr)LLVM.CreateStringAttribute(
+                                        (LLVMOpaqueContext*)context.Handle, (sbyte*)name, (uint)framePointerName.Length,
+                                        (sbyte*)value, (uint)framePointerValue.Length));
+                                    method.Value.Item1.AddAttributeAtIndex(LLVMAttributeIndex.LLVMAttributeFunctionIndex, attribute);
+                                }
+                            }
+                        }
 
                         void TrackType(LLVMValueRef value, TypeReference type)
                         {
@@ -388,24 +446,77 @@ sealed partial class Translator
                                 trackedTypes[value] = type;
                         }
 
+                        LLVMValueRef BuildTypeObject(TypeReference runtimeType)
+                        {
+                            var typeDefinition = localTypes["System.Type"];
+                            SynchronizeEvaluationStackRoots();
+                            var typeObject = BuildAllocation(builder, GetTypeDefinitionSize(typeDefinition));
+                            InitializeRuntimeType(builder, typeObject, typeDefinition);
+                            StoreTemporaryRoot(0, typeObject, typeDefinition);
+                            StoreField(builder, typeObject, typeDefinition.Fields.First(field => field.Name == "Name"),
+                                BuildStringValue(builder, runtimeType.Name,
+                                    (temporary, temporaryType) => StoreTemporaryRoot(1, temporary, temporaryType)));
+                            StoreField(builder, typeObject, typeDefinition.Fields.First(field => field.Name == "Namespace"),
+                                string.IsNullOrEmpty(runtimeType.Namespace)
+                                    ? LLVMValueRef.CreateConstNull(LLVMTypeRef.CreatePointer(int8Type, 0))
+                                    : BuildStringValue(builder, runtimeType.Namespace,
+                                        (temporary, temporaryType) => StoreTemporaryRoot(1, temporary, temporaryType)));
+                            StoreField(builder, typeObject, typeDefinition.Fields.First(field => field.Name == "FullName"),
+                                BuildStringValue(builder, runtimeType.FullName.Replace('/', '+'),
+                                    (temporary, temporaryType) => StoreTemporaryRoot(1, temporary, temporaryType)));
+                            return typeObject;
+                        }
+
+                        LLVMValueRef BuildRuntimeTypeObject(LLVMValueRef typeId)
+                        {
+                            var candidates = runtimeTypes.Values.OrderBy(GetRuntimeTypeKey).ToArray();
+                            var continuation = context.AppendBasicBlock(method.Value.Item1, $"type.cont.{nextVirtualDispatchId++}");
+                            var incomingValues = new List<LLVMValueRef>();
+                            var incomingBlocks = new List<LLVMBasicBlockRef>();
+                            foreach (var candidate in candidates)
+                            {
+                                var typeBlock = context.AppendBasicBlock(method.Value.Item1, $"type.value.{nextVirtualDispatchId++}");
+                                var nextBlock = context.AppendBasicBlock(method.Value.Item1, $"type.next.{nextVirtualDispatchId++}");
+                                builder.BuildCondBr(builder.BuildICmp(LLVMIntPredicate.LLVMIntEQ, typeId,
+                                    LLVMValueRef.CreateConstInt(sizeType, (ulong)GetRuntimeTypeId(candidate), false)), typeBlock, nextBlock);
+                                terminatedBlocks.Add(builder.InsertBlock);
+
+                                builder.PositionAtEnd(typeBlock);
+                                incomingValues.Add(BuildTypeObject(candidate));
+                                incomingBlocks.Add(typeBlock);
+                                builder.BuildBr(continuation);
+                                terminatedBlocks.Add(typeBlock);
+
+                                builder.PositionAtEnd(nextBlock);
+                            }
+                            var abort = GetRegisteredMethod(exceptionAbortMethod) ??
+                                throw new NotSupportedException($"Method is not defined in the input module: {exceptionAbortMethod.FullName}");
+                            builder.BuildCall2(abort.Item2, abort.Item1, []);
+                            builder.BuildUnreachable();
+                            terminatedBlocks.Add(builder.InsertBlock);
+                            builder.PositionAtEnd(continuation);
+                            var result = builder.BuildPhi(LLVMTypeRef.CreatePointer(int8Type, 0), "type.result");
+                            result.AddIncoming(incomingValues.ToArray(), incomingBlocks.ToArray(), (uint)incomingValues.Count);
+                            return result;
+                        }
+
                         LLVMValueRef BuildRuntimeTypeMatch(LLVMValueRef value, TypeReference targetType)
                         {
-                            var methodTable = builder.BuildLoad2(sizeType,
-                                GetFieldAddress(builder, value, GetObjectMethodTableField()));
+                            var typeId = GetObjectRuntimeTypeId(builder, value);
                             var matches = new List<LLVMValueRef>();
-                            var seen = new HashSet<ulong>();
-                            foreach (var candidate in localTypes.Values)
+                            var seen = new HashSet<int>();
+                            foreach (var candidate in runtimeTypes.Values.Where(candidate => candidate.Resolve()?.IsInterface != true && !IsVoidType(candidate)).ToArray())
                             {
                                 if (!IsRuntimeTypeCompatible(candidate, targetType))
                                     continue;
                                 var candidateId = GetRuntimeTypeId(candidate);
                                 if (!seen.Add(candidateId))
                                     continue;
-                                matches.Add(builder.BuildICmp(LLVMIntPredicate.LLVMIntEQ, methodTable,
-                                    LLVMValueRef.CreateConstInt(sizeType, candidateId, false)));
+                                matches.Add(builder.BuildICmp(LLVMIntPredicate.LLVMIntEQ, typeId,
+                                    LLVMValueRef.CreateConstInt(sizeType, (ulong)candidateId, false)));
                             }
                             if (matches.Count == 0)
-                                return LLVMValueRef.CreateConstInt(LLVMTypeRef.Int1, 0, false);
+                                return LLVMValueRef.CreateConstInt(int1Type, 0, false);
                             var result = matches[0];
                             for (int i = 1; i < matches.Count; i++)
                                 result = builder.BuildOr(result, matches[i]);
@@ -426,15 +537,19 @@ sealed partial class Translator
 
                         LLVMValueRef BuildVirtualDispatch(MethodReference targetMethod, LLVMValueRef[] targetArgs,
                             LLVMTypeRef targetFunctionType, LLVMValueRef targetFunction, List<(TypeReference RuntimeType, MethodReference Implementation)> implementations,
-                            bool allowArraySpecial = true)
+                            bool allowArraySpecial = true, LLVMValueRef returnBuffer = default)
                         {
                             LLVMValueRef[] GetImplementationArgs(TypeReference runtimeType)
                             {
-                                if (!runtimeType.IsValueType || targetArgs.Length == 0)
-                                    return targetArgs;
-                                var implementationArgs = (LLVMValueRef[])targetArgs.Clone();
-                                implementationArgs[0] = GetBoxedValueAddress(builder, targetArgs[0]);
-                                return implementationArgs;
+                                var implementationArgs = targetArgs;
+                                if (runtimeType.IsValueType && targetArgs.Length != 0)
+                                {
+                                    implementationArgs = (LLVMValueRef[])targetArgs.Clone();
+                                    implementationArgs[0] = GetBoxedValueAddress(builder, targetArgs[0]);
+                                }
+                                return returnBuffer == default
+                                    ? implementationArgs
+                                    : [returnBuffer, .. implementationArgs];
                             }
 
                             if (allowArraySpecial && TryGetArrayEnumerator(targetMethod, out var enumerableElementType,
@@ -443,15 +558,14 @@ sealed partial class Translator
                                 var constructorMethod = GetRegisteredMethod(constructor) ??
                                     throw new NotSupportedException($"Method is not defined in the input module: {constructor.FullName}");
                                 var arrayReceiverValue = targetArgs[0];
-                                var arrayMethodTable = builder.BuildLoad2(sizeType,
-                                    GetFieldAddress(builder, arrayReceiverValue, GetObjectMethodTableField()));
+                                var arrayTypeId = GetObjectRuntimeTypeId(builder, arrayReceiverValue);
                                 var arrayType = new ArrayType(enumerableElementType);
-                                var arrayId = LLVMValueRef.CreateConstInt(sizeType, GetRuntimeTypeId(arrayType), false);
-                                var arrayBlock = method.Value.Item1.AppendBasicBlock($"array.enum.{nextVirtualDispatchId++}");
-                                var fallbackBlock = method.Value.Item1.AppendBasicBlock($"array.enum.next.{nextVirtualDispatchId++}");
-                                var arrayContinuation = method.Value.Item1.AppendBasicBlock($"array.enum.cont.{nextVirtualDispatchId++}");
+                                var arrayId = LLVMValueRef.CreateConstInt(sizeType, (ulong)GetRuntimeTypeId(arrayType), false);
+                                var arrayBlock = context.AppendBasicBlock(method.Value.Item1, $"array.enum.{nextVirtualDispatchId++}");
+                                var fallbackBlock = context.AppendBasicBlock(method.Value.Item1, $"array.enum.next.{nextVirtualDispatchId++}");
+                                var arrayContinuation = context.AppendBasicBlock(method.Value.Item1, $"array.enum.cont.{nextVirtualDispatchId++}");
                                 var arraySourceBlock = builder.InsertBlock;
-                                builder.BuildCondBr(builder.BuildICmp(LLVMIntPredicate.LLVMIntEQ, arrayMethodTable, arrayId), arrayBlock, fallbackBlock);
+                                builder.BuildCondBr(builder.BuildICmp(LLVMIntPredicate.LLVMIntEQ, arrayTypeId, arrayId), arrayBlock, fallbackBlock);
                                 terminatedBlocks.Add(arraySourceBlock);
                                 builder.PositionAtEnd(arrayBlock);
                                 var enumeratorType = new GenericInstanceType(arrayEnumeratorDefinition);
@@ -462,11 +576,11 @@ sealed partial class Translator
                                 builder.BuildCall2(constructorMethod.Item2, constructorMethod.Item1, [enumerator, arrayReceiverValue]);
                                 builder.BuildBr(arrayContinuation);
                                 builder.PositionAtEnd(fallbackBlock);
-                                var arrayFallback = BuildVirtualDispatch(targetMethod, targetArgs, targetFunctionType, targetFunction, implementations, false);
+                                var arrayFallback = BuildVirtualDispatch(targetMethod, targetArgs, targetFunctionType, targetFunction, implementations, false, returnBuffer);
                                 var arrayFallbackSource = builder.InsertBlock;
                                 builder.BuildBr(arrayContinuation);
                                 builder.PositionAtEnd(arrayContinuation);
-                                var result = builder.BuildPhi(LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0), "array.enum.result");
+                                var result = builder.BuildPhi(LLVMTypeRef.CreatePointer(int8Type, 0), "array.enum.result");
                                 result.AddIncoming([enumerator, arrayFallback], [arrayBlock, arrayFallbackSource], 2);
                                 return result;
                             }
@@ -484,11 +598,16 @@ sealed partial class Translator
                                 if (distinctImplementations.Count == 1)
                                 {
                                     var implementation = registeredImplementations[0];
-                                    return builder.BuildCall2(implementation.Method!.Item2, implementation.Method.Item1,
+                                    var result = builder.BuildCall2(implementation.Method!.Item2, implementation.Method.Item1,
                                         GetImplementationArgs(implementation.RuntimeType));
+                                    return returnBuffer == default ? result : returnBuffer;
                                 }
                                 if (targetFunction != default)
-                                    return builder.BuildCall2(targetFunctionType, targetFunction, targetArgs);
+                                {
+                                    var functionArgs = returnBuffer == default ? targetArgs : [returnBuffer, .. targetArgs];
+                                    var result = builder.BuildCall2(targetFunctionType, targetFunction, functionArgs);
+                                    return returnBuffer == default ? result : returnBuffer;
+                                }
                                 var abort = GetRegisteredMethod(exceptionAbortMethod) ??
                                     throw new NotSupportedException($"Method is not defined in the input module: {exceptionAbortMethod.FullName}");
                                 builder.BuildCall2(abort.Item2, abort.Item1, []);
@@ -496,13 +615,14 @@ sealed partial class Translator
                                 terminatedBlocks.Add(builder.InsertBlock);
                                 return IsVoidType(targetMethod.ReturnType)
                                     ? default
-                                    : LLVMValueRef.CreateConstNull(GetLLVMTypeRef(SubstituteGenericParameter(targetMethod.ReturnType, targetMethod)));
+                                    : returnBuffer == default
+                                        ? LLVMValueRef.CreateConstNull(GetLLVMTypeRef(SubstituteGenericParameter(targetMethod.ReturnType, targetMethod)))
+                                        : returnBuffer;
                             }
 
                             var receiver = targetArgs[0];
-                            var methodTable = builder.BuildLoad2(sizeType,
-                                GetFieldAddress(builder, receiver, GetObjectMethodTableField()));
-                            var continuation = method.Value.Item1.AppendBasicBlock($"virt.cont.{nextVirtualDispatchId++}");
+                            var typeId = GetObjectRuntimeTypeId(builder, receiver);
+                            var continuation = context.AppendBasicBlock(method.Value.Item1, $"virt.cont.{nextVirtualDispatchId++}");
                             var incomingValues = new List<LLVMValueRef>();
                             var incomingBlocks = new List<LLVMBasicBlockRef>();
                             var sourceBlock = builder.InsertBlock;
@@ -514,10 +634,10 @@ sealed partial class Translator
                                 var implementationMethod = GetRegisteredMethod(candidate.Implementation);
                                 if (implementationMethod is null)
                                     continue;
-                                var callBlock = method.Value.Item1.AppendBasicBlock($"virt.call.{nextVirtualDispatchId++}");
-                                var nextBlock = method.Value.Item1.AppendBasicBlock($"virt.next.{nextVirtualDispatchId++}");
-                                var candidateId = LLVMValueRef.CreateConstInt(sizeType, GetRuntimeTypeId(candidate.RuntimeType), false);
-                                var matches = builder.BuildICmp(LLVMIntPredicate.LLVMIntEQ, methodTable, candidateId);
+                                var callBlock = context.AppendBasicBlock(method.Value.Item1, $"virt.call.{nextVirtualDispatchId++}");
+                                var nextBlock = context.AppendBasicBlock(method.Value.Item1, $"virt.next.{nextVirtualDispatchId++}");
+                                var candidateId = LLVMValueRef.CreateConstInt(sizeType, (ulong)GetRuntimeTypeId(candidate.RuntimeType), false);
+                                var matches = builder.BuildICmp(LLVMIntPredicate.LLVMIntEQ, typeId, candidateId);
                                 builder.BuildCondBr(matches, callBlock, nextBlock);
                                 if (!sourceTerminated)
                                 {
@@ -528,7 +648,7 @@ sealed partial class Translator
                                 builder.PositionAtEnd(callBlock);
                                 var implementationArgs = GetImplementationArgs(candidate.RuntimeType);
                                 var result = builder.BuildCall2(implementationMethod.Item2, implementationMethod.Item1, implementationArgs);
-                                if (!IsVoidType(targetMethod.ReturnType))
+                                if (!IsVoidType(targetMethod.ReturnType) && returnBuffer == default)
                                 {
                                     incomingValues.Add(ConvertValue(builder, result, GetLLVMTypeRef(SubstituteGenericParameter(targetMethod.ReturnType, targetMethod))));
                                     incomingBlocks.Add(callBlock);
@@ -537,7 +657,7 @@ sealed partial class Translator
                                 builder.PositionAtEnd(nextBlock);
                             }
 
-                            if (!IsVoidType(targetMethod.ReturnType) && targetFunction != default)
+                            if (!IsVoidType(targetMethod.ReturnType) && targetFunction != default && returnBuffer == default)
                             {
                                 var fallback = ConvertValue(builder, builder.BuildCall2(targetFunctionType, targetFunction, targetArgs),
                                     GetLLVMTypeRef(SubstituteGenericParameter(targetMethod.ReturnType, targetMethod)));
@@ -547,7 +667,8 @@ sealed partial class Translator
                             }
                             else if (targetFunction != default)
                             {
-                                builder.BuildCall2(targetFunctionType, targetFunction, targetArgs);
+                                var functionArgs = returnBuffer == default ? targetArgs : [returnBuffer, .. targetArgs];
+                                builder.BuildCall2(targetFunctionType, targetFunction, functionArgs);
                                 builder.BuildBr(continuation);
                             }
                             else
@@ -561,6 +682,8 @@ sealed partial class Translator
                             builder.PositionAtEnd(continuation);
                             if (IsVoidType(targetMethod.ReturnType))
                                 return default;
+                            if (returnBuffer != default)
+                                return returnBuffer;
                             var phi = builder.BuildPhi(GetLLVMTypeRef(SubstituteGenericParameter(targetMethod.ReturnType, targetMethod)), "virt.result");
                             phi.AddIncoming(incomingValues.ToArray(), incomingBlocks.ToArray(), (uint)incomingValues.Count);
                             return phi;
@@ -579,10 +702,10 @@ sealed partial class Translator
                                 {
                                     var abortMethod = GetRegisteredMethod(exceptionAbortMethod) ??
                                         throw new NotSupportedException($"Method is not defined in the input module: {exceptionAbortMethod.FullName}");
-                                    missingFunction = module.AddFunction($"__missing_virtual_{missingVirtualFunctionPointers.Count}",
+                                    missingFunction = module.AddFunction($"__missing_virtual_{GetStableSymbolSuffix(key)}",
                                         CreateLLVMFunction(module, targetMethod));
                                     missingFunction.Linkage = LLVMLinkage.LLVMInternalLinkage;
-                                    var block = missingFunction.AppendBasicBlock("entry");
+                                    var block = context.AppendBasicBlock(missingFunction, "entry");
                                     var missingBuilder = context.CreateBuilder();
                                     missingBuilder.PositionAtEnd(block);
                                     missingBuilder.BuildCall2(abortMethod.Item2, abortMethod.Item1, []);
@@ -594,18 +717,17 @@ sealed partial class Translator
                             if (implementations.Count == 1)
                                 return implementations[0].Method!.Item1;
 
-                            var methodTable = builder.BuildLoad2(sizeType,
-                                GetFieldAddress(builder, receiver, GetObjectMethodTableField()));
-                            var continuation = method.Value.Item1.AppendBasicBlock($"virt.ftn.cont.{nextVirtualDispatchId++}");
+                            var runtimeTypeId = GetObjectRuntimeTypeId(builder, receiver);
+                            var continuation = context.AppendBasicBlock(method.Value.Item1, $"virt.ftn.cont.{nextVirtualDispatchId++}");
                             var incomingValues = new List<LLVMValueRef>();
                             var incomingBlocks = new List<LLVMBasicBlockRef>();
                             foreach (var implementation in implementations)
                             {
-                                var callBlock = method.Value.Item1.AppendBasicBlock($"virt.ftn.value.{nextVirtualDispatchId++}");
-                                var nextBlock = method.Value.Item1.AppendBasicBlock($"virt.ftn.next.{nextVirtualDispatchId++}");
+                                var callBlock = context.AppendBasicBlock(method.Value.Item1, $"virt.ftn.value.{nextVirtualDispatchId++}");
+                                var nextBlock = context.AppendBasicBlock(method.Value.Item1, $"virt.ftn.next.{nextVirtualDispatchId++}");
                                 var typeId = LLVMValueRef.CreateConstInt(sizeType,
-                                    GetRuntimeTypeId(implementation.RuntimeType), false);
-                                builder.BuildCondBr(builder.BuildICmp(LLVMIntPredicate.LLVMIntEQ, methodTable, typeId),
+                                    (ulong)GetRuntimeTypeId(implementation.RuntimeType), false);
+                                builder.BuildCondBr(builder.BuildICmp(LLVMIntPredicate.LLVMIntEQ, runtimeTypeId, typeId),
                                     callBlock, nextBlock);
                                 terminatedBlocks.Add(builder.InsertBlock);
 
@@ -623,7 +745,7 @@ sealed partial class Translator
                             builder.BuildUnreachable();
                             terminatedBlocks.Add(builder.InsertBlock);
                             builder.PositionAtEnd(continuation);
-                            var function = builder.BuildPhi(LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0), "virt.ftn");
+                            var function = builder.BuildPhi(LLVMTypeRef.CreatePointer(int8Type, 0), "virt.ftn");
                             function.AddIncoming(incomingValues.ToArray(), incomingBlocks.ToArray(), (uint)incomingValues.Count);
                             return function;
                         }
@@ -646,6 +768,12 @@ sealed partial class Translator
                             }
                             var stackValues = stack.Reverse().ToList();
                             values.Add((builder.InsertBlock, stackValues));
+                            if (!incomingStackTypes.TryGetValue(block, out var types))
+                            {
+                                types = new();
+                                incomingStackTypes[block] = types;
+                            }
+                            types.Add(stackValues.Select(value => trackedTypes.TryGetValue(value, out var type) ? type : null).ToList());
                             if (!spillSlots.TryGetValue(block, out var slots))
                             {
                                 slots = new();
@@ -675,7 +803,17 @@ sealed partial class Translator
                             for (int i = 0; i < depth; i++)
                             {
                                 if (slots.TryGetValue(i, out var slot))
-                                    stack.Push(builder.BuildLoad2(slot.Item2, slot.Item1));
+                                {
+                                    var value = builder.BuildLoad2(slot.Item2, slot.Item1);
+                                    stack.Push(value);
+                                    if (incomingStackTypes.TryGetValue(block, out var types))
+                                    {
+                                        var type = types.Select(values => i < values.Count ? values[i] : null)
+                                            .FirstOrDefault(candidate => candidate is not null);
+                                        if (type is not null)
+                                            TrackType(value, type);
+                                    }
+                                }
                             }
                         }
 
@@ -699,23 +837,29 @@ sealed partial class Translator
                                 incomingStacks[block] = incoming;
                             }
                             incoming.Add((builder.InsertBlock, [exception]));
+                            if (!incomingStackTypes.TryGetValue(block, out var types))
+                            {
+                                types = new();
+                                incomingStackTypes[block] = types;
+                            }
+                            types.Add([localTypes["System.Exception"]]);
                         }
 
                         LLVMValueRef BuildExceptionMatch(LLVMValueRef exception, TypeReference? targetType)
                         {
                             if (targetType is null)
-                                return LLVMValueRef.CreateConstInt(LLVMTypeRef.Int1, 1, false);
+                                return LLVMValueRef.CreateConstInt(int1Type, 1, false);
                             var matches = new List<LLVMValueRef>();
-                            foreach (var candidate in localTypes.Values.Where(type => !type.IsInterface && !type.IsValueType))
+                            foreach (var candidate in runtimeTypes.Values.Where(candidate => candidate.Resolve() is { IsInterface: false, IsValueType: false }).ToArray())
                             {
                                 if (!IsRuntimeTypeCompatible(candidate, targetType))
                                     continue;
                                 matches.Add(builder.BuildICmp(LLVMIntPredicate.LLVMIntEQ,
-                                    builder.BuildLoad2(sizeType, GetFieldAddress(builder, exception, GetObjectMethodTableField())),
-                                    LLVMValueRef.CreateConstInt(sizeType, GetRuntimeTypeId(candidate), false)));
+                                    GetObjectRuntimeTypeId(builder, exception),
+                                    LLVMValueRef.CreateConstInt(sizeType, (ulong)GetRuntimeTypeId(candidate), false)));
                             }
                             if (matches.Count == 0)
-                                return LLVMValueRef.CreateConstInt(LLVMTypeRef.Int1, 0, false);
+                                return LLVMValueRef.CreateConstInt(int1Type, 0, false);
                             var result = matches[0];
                             for (int i = 1; i < matches.Count; i++)
                                 result = builder.BuildOr(result, matches[i]);
@@ -727,20 +871,21 @@ sealed partial class Translator
                             var state = finallyStates[handler];
                             int id = nextFinallyContinuation++;
                             state.Targets[id] = target;
-                            builder.BuildStore(LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, (uint)id, false), state.Slot);
+                            builder.BuildStore(LLVMValueRef.CreateConstInt(int32Type, (uint)id, false), state.Slot);
                             finallyStates[handler] = state;
                         }
 
                         void EmitExceptionSetup(ExceptionRegion region)
                         {
                             var source = builder.InsertBlock;
-                            var normal = method.Value.Item1.AppendBasicBlock($"eh.normal.{nextVirtualDispatchId++}");
-                            var dispatch = method.Value.Item1.AppendBasicBlock($"eh.dispatch.{nextVirtualDispatchId++}");
+                            var normal = context.AppendBasicBlock(method.Value.Item1, $"eh.normal.{nextVirtualDispatchId++}");
+                            var dispatch = context.AppendBasicBlock(method.Value.Item1, $"eh.dispatch.{nextVirtualDispatchId++}");
                             builder.BuildCall2(exceptionPushType, exceptionPushFunction, [region.Frame, region.Buffer]);
                             var jumpResult = builder.BuildCall2(setjmpType, setjmpFunction,
-                                [builder.BuildCall2(exceptionBufferType, exceptionBufferFunction, [region.Frame])]);
+                                [builder.BuildCall2(exceptionBufferType, exceptionBufferFunction, [region.Frame]),
+                                    builder.BuildCall2(stackSaveType, stackSaveFunction, [])]);
                             builder.BuildCondBr(builder.BuildICmp(LLVMIntPredicate.LLVMIntEQ, jumpResult,
-                                LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, 0, false)), normal, dispatch);
+                                LLVMValueRef.CreateConstInt(int32Type, 0, false)), normal, dispatch);
                             terminatedBlocks.Add(source);
 
                             builder.PositionAtEnd(dispatch);
@@ -751,7 +896,7 @@ sealed partial class Translator
                             {
                                 var handler = region.Handlers[index];
                                 builder.PositionAtEnd(chain);
-                                var next = method.Value.Item1.AppendBasicBlock($"eh.next.{nextVirtualDispatchId++}");
+                                var next = context.AppendBasicBlock(method.Value.Item1, $"eh.next.{nextVirtualDispatchId++}");
                                 if (handler.HandlerType == ExceptionHandlerType.Filter)
                                 {
                                     var filterBlock = label[handler.FilterStart!.Offset];
@@ -771,7 +916,7 @@ sealed partial class Translator
                                 }
                                 else if (handler.HandlerType == ExceptionHandlerType.Catch)
                                 {
-                                    var match = method.Value.Item1.AppendBasicBlock($"eh.match.{nextVirtualDispatchId++}");
+                                    var match = context.AppendBasicBlock(method.Value.Item1, $"eh.match.{nextVirtualDispatchId++}");
                                     builder.BuildCondBr(BuildExceptionMatch(exception, handler.CatchType), match, next);
                                     terminatedBlocks.Add(chain);
                                     builder.PositionAtEnd(match);
@@ -783,7 +928,7 @@ sealed partial class Translator
                                 else if (handler.HandlerType is ExceptionHandlerType.Finally or ExceptionHandlerType.Fault)
                                 {
                                     var finallyBlock = label[handler.HandlerStart.Offset];
-                                    var rethrow = method.Value.Item1.AppendBasicBlock($"eh.rethrow.{nextVirtualDispatchId++}");
+                                    var rethrow = context.AppendBasicBlock(method.Value.Item1, $"eh.rethrow.{nextVirtualDispatchId++}");
                                     RegisterFinallyContinuation(handler, rethrow);
                                     builder.BuildBr(finallyBlock);
                                     terminatedBlocks.Add(chain);
@@ -825,9 +970,19 @@ sealed partial class Translator
                                 local[variable.Key] = CreateLocalStorage(entryBuilder,
                                     SubstituteGenericParameter(variable.Value, method.Value.Item3));
 
+                        var usesValueReturnBuffer = UsesValueReturnBuffer(method.Value.Item3);
+                        var valueReturnBuffer = usesValueReturnBuffer
+                            ? method.Value.Item1.GetParam(0)
+                            : default;
+
+                        LLVMValueRef GetMethodParameter(int index)
+                        {
+                            return method.Value.Item1.GetParam((uint)(index + (usesValueReturnBuffer ? 1 : 0)));
+                        }
+
                         for (int i = 0; i < GetMethodParameterCount(method.Value.Item3); i++)
                         {
-                            var argument = method.Value.Item1.GetParam((uint)i);
+                            var argument = GetMethodParameter(i);
                             local[-1 - i] = new(BuildEntryAlloca(argument.TypeOf), argument.TypeOf);
                             entryBuilder.PositionAtEnd(allocaBlock);
                             entryBuilder.BuildStore(argument, local[-1 - i].Item1);
@@ -873,11 +1028,11 @@ sealed partial class Translator
                                         var next = instr.Next;
                                         if (!label.ContainsKey(branchStart.Offset))
                                         {
-                                            label.TryAdd(branchStart.Offset, method.Value.Item1.AppendBasicBlock(GetLabelName(branchStart)));
+                                            label.TryAdd(branchStart.Offset, context.AppendBasicBlock(method.Value.Item1, GetLabelName(branchStart)));
                                         }
                                         if (next is not null && !label.ContainsKey(next.Offset))
                                         {
-                                            label.TryAdd(next.Offset, method.Value.Item1.AppendBasicBlock(GetLabelName(next))); // fallthrough
+                                            label.TryAdd(next.Offset, context.AppendBasicBlock(method.Value.Item1, GetLabelName(next))); // fallthrough
                                         }
                                         break;
                                     }
@@ -885,9 +1040,9 @@ sealed partial class Translator
                                     {
                                         foreach (var branchStart in (Instruction[])instr.Operand)
                                             if (!label.ContainsKey(branchStart.Offset))
-                                                label.TryAdd(branchStart.Offset, method.Value.Item1.AppendBasicBlock(GetLabelName(branchStart)));
+                                                label.TryAdd(branchStart.Offset, context.AppendBasicBlock(method.Value.Item1, GetLabelName(branchStart)));
                                         if (instr.Next is not null && !label.ContainsKey(instr.Next.Offset))
-                                            label.TryAdd(instr.Next.Offset, method.Value.Item1.AppendBasicBlock(GetLabelName(instr.Next)));
+                                            label.TryAdd(instr.Next.Offset, context.AppendBasicBlock(method.Value.Item1, GetLabelName(instr.Next)));
                                         break;
                                     }
                             }
@@ -898,18 +1053,19 @@ sealed partial class Translator
                             foreach (var handler in methodDefinition.Body.ExceptionHandlers)
                             {
                                 if (!label.ContainsKey(handler.HandlerStart.Offset))
-                                    label.TryAdd(handler.HandlerStart.Offset, method.Value.Item1.AppendBasicBlock(GetLabelName(handler.HandlerStart)));
+                                    label.TryAdd(handler.HandlerStart.Offset, context.AppendBasicBlock(method.Value.Item1, GetLabelName(handler.HandlerStart)));
                                 if (handler.FilterStart is not null && !label.ContainsKey(handler.FilterStart.Offset))
-                                    label.TryAdd(handler.FilterStart.Offset, method.Value.Item1.AppendBasicBlock(GetLabelName(handler.FilterStart)));
+                                    label.TryAdd(handler.FilterStart.Offset, context.AppendBasicBlock(method.Value.Item1, GetLabelName(handler.FilterStart)));
                             }
 
                             foreach (var regionGroup in methodDefinition.Body.ExceptionHandlers
                                          .GroupBy(handler => (handler.TryStart.Offset, handler.TryEnd.Offset)))
                             {
-                                var frame = BuildEntryAlloca(LLVMTypeRef.CreateArray(LLVMTypeRef.Int8, (uint)(pointerSize * 3)), 16);
+                                var frame = BuildEntryAlloca(LLVMTypeRef.CreateArray(int8Type,
+                                    (uint)GetTypeSize(localTypes["System.Runtime.ExceptionFrame"])), (uint)pointerSize);
                                 var jumpBufferType = localTypes["System.Runtime.JumpBuffer"];
-                                var buffer = BuildEntryAlloca(LLVMTypeRef.CreateArray(LLVMTypeRef.Int8,
-                                    (uint)GetTypeSize(jumpBufferType)), (uint)pointerSize);
+                                var buffer = BuildEntryAlloca(LLVMTypeRef.CreateArray(int8Type,
+                                    (uint)GetTypeSize(jumpBufferType)), 16);
                                 var region = new ExceptionRegion
                                 {
                                     Start = regionGroup.Key.Item1,
@@ -921,7 +1077,7 @@ sealed partial class Translator
                                 exceptionRegions.Add(region);
                                 foreach (var handler in region.Handlers.Where(handler =>
                                              handler.HandlerType is ExceptionHandlerType.Finally or ExceptionHandlerType.Fault))
-                                    finallyStates[handler] = (BuildEntryAlloca(LLVMTypeRef.Int32), new());
+                                    finallyStates[handler] = (BuildEntryAlloca(int32Type), new());
                                 foreach (var handler in region.Handlers.Where(handler =>
                                              handler.HandlerType is ExceptionHandlerType.Catch or ExceptionHandlerType.Filter))
                                     caughtExceptions[handler] = BuildEntryAlloca(exceptionPointerType);
@@ -951,7 +1107,7 @@ sealed partial class Translator
                             {
                                 unsafe
                                 {
-                                    LLVM.BuildMemSet(builder, value, LLVMValueRef.CreateConstNull(LLVMTypeRef.Int8),
+                                    LLVM.BuildMemSet(builder, value, LLVMValueRef.CreateConstNull(int8Type),
                                         LLVMValueRef.CreateConstInt(sizeType, (ulong)GetTypeSize(type), false), 1);
                                 }
                             }
@@ -976,12 +1132,12 @@ sealed partial class Translator
 
                         var tracksGCFrames = !SameTypeDefinition(method.Value.Item3.DeclaringType, gcHeapType);
                         var maxStack = Math.Max(1, methodDefinition?.Body.MaxStackSize ?? 1);
-                        var stackRootCapacity = maxStack + 1;
+                        var stackRootCapacity = maxStack + 2;
                         const int temporaryRootCount = 4;
                         var rootEntryCount = fixedRoots.Count + stackRootCapacity + temporaryRootCount;
                         var rootEntryType = LLVMTypeRef.CreateArray(exceptionPointerType, (uint)(rootEntryCount * 2));
                         var rootEntries = BuildEntryAlloca(rootEntryType, (uint)pointerSize);
-                        var rootFrame = BuildEntryAlloca(LLVMTypeRef.CreateArray(LLVMTypeRef.Int8,
+                        var rootFrame = BuildEntryAlloca(LLVMTypeRef.CreateArray(int8Type,
                             (uint)GetTypeSize(localTypes["System.Runtime.GCFrame"])), (uint)pointerSize);
                         var rootSpills = Enumerable.Range(0, stackRootCapacity).Select(_ => BuildEntryAlloca(exceptionPointerType)).ToArray();
                         var temporaryRootSpills = Enumerable.Range(0, temporaryRootCount)
@@ -1058,6 +1214,10 @@ sealed partial class Translator
                             {
                                 StoreRootEntry(rootIndex, value, type);
                             }
+                            else
+                            {
+                                StoreRootEntry(rootIndex, LLVMValueRef.CreateConstNull(exceptionPointerType), null);
+                            }
                         }
 
                         void PopGCFrame()
@@ -1070,28 +1230,11 @@ sealed partial class Translator
                         if (tracksGCFrames)
                         {
                             builder.BuildCall2(gcPushType, gcPushFunction,
-                                [rootFrame, rootEntriesPointer, LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, (ulong)rootEntryCount, false)]);
-
-                            foreach (var staticField in localTypes.Values.SelectMany(type => type.Fields).Where(field => field.IsStatic))
-                            {
-                                var fieldType = staticField.FieldType;
-                                var descriptor = IsManagedReferenceType(fieldType)
-                                    ? null
-                                    : IsValueType(fieldType) && GetGCReferenceOffsets(fieldType).Any()
-                                        ? fieldType
-                                        : null;
-                                if (!IsManagedReferenceType(fieldType) && descriptor is null)
-                                    continue;
-                                var storage = GetStaticField(staticField);
-                                builder.BuildCall2(gcRegisterStaticRootType, gcRegisterStaticRootFunction,
-                                    [storage.Item1, descriptor is null
-                                ? LLVMValueRef.CreateConstNull(exceptionPointerType)
-                                : GetGCDescriptor(descriptor)]);
-                            }
+                                [rootFrame, rootEntriesPointer, LLVMValueRef.CreateConstInt(int32Type, (ulong)rootEntryCount, false)]);
                         }
 
                         if (cctorGuard is not null)
-                            builder.BuildCall2(LLVMTypeRef.CreateFunction(LLVMTypeRef.Void, []), cctorGuard.Value.Function, []);
+                            builder.BuildCall2(LLVMTypeRef.CreateFunction(voidType, []), cctorGuard.Value.Function, []);
 
                         var emittedExceptionSetups = new HashSet<ExceptionRegion>();
                         foreach (var instr in method.Value.Item4)
@@ -1151,8 +1294,11 @@ sealed partial class Translator
                                         var size = LLVMValueRef.CreateConstInt(sizeType, (ulong)GetTypeSize(type));
                                         var count = ConvertValue(builder, stack.Pop(), sizeType, false);
                                         var arrayBaseSize = LLVMValueRef.CreateConstInt(sizeType, (ulong)GetTypeDefinitionSize(localTypes["System.Array"]), false);
+                                        var dataSize = builder.BuildMul(count, size);
+                                        if (type.MetadataType == MetadataType.Char)
+                                            dataSize = builder.BuildAdd(dataSize, size);
                                         SynchronizeEvaluationStackRoots();
-                                        var ptr = BuildAllocationSize(builder, builder.BuildAdd(arrayBaseSize, builder.BuildMul(count, size)));
+                                        var ptr = BuildAllocationSize(builder, builder.BuildAdd(arrayBaseSize, dataSize));
                                         var lengthField = GetArrayLengthField();
                                         StoreField(builder, ptr, lengthField, count);
                                         InitializeRuntimeType(builder, ptr, new ArrayType(type));
@@ -1197,7 +1343,7 @@ sealed partial class Translator
                                             callTarget = ResolveVirtualTarget(targetMethod, callConstrainedType);
                                             useRuntimeDispatch = false;
                                         }
-                                        else if (instr.OpCode.Code == Code.Callvirt && targetMethod.HasThis)
+                                        else if (instr.OpCode.Code == Code.Callvirt && targetMethod.HasThis && targetMethod.Resolve()?.IsVirtual == true)
                                         {
                                             var stackValues = stack.ToArray();
                                             if (stackValues.Length > targetMethod.Parameters.Count &&
@@ -1218,34 +1364,100 @@ sealed partial class Translator
                                                 invokeArguments.Add(stack.Pop());
                                             invokeArguments.Reverse();
                                             var delegateObject = stack.Count == 0
-                                                ? LLVMValueRef.CreateConstNull(LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0))
+                                                ? LLVMValueRef.CreateConstNull(LLVMTypeRef.CreatePointer(int8Type, 0))
                                                 : stack.Pop();
                                             var functionField = GetDelegateField(targetMethod.DeclaringType, "_function");
                                             var targetField = GetDelegateField(targetMethod.DeclaringType, "_target");
-                                            var functionValue = builder.BuildLoad2(LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0), GetFieldAddress(builder, delegateObject, functionField));
+                                            var nextField = GetDelegateField(targetMethod.DeclaringType, "_next");
                                             var invokeReturnType = SubstituteGenericParameter(targetMethod.ReturnType, targetMethod);
                                             var functionType = LLVMTypeRef.CreateFunction(GetLLVMTypeRef(invokeReturnType),
-                                                [LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0), .. targetMethod.Parameters.Select(parameter => GetLLVMTypeRef(SubstituteGenericParameter(parameter.ParameterType, targetMethod)))]);
-                                            var functionPointer = functionValue;
+                                                [LLVMTypeRef.CreatePointer(int8Type, 0), .. targetMethod.Parameters.Select(parameter => GetLLVMTypeRef(SubstituteGenericParameter(parameter.ParameterType, targetMethod)))]);
+                                            StoreTemporaryRoot(2, delegateObject, targetMethod.DeclaringType);
+                                            var currentSlot = BuildEntryAlloca(LLVMTypeRef.CreatePointer(int8Type, 0));
+                                            builder.BuildStore(delegateObject, currentSlot);
+                                            LLVMValueRef resultSlot = default;
+                                            if (!IsVoidType(invokeReturnType))
+                                                resultSlot = BuildEntryAlloca(GetLLVMTypeRef(invokeReturnType));
+                                            var dispatch = context.AppendBasicBlock(method.Value.Item1, $"delegate.dispatch.{nextVirtualDispatchId++}");
+                                            var call = context.AppendBasicBlock(method.Value.Item1, $"delegate.call.{nextVirtualDispatchId++}");
+                                            var continuation = context.AppendBasicBlock(method.Value.Item1, $"delegate.cont.{nextVirtualDispatchId++}");
+                                            var source = builder.InsertBlock;
+                                            builder.BuildBr(dispatch);
+                                            terminatedBlocks.Add(source);
+
+                                            builder.PositionAtEnd(dispatch);
+                                            var current = builder.BuildLoad2(LLVMTypeRef.CreatePointer(int8Type, 0), currentSlot);
+                                            builder.BuildCondBr(builder.BuildICmp(LLVMIntPredicate.LLVMIntEQ, current,
+                                                LLVMValueRef.CreateConstNull(current.TypeOf)), continuation, call);
+                                            terminatedBlocks.Add(dispatch);
+
+                                            builder.PositionAtEnd(call);
+                                            var functionPointer = builder.BuildLoad2(LLVMTypeRef.CreatePointer(int8Type, 0),
+                                                GetFieldAddress(builder, current, functionField));
                                             var callArguments = new List<LLVMValueRef>
-                                    {
-                                        builder.BuildLoad2(LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0), GetFieldAddress(builder, delegateObject, targetField))
-                                    };
+                                            {
+                                                builder.BuildLoad2(LLVMTypeRef.CreatePointer(int8Type, 0),
+                                                    GetFieldAddress(builder, current, targetField))
+                                            };
                                             callArguments.AddRange(invokeArguments.Select((value, index) => ConvertValue(builder, value,
                                                 GetLLVMTypeRef(SubstituteGenericParameter(targetMethod.Parameters[index].ParameterType, targetMethod)))));
                                             var invokeResult = builder.BuildCall2(functionType, functionPointer, callArguments.ToArray());
                                             if (!IsVoidType(invokeReturnType))
+                                                builder.BuildStore(invokeResult, resultSlot);
+                                            var next = builder.BuildLoad2(LLVMTypeRef.CreatePointer(int8Type, 0),
+                                                GetFieldAddress(builder, current, nextField));
+                                            builder.BuildStore(next, currentSlot);
+                                            builder.BuildBr(dispatch);
+                                            terminatedBlocks.Add(call);
+
+                                            builder.PositionAtEnd(continuation);
+                                            if (!IsVoidType(invokeReturnType))
                                             {
-                                                stack.Push(invokeResult);
-                                                TrackType(invokeResult, invokeReturnType);
+                                                var invokeValue = builder.BuildLoad2(GetLLVMTypeRef(invokeReturnType), resultSlot);
+                                                stack.Push(invokeValue);
+                                                TrackType(invokeValue, invokeReturnType);
                                             }
                                             break;
                                         }
                                         if (SameMethodDefinition(targetMethod, typeGetTypeFromHandleMethod))
                                         {
                                             stack.Push(stack.Count == 0
-                                                ? LLVMValueRef.CreateConstNull(LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0))
+                                                ? LLVMValueRef.CreateConstNull(LLVMTypeRef.CreatePointer(int8Type, 0))
                                                 : stack.Pop());
+                                            break;
+                                        }
+                                        if (SameMethodDefinition(targetMethod, typeGetTypeFromDescriptorMethod))
+                                        {
+                                            var descriptor = stack.Count == 0
+                                                ? LLVMValueRef.CreateConstNull(LLVMTypeRef.CreatePointer(int8Type, 0))
+                                                : stack.Pop();
+                                            var typeField = GetFieldAddress(builder, descriptor, GetTypeDescriptorTypeField());
+                                            var existingType = builder.BuildLoad2(LLVMTypeRef.CreatePointer(int8Type, 0), typeField);
+                                            var createBlock = context.AppendBasicBlock(method.Value.Item1, $"type.create.{nextVirtualDispatchId++}");
+                                            var existingBlock = context.AppendBasicBlock(method.Value.Item1, $"type.existing.{nextVirtualDispatchId++}");
+                                            var continuation = context.AppendBasicBlock(method.Value.Item1, $"type.get.cont.{nextVirtualDispatchId++}");
+                                            builder.BuildCondBr(builder.BuildICmp(LLVMIntPredicate.LLVMIntEQ, existingType,
+                                                LLVMValueRef.CreateConstNull(existingType.TypeOf)), createBlock, existingBlock);
+                                            terminatedBlocks.Add(builder.InsertBlock);
+
+                                            builder.PositionAtEnd(createBlock);
+                                            var typeId = ConvertValue(builder, builder.BuildLoad2(int32Type,
+                                                GetFieldAddress(builder, descriptor, GetTypeDescriptorRuntimeTypeIdField())), sizeType, false);
+                                            var createdType = BuildRuntimeTypeObject(typeId);
+                                            StoreField(builder, descriptor, GetTypeDescriptorTypeField(), createdType);
+                                            var createdBlock = builder.InsertBlock;
+                                            builder.BuildBr(continuation);
+                                            terminatedBlocks.Add(createdBlock);
+
+                                            builder.PositionAtEnd(existingBlock);
+                                            builder.BuildBr(continuation);
+                                            terminatedBlocks.Add(existingBlock);
+
+                                            builder.PositionAtEnd(continuation);
+                                            var typeObject = builder.BuildPhi(LLVMTypeRef.CreatePointer(int8Type, 0), "type.get.result");
+                                            typeObject.AddIncoming([createdType, existingType], [createdBlock, existingBlock], 2);
+                                            stack.Push(typeObject);
+                                            TrackType(typeObject, localTypes["System.Type"]);
                                             break;
                                         }
                                         if (targetMethod.DeclaringType is ArrayType multidimensionalArray && multidimensionalArray.Rank > 1)
@@ -1305,10 +1517,10 @@ sealed partial class Translator
                                             if (IsDelegateType(targetMethod.DeclaringType))
                                             {
                                                 var delegateFunction = stack.Count == 0
-                                                    ? LLVMValueRef.CreateConstNull(LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0))
-                                                    : ConvertValue(builder, stack.Pop(), LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0));
+                                                    ? LLVMValueRef.CreateConstNull(LLVMTypeRef.CreatePointer(int8Type, 0))
+                                                    : ConvertValue(builder, stack.Pop(), LLVMTypeRef.CreatePointer(int8Type, 0));
                                                 var delegateTarget = stack.Count == 0
-                                                    ? LLVMValueRef.CreateConstNull(LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0))
+                                                    ? LLVMValueRef.CreateConstNull(LLVMTypeRef.CreatePointer(int8Type, 0))
                                                     : stack.Pop();
                                                 var delegateType = targetMethod.DeclaringType.Resolve() ?? throw new NotSupportedException($"Delegate type is not defined: {targetMethod.DeclaringType.FullName}");
                                                 SynchronizeEvaluationStackRoots();
@@ -1322,13 +1534,26 @@ sealed partial class Translator
                                                 break;
                                             }
                                             var targetType = targetMethod.DeclaringType.Resolve();
-                                            int size = targetType is not null && localTypes.ContainsKey(targetType.FullName)
-                                                ? GetObjectSize(targetMethod.DeclaringType)
-                                                : pointerSize;
                                             SynchronizeEvaluationStackRoots();
-                                            ptr = BuildAllocation(builder, size);
-                                            InitializeRuntimeType(builder, ptr, targetMethod.DeclaringType);
-                                            StoreTemporaryRoot(0, ptr, targetMethod.DeclaringType);
+                                            if (IsValueType(targetMethod.DeclaringType))
+                                            {
+                                                var storage = CreateLocalStorage(entryBuilder, targetMethod.DeclaringType);
+                                                ptr = builder.BuildLoad2(storage.Item2, storage.Item1);
+                                                unsafe
+                                                {
+                                                    LLVM.BuildMemSet(builder, ptr, LLVMValueRef.CreateConstNull(int8Type),
+                                                        LLVMValueRef.CreateConstInt(sizeType, (ulong)GetTypeSize(targetMethod.DeclaringType), false), 1);
+                                                }
+                                            }
+                                            else
+                                            {
+                                                int size = targetType is not null && localTypes.ContainsKey(targetType.FullName)
+                                                    ? GetObjectSize(targetMethod.DeclaringType)
+                                                    : pointerSize;
+                                                ptr = BuildAllocation(builder, size);
+                                                InitializeRuntimeType(builder, ptr, targetMethod.DeclaringType);
+                                                StoreTemporaryRoot(0, ptr, targetMethod.DeclaringType);
+                                            }
                                         }
 
                                         var m = GetRegisteredMethod(callTarget);
@@ -1358,7 +1583,7 @@ sealed partial class Translator
                                                 targetArgsList.Add(stack.Pop());
                                             else
                                                 targetArgsList.Add(LLVMValueRef.CreateConstNull(instr.OpCode.Code != Code.Newobj && i == 0 && targetMethod.HasThis
-                                                    ? LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0)
+                                                    ? LLVMTypeRef.CreatePointer(int8Type, 0)
                                                     : GetLLVMTypeRef(SubstituteGenericParameter(targetMethod.Parameters[Math.Max(0, i - (instr.OpCode.Code == Code.Newobj ? 0 : targetMethod.HasThis ? 1 : 0))].ParameterType, targetMethod))));
                                         }
                                         targetArgsList.Reverse();
@@ -1371,27 +1596,62 @@ sealed partial class Translator
                                             targetArgs[0] = builder.BuildLoad2(GetLLVMTypeRef(callConstrainedType), targetArgs[0]);
                                             TrackType(targetArgs[0], callConstrainedType);
                                         }
-                                        for (int i = 0; i < targetArgs.Length; i++)
+                                        var callTargetArgs = (LLVMValueRef[])targetArgs.Clone();
+                                        for (int i = 0; i < callTargetArgs.Length; i++)
                                         {
                                             var parameterIndex = i - (instr.OpCode.Code == Code.Newobj ? 0 : targetMethod.HasThis ? 1 : 0);
-                                            if (parameterIndex >= 0 && IsLPWStrParameter(targetMethod, parameterIndex))
+                                            if (parameterIndex >= 0 && IsExternalMethod(targetMethod))
                                             {
-                                                targetArgs[i] = GetStringDataPointer(builder, targetArgs[i]);
+                                                var parameterType = SubstituteGenericParameter(targetMethod.Parameters[parameterIndex].ParameterType, targetMethod);
+                                                callTargetArgs[i] = GetExternalArgumentPointer(builder, callTargetArgs[i], parameterType);
                                                 continue;
                                             }
                                             var expectedType = parameterIndex < 0
-                                                ? LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0)
+                                                ? LLVMTypeRef.CreatePointer(int8Type, 0)
                                                 : GetLLVMTypeRef(SubstituteGenericParameter(targetMethod.Parameters[parameterIndex].ParameterType, targetMethod));
-                                            targetArgs[i] = ConvertValue(builder, targetArgs[i], expectedType);
-                                        }
-                                        if (ptr != default)
-                                        {
-                                            targetArgs = targetArgs.Length == 0
-                                                ? [ptr]
-                                                : [.. (LLVMValueRef[])[ptr], .. targetArgs];
+                                            callTargetArgs[i] = ConvertValue(builder, callTargetArgs[i], expectedType);
                                         }
 
-                                        var callArgs = targetArgs;
+                                        var callReturnType = SubstituteGenericParameter(targetMethod.ReturnType, targetMethod);
+                                        LLVMValueRef returnBuffer = default;
+                                        if (UsesValueReturnBuffer(callTarget))
+                                        {
+                                            var storage = CreateLocalStorage(entryBuilder, callReturnType);
+                                            returnBuffer = builder.BuildLoad2(storage.Item2, storage.Item1);
+                                            unsafe
+                                            {
+                                                LLVM.BuildMemSet(builder, returnBuffer, LLVMValueRef.CreateConstNull(int8Type),
+                                                    LLVMValueRef.CreateConstInt(sizeType, (ulong)GetTypeSize(callReturnType), false), 1);
+                                            }
+                                        }
+
+                                        var rootArgs = new List<(LLVMValueRef Value, TypeReference? Type)>();
+                                        if (returnBuffer != default)
+                                            rootArgs.Add((returnBuffer, callReturnType));
+                                        if (ptr != default)
+                                            rootArgs.Add((ptr, targetMethod.DeclaringType));
+                                        for (int index = 0; index < targetArgs.Length; index++)
+                                        {
+                                            if (instr.OpCode.Code != Code.Newobj && targetMethod.HasThis && index == 0)
+                                            {
+                                                rootArgs.Add((targetArgs[index], targetMethod.DeclaringType));
+                                                continue;
+                                            }
+                                            var parameterIndex = index - (instr.OpCode.Code != Code.Newobj && targetMethod.HasThis ? 1 : 0);
+                                            rootArgs.Add((targetArgs[index], parameterIndex >= 0 && parameterIndex < targetMethod.Parameters.Count
+                                                ? SubstituteGenericParameter(targetMethod.Parameters[parameterIndex].ParameterType, targetMethod)
+                                                : null));
+                                        }
+                                        SynchronizeRoots(rootArgs);
+
+                                        if (ptr != default)
+                                        {
+                                            callTargetArgs = callTargetArgs.Length == 0
+                                                ? [ptr]
+                                                : [.. (LLVMValueRef[])[ptr], .. callTargetArgs];
+                                        }
+
+                                        var callArgs = callTargetArgs;
                                         if (instr.OpCode.Code == Code.Callvirt && !useRuntimeDispatch && callConstrainedType is null &&
                                             virtualContractType is not null && IsValueType(virtualContractType) && targetArgs.Length != 0)
                                         {
@@ -1399,27 +1659,18 @@ sealed partial class Translator
                                             callArgs[0] = GetBoxedValueAddress(builder, targetArgs[0]);
                                         }
 
-                                        SynchronizeRoots(callArgs.Select((value, index) =>
-                                        {
-                                            if (ptr != default)
-                                            {
-                                                if (index == 0)
-                                                    return (value, (TypeReference?)targetMethod.DeclaringType);
-                                                index--;
-                                            }
-                                            if (instr.OpCode.Code != Code.Newobj && targetMethod.HasThis && index == 0)
-                                                return (value, (TypeReference?)targetMethod.DeclaringType);
-                                            var parameterIndex = index - (instr.OpCode.Code != Code.Newobj && targetMethod.HasThis ? 1 : 0);
-                                            return (value, parameterIndex >= 0 && parameterIndex < targetMethod.Parameters.Count
-                                                ? SubstituteGenericParameter(targetMethod.Parameters[parameterIndex].ParameterType, targetMethod)
-                                                : null);
-                                        }));
+                                        var useVirtualDispatch = instr.OpCode.Code == Code.Callvirt && targetMethod.HasThis &&
+                                            (useRuntimeDispatch || targetFunc == default);
+                                        if (returnBuffer != default && !useVirtualDispatch)
+                                            callArgs = [returnBuffer, .. callArgs];
 
-                                        var result = instr.OpCode.Code == Code.Callvirt && targetMethod.HasThis &&
-                                            (useRuntimeDispatch || targetFunc == default)
-                                            ? BuildVirtualDispatch(targetMethod, targetArgs, targetFuncCreated, targetFunc,
-                                                GetVirtualImplementations(targetMethod, virtualContractType ?? targetMethod.DeclaringType))
+                                        var result = useVirtualDispatch
+                                            ? BuildVirtualDispatch(targetMethod, callArgs, targetFuncCreated, targetFunc,
+                                                GetVirtualImplementations(targetMethod, virtualContractType ?? targetMethod.DeclaringType),
+                                                true, returnBuffer)
                                             : builder.BuildCall2(targetFuncCreated, targetFunc, callArgs);
+                                        if (returnBuffer != default)
+                                            result = returnBuffer;
                                         if (result != default && targetMethod.ReturnType is GenericParameter returnParameter &&
                                             targetMethod.DeclaringType is GenericInstanceType returnDeclaringType &&
                                             returnParameter.Position < returnDeclaringType.GenericArguments.Count)
@@ -1457,7 +1708,10 @@ sealed partial class Translator
                                             callSite.Parameters.Select(parameter => GetLLVMTypeRef(parameter.ParameterType)).ToArray());
                                         var result = builder.BuildCall2(functionType, functionPointer, arguments.ToArray());
                                         if (!IsVoidType(callSite.ReturnType))
+                                        {
                                             stack.Push(result);
+                                            TrackType(result, SubstituteGenericParameter(callSite.ReturnType, method.Value.Item3));
+                                        }
                                     }
                                     break;
                                 case Code.Ldftn:
@@ -1487,14 +1741,14 @@ sealed partial class Translator
                                     {
                                         var targetType = SubstituteGenericParameter((TypeReference)instr.Operand, method.Value.Item3);
                                         var value = stack.Count == 0
-                                            ? LLVMValueRef.CreateConstNull(LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0))
+                                            ? LLVMValueRef.CreateConstNull(LLVMTypeRef.CreatePointer(int8Type, 0))
                                             : stack.Pop();
                                         value = ConvertValue(builder, value, exceptionPointerType);
-                                        var nullBlock = method.Value.Item1.AppendBasicBlock($"cast.null.{nextVirtualDispatchId++}");
-                                        var checkBlock = method.Value.Item1.AppendBasicBlock($"cast.check.{nextVirtualDispatchId++}");
-                                        var matchBlock = method.Value.Item1.AppendBasicBlock($"cast.match.{nextVirtualDispatchId++}");
-                                        var failBlock = method.Value.Item1.AppendBasicBlock($"cast.fail.{nextVirtualDispatchId++}");
-                                        var continuation = method.Value.Item1.AppendBasicBlock($"cast.cont.{nextVirtualDispatchId++}");
+                                        var nullBlock = context.AppendBasicBlock(method.Value.Item1, $"cast.null.{nextVirtualDispatchId++}");
+                                        var checkBlock = context.AppendBasicBlock(method.Value.Item1, $"cast.check.{nextVirtualDispatchId++}");
+                                        var matchBlock = context.AppendBasicBlock(method.Value.Item1, $"cast.match.{nextVirtualDispatchId++}");
+                                        var failBlock = context.AppendBasicBlock(method.Value.Item1, $"cast.fail.{nextVirtualDispatchId++}");
+                                        var continuation = context.AppendBasicBlock(method.Value.Item1, $"cast.cont.{nextVirtualDispatchId++}");
                                         var sourceBlock = builder.InsertBlock;
                                         var isNull = builder.BuildICmp(LLVMIntPredicate.LLVMIntEQ, value,
                                             LLVMValueRef.CreateConstNull(exceptionPointerType));
@@ -1545,7 +1799,22 @@ sealed partial class Translator
                                     break;
                                 case Code.Ret:
                                     var returnType = SubstituteGenericParameter(method.Value.Item3.ReturnType, method.Value.Item3);
-                                    if (!IsVoidType(returnType))
+                                    if (usesValueReturnBuffer)
+                                    {
+                                        if (stack.Count != 0)
+                                            CopyValue(builder, valueReturnBuffer, stack.Pop(), GetTypeSize(returnType));
+                                        else
+                                        {
+                                            unsafe
+                                            {
+                                                LLVM.BuildMemSet(builder, valueReturnBuffer, LLVMValueRef.CreateConstNull(int8Type),
+                                                    LLVMValueRef.CreateConstInt(sizeType, (ulong)GetTypeSize(returnType), false), 1);
+                                            }
+                                        }
+                                        PopGCFrame();
+                                        builder.BuildRetVoid();
+                                    }
+                                    else if (!IsVoidType(returnType))
                                     {
                                         var returnValue = ConvertValue(builder, stack.Count == 0
                                             ? LLVMValueRef.CreateConstNull(GetLLVMTypeRef(returnType))
@@ -1634,13 +1903,13 @@ sealed partial class Translator
                                         LLVMTypeRef type = instr.OpCode.Code switch
                                         {
                                             Code.Stelem_I => sizeType,
-                                            Code.Stelem_I1 => LLVMTypeRef.Int8,
-                                            Code.Stelem_I2 => LLVMTypeRef.Int16,
-                                            Code.Stelem_I4 => LLVMTypeRef.Int32,
-                                            Code.Stelem_I8 => LLVMTypeRef.Int64,
-                                            Code.Stelem_R4 => LLVMTypeRef.Float,
-                                            Code.Stelem_R8 => LLVMTypeRef.Double,
-                                            Code.Stelem_Ref => LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0),
+                                            Code.Stelem_I1 => int8Type,
+                                            Code.Stelem_I2 => int16Type,
+                                            Code.Stelem_I4 => int32Type,
+                                            Code.Stelem_I8 => int64Type,
+                                            Code.Stelem_R4 => floatType,
+                                            Code.Stelem_R8 => doubleType,
+                                            Code.Stelem_Ref => LLVMTypeRef.CreatePointer(int8Type, 0),
                                             Code.Stelem_Any => GetLLVMTypeRef(elementTypeReference!),
                                             _ => throw new InvalidOperationException(instr.OpCode.Code.ToString())
                                         };
@@ -1661,7 +1930,7 @@ sealed partial class Translator
                                         {
                                             var guard = GetCctorGuard(field.DeclaringType);
                                             if (guard is not null)
-                                                builder.BuildCall2(LLVMTypeRef.CreateFunction(LLVMTypeRef.Void, []), guard.Value.Function, []);
+                                                builder.BuildCall2(LLVMTypeRef.CreateFunction(voidType, []), guard.Value.Function, []);
                                         }
 
                                         var ptr = GetStaticField(field, method.Value.Item3);
@@ -1685,7 +1954,7 @@ sealed partial class Translator
                                         {
                                             var guard = GetCctorGuard(field.DeclaringType);
                                             if (guard is not null)
-                                                builder.BuildCall2(LLVMTypeRef.CreateFunction(LLVMTypeRef.Void, []), guard.Value.Function, []);
+                                                builder.BuildCall2(LLVMTypeRef.CreateFunction(voidType, []), guard.Value.Function, []);
                                         }
                                         var ptr = GetStaticField(field, method.Value.Item3);
                                         var fieldType = SubstituteFieldType(field, method.Value.Item3);
@@ -1749,7 +2018,7 @@ sealed partial class Translator
                                         };
                                         if (method.Value.Item3.HasThis && argumentIndex == 0)
                                         {
-                                            var param = method.Value.Item1.GetParam((uint)argumentIndex);
+                                            var param = GetMethodParameter(argumentIndex);
                                             stack.Push(param);
                                             TrackType(param, method.Value.Item3.DeclaringType);
                                         }
@@ -1762,7 +2031,7 @@ sealed partial class Translator
                                                     method.Value.Item3.Parameters[parameterIndex].ParameterType, method.Value.Item3);
                                                 var param = local.TryGetValue(-1 - argumentIndex, out var storage)
                                                     ? builder.BuildLoad2(storage.Item2, storage.Item1)
-                                                    : method.Value.Item1.GetParam((uint)argumentIndex);
+                                                    : GetMethodParameter(argumentIndex);
                                                 param = PromoteSmallIntegerLoad(builder, param, parameterType);
                                                 TrackType(param, parameterType);
                                                 stack.Push(param);
@@ -1780,7 +2049,7 @@ sealed partial class Translator
                                         };
                                         if (method.Value.Item3.HasThis && index == 0)
                                         {
-                                            var argument = method.Value.Item1.GetParam((uint)index);
+                                            var argument = GetMethodParameter(index);
                                             stack.Push(argument);
                                             TrackType(argument, method.Value.Item3.DeclaringType);
                                         }
@@ -1793,7 +2062,7 @@ sealed partial class Translator
                                                     method.Value.Item3.Parameters[parameterIndex].ParameterType, method.Value.Item3);
                                                 var argument = local.TryGetValue(-1 - index, out var storage)
                                                     ? builder.BuildLoad2(storage.Item2, storage.Item1)
-                                                    : method.Value.Item1.GetParam((uint)index);
+                                                    : GetMethodParameter(index);
                                                 argument = PromoteSmallIntegerLoad(builder, argument, parameterType);
                                                 TrackType(argument, parameterType);
                                                 stack.Push(argument);
@@ -1840,17 +2109,17 @@ sealed partial class Translator
                                             : null;
                                         var type = instr.OpCode.Code switch
                                         {
-                                            Code.Ldelem_I1 => LLVMTypeRef.Int8,
-                                            Code.Ldelem_U1 => LLVMTypeRef.Int8,
-                                            Code.Ldelem_I2 => LLVMTypeRef.Int16,
-                                            Code.Ldelem_U2 => LLVMTypeRef.Int16,
-                                            Code.Ldelem_I4 => LLVMTypeRef.Int32,
-                                            Code.Ldelem_U4 => LLVMTypeRef.Int32,
-                                            Code.Ldelem_I8 => LLVMTypeRef.Int64,
+                                            Code.Ldelem_I1 => int8Type,
+                                            Code.Ldelem_U1 => int8Type,
+                                            Code.Ldelem_I2 => int16Type,
+                                            Code.Ldelem_U2 => int16Type,
+                                            Code.Ldelem_I4 => int32Type,
+                                            Code.Ldelem_U4 => int32Type,
+                                            Code.Ldelem_I8 => int64Type,
                                             Code.Ldelem_I => sizeType,
-                                            Code.Ldelem_R4 => LLVMTypeRef.Float,
-                                            Code.Ldelem_R8 => LLVMTypeRef.Double,
-                                            Code.Ldelem_Ref => LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0),
+                                            Code.Ldelem_R4 => floatType,
+                                            Code.Ldelem_R8 => doubleType,
+                                            Code.Ldelem_Ref => LLVMTypeRef.CreatePointer(int8Type, 0),
                                             Code.Ldelem_Any => GetLLVMTypeRef(elementTypeReference!),
                                             _ => throw new InvalidOperationException(instr.OpCode.Code.ToString())
                                         };
@@ -1866,13 +2135,16 @@ sealed partial class Translator
                                         else
                                             element = builder.BuildLoad2(type, gep);
                                         if (instr.OpCode.Code is Code.Ldelem_I1 or Code.Ldelem_U1 or Code.Ldelem_I2 or Code.Ldelem_U2)
-                                            element = ConvertValue(builder, element, LLVMTypeRef.Int32,
+                                            element = ConvertValue(builder, element, int32Type,
                                                 instr.OpCode.Code is Code.Ldelem_I1 or Code.Ldelem_I2);
                                         else if (elementTypeReference is not null)
                                             element = PromoteSmallIntegerLoad(builder, element, elementTypeReference);
                                         stack.Push(element);
                                         if (instr.OpCode.Code == Code.Ldelem_Any)
                                             TrackType(element, SubstituteGenericParameter((TypeReference)instr.Operand, method.Value.Item3));
+                                        else if (instr.OpCode.Code == Code.Ldelem_Ref &&
+                                            trackedTypes.TryGetValue(array, out var arrayType) && arrayType is ArrayType trackedArrayType)
+                                            TrackType(element, trackedArrayType.ElementType);
                                     }
                                     break;
                                 case Code.Ldloc_0:
@@ -1905,7 +2177,7 @@ sealed partial class Translator
                                     }
                                     break;
                                 case Code.Ldc_I4_M1:
-                                    stack.Push(LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, unchecked((ulong)-1), true));
+                                    stack.Push(LLVMValueRef.CreateConstInt(int32Type, unchecked((ulong)-1), true));
                                     break;
                                 case Code.Ldc_I4_0:
                                 case Code.Ldc_I4_1:
@@ -1919,7 +2191,7 @@ sealed partial class Translator
                                 case Code.Ldc_I4:
                                 case Code.Ldc_I4_S:
                                     {
-                                        var value = LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, (ulong)(instr.OpCode.Code switch
+                                        var value = LLVMValueRef.CreateConstInt(int32Type, (ulong)(instr.OpCode.Code switch
                                         {
                                             Code.Ldc_I4_0 => 0,
                                             Code.Ldc_I4_1 => 1,
@@ -1982,12 +2254,12 @@ sealed partial class Translator
                                         };
                                         if (!local.TryGetValue(-1 - index, out var argumentStorage))
                                         {
-                                            var argument = method.Value.Item1.GetParam((uint)index);
+                                            var argument = GetMethodParameter(index);
                                             argumentStorage = new(entryBuilder.BuildAlloca(argument.TypeOf), argument.TypeOf);
                                             builder.BuildStore(argument, argumentStorage.Item1);
                                             local[-1 - index] = argumentStorage;
                                         }
-                                        var argumentValue = method.Value.Item1.GetParam((uint)index);
+                                        var argumentValue = GetMethodParameter(index);
                                         if (argumentValue.TypeOf.Kind == LLVMTypeKind.LLVMPointerTypeKind)
                                         {
                                             stack.Push(argumentValue);
@@ -2015,15 +2287,15 @@ sealed partial class Translator
                                         var indirectType = GetIndirectType(address);
                                         var type = instr.OpCode.Code switch
                                         {
-                                            Code.Ldind_I1 or Code.Ldind_U1 => LLVMTypeRef.Int8,
-                                            Code.Ldind_I2 or Code.Ldind_U2 => LLVMTypeRef.Int16,
-                                            Code.Ldind_I4 or Code.Ldind_U4 => LLVMTypeRef.Int32,
-                                            Code.Ldind_I8 => LLVMTypeRef.Int64,
-                                            Code.Ldind_R4 => LLVMTypeRef.Float,
-                                            Code.Ldind_R8 => LLVMTypeRef.Double,
+                                            Code.Ldind_I1 or Code.Ldind_U1 => int8Type,
+                                            Code.Ldind_I2 or Code.Ldind_U2 => int16Type,
+                                            Code.Ldind_I4 or Code.Ldind_U4 => int32Type,
+                                            Code.Ldind_I8 => int64Type,
+                                            Code.Ldind_R4 => floatType,
+                                            Code.Ldind_R8 => doubleType,
                                             Code.Ldind_I when indirectType is PointerType => GetLLVMTypeRef(indirectType),
                                             Code.Ldind_I => sizeType,
-                                            Code.Ldind_Ref => LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0),
+                                            Code.Ldind_Ref => LLVMTypeRef.CreatePointer(int8Type, 0),
                                             _ => throw new InvalidOperationException(instr.OpCode.Code.ToString())
                                         };
                                         var value = builder.BuildLoad2(type, address);
@@ -2033,7 +2305,7 @@ sealed partial class Translator
                                             unalignedAlignment = 0;
                                         }
                                         if (instr.OpCode.Code is Code.Ldind_I1 or Code.Ldind_U1 or Code.Ldind_I2 or Code.Ldind_U2)
-                                            value = ConvertValue(builder, value, LLVMTypeRef.Int32,
+                                            value = ConvertValue(builder, value, int32Type,
                                                 instr.OpCode.Code is Code.Ldind_I1 or Code.Ldind_I2);
                                         stack.Push(value);
                                         if (indirectType is not null)
@@ -2054,15 +2326,15 @@ sealed partial class Translator
                                         var indirectType = GetIndirectType(address);
                                         var type = instr.OpCode.Code switch
                                         {
-                                            Code.Stind_I1 => LLVMTypeRef.Int8,
-                                            Code.Stind_I2 => LLVMTypeRef.Int16,
-                                            Code.Stind_I4 => LLVMTypeRef.Int32,
-                                            Code.Stind_I8 => LLVMTypeRef.Int64,
-                                            Code.Stind_R4 => LLVMTypeRef.Float,
-                                            Code.Stind_R8 => LLVMTypeRef.Double,
+                                            Code.Stind_I1 => int8Type,
+                                            Code.Stind_I2 => int16Type,
+                                            Code.Stind_I4 => int32Type,
+                                            Code.Stind_I8 => int64Type,
+                                            Code.Stind_R4 => floatType,
+                                            Code.Stind_R8 => doubleType,
                                             Code.Stind_I when indirectType is PointerType => GetLLVMTypeRef(indirectType),
                                             Code.Stind_I => sizeType,
-                                            Code.Stind_Ref => LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0),
+                                            Code.Stind_Ref => LLVMTypeRef.CreatePointer(int8Type, 0),
                                             _ => throw new InvalidOperationException(instr.OpCode.Code.ToString())
                                         };
                                         var store = builder.BuildStore(ConvertValue(builder, value, type), address);
@@ -2079,7 +2351,7 @@ sealed partial class Translator
                                         var address = stack.Pop();
                                         unsafe
                                         {
-                                            LLVM.BuildMemSet(builder, address, LLVMValueRef.CreateConstInt(LLVMTypeRef.Int8, 0, false),
+                                            LLVM.BuildMemSet(builder, address, LLVMValueRef.CreateConstInt(int8Type, 0, false),
                                                 LLVMValueRef.CreateConstInt(sizeType, (ulong)Math.Max(1, GetTypeSize(type)), false),
                                                 unalignedAlignment == 0 ? 1 : unalignedAlignment);
                                         }
@@ -2105,6 +2377,7 @@ sealed partial class Translator
                                             if (alignment != 0)
                                                 value.Alignment = alignment;
                                             stack.Push(value);
+                                            TrackType(value, type);
                                         }
                                     }
                                     break;
@@ -2150,7 +2423,7 @@ sealed partial class Translator
                                 case Code.Initblk:
                                     {
                                         var length = ConvertValue(builder, stack.Pop(), sizeType, false);
-                                        var value = ConvertValue(builder, stack.Pop(), LLVMTypeRef.Int8, false);
+                                        var value = ConvertValue(builder, stack.Pop(), int8Type, false);
                                         var destination = ConvertValue(builder, stack.Pop(), exceptionPointerType);
                                         unsafe
                                         {
@@ -2161,17 +2434,17 @@ sealed partial class Translator
                                     }
                                     break;
                                 case Code.Ldc_I8:
-                                    stack.Push(LLVMValueRef.CreateConstInt(LLVMTypeRef.Int64, unchecked((ulong)(long)instr.Operand), true));
+                                    stack.Push(LLVMValueRef.CreateConstInt(int64Type, unchecked((ulong)(long)instr.Operand), true));
                                     break;
                                 case Code.Ldc_R4:
-                                    stack.Push(LLVMValueRef.CreateConstReal(LLVMTypeRef.Float, (float)instr.Operand));
+                                    stack.Push(LLVMValueRef.CreateConstReal(floatType, (float)instr.Operand));
                                     break;
                                 case Code.Ldc_R8:
-                                    stack.Push(LLVMValueRef.CreateConstReal(LLVMTypeRef.Double, (double)instr.Operand));
+                                    stack.Push(LLVMValueRef.CreateConstReal(doubleType, (double)instr.Operand));
                                     break;
                                 case Code.Ldnull:
                                     {
-                                        var nullptr = LLVMValueRef.CreateConstNull(LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0));
+                                        var nullptr = LLVMValueRef.CreateConstNull(LLVMTypeRef.CreatePointer(int8Type, 0));
                                         stack.Push(nullptr);
                                     }
                                     break;
@@ -2208,11 +2481,11 @@ sealed partial class Translator
                                         : null;
                                     if (finallyHandler is not null && finallyStates.TryGetValue(finallyHandler, out var finallyState))
                                     {
-                                        var defaultBlock = method.Value.Item1.AppendBasicBlock($"finally.invalid.{nextVirtualDispatchId++}");
-                                        var switchValue = builder.BuildSwitch(builder.BuildLoad2(LLVMTypeRef.Int32, finallyState.Slot),
+                                        var defaultBlock = context.AppendBasicBlock(method.Value.Item1, $"finally.invalid.{nextVirtualDispatchId++}");
+                                        var switchValue = builder.BuildSwitch(builder.BuildLoad2(int32Type, finallyState.Slot),
                                             defaultBlock, (uint)finallyState.Targets.Count);
                                         foreach (var continuation in finallyState.Targets)
-                                            switchValue.AddCase(LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, (uint)continuation.Key, false), continuation.Value);
+                                            switchValue.AddCase(LLVMValueRef.CreateConstInt(int32Type, (uint)continuation.Key, false), continuation.Value);
                                         terminatedBlocks.Add(builder.InsertBlock);
                                         builder.PositionAtEnd(defaultBlock);
                                         builder.BuildUnreachable();
@@ -2228,10 +2501,10 @@ sealed partial class Translator
                                     if (filterStates.TryGetValue(instr.Offset, out var filterState))
                                     {
                                         var filterResult = stack.Count == 0
-                                            ? LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, 0, false)
-                                            : ConvertValue(builder, stack.Pop(), LLVMTypeRef.Int32);
+                                            ? LLVMValueRef.CreateConstInt(int32Type, 0, false)
+                                            : ConvertValue(builder, stack.Pop(), int32Type);
                                         builder.BuildCondBr(builder.BuildICmp(LLVMIntPredicate.LLVMIntNE, filterResult,
-                                            LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, 0, false)), filterState.Handler, filterState.Next);
+                                            LLVMValueRef.CreateConstInt(int32Type, 0, false)), filterState.Handler, filterState.Next);
                                     }
                                     else
                                         builder.BuildUnreachable();
@@ -2269,7 +2542,7 @@ sealed partial class Translator
                                     }
                                     break;
                                 case Code.Localloc:
-                                    stack.Push(builder.BuildArrayAlloca(LLVMTypeRef.Int8, ConvertValue(builder, stack.Pop(), sizeType, false)));
+                                    stack.Push(builder.BuildArrayAlloca(int8Type, ConvertValue(builder, stack.Pop(), sizeType, false)));
                                     break;
                                 case Code.Sizeof:
                                     {
@@ -2290,11 +2563,12 @@ sealed partial class Translator
                                             StoreField(builder, typeObject, type.Fields.First(field => field.Name == "Name"), BuildStringValue(builder, tokenType.Name,
                                                 (temporary, temporaryType) => StoreTemporaryRoot(1, temporary, temporaryType)));
                                             StoreField(builder, typeObject, type.Fields.First(field => field.Name == "Namespace"),
-                                                string.IsNullOrEmpty(tokenType.Namespace) ? LLVMValueRef.CreateConstNull(LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0)) : BuildStringValue(builder, tokenType.Namespace,
+                                                string.IsNullOrEmpty(tokenType.Namespace) ? LLVMValueRef.CreateConstNull(LLVMTypeRef.CreatePointer(int8Type, 0)) : BuildStringValue(builder, tokenType.Namespace,
                                                     (temporary, temporaryType) => StoreTemporaryRoot(1, temporary, temporaryType)));
                                             StoreField(builder, typeObject, type.Fields.First(field => field.Name == "FullName"), BuildStringValue(builder, tokenType.FullName.Replace('/', '+'),
                                                 (temporary, temporaryType) => StoreTemporaryRoot(1, temporary, temporaryType)));
                                             stack.Push(typeObject);
+                                            TrackType(typeObject, type);
                                         }
                                         else if (instr.Operand is FieldReference field)
                                         {
@@ -2303,7 +2577,7 @@ sealed partial class Translator
                                             TrackType(handle, localTypes["System.RuntimeFieldHandle"]);
                                         }
                                         else
-                                            stack.Push(LLVMValueRef.CreateConstNull(LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0)));
+                                            stack.Push(LLVMValueRef.CreateConstNull(LLVMTypeRef.CreatePointer(int8Type, 0)));
                                     }
                                     break;
                                 case Code.Box:
@@ -2320,9 +2594,9 @@ sealed partial class Translator
                                             var valueField = nullableDefinition.Fields.First(field => field.Name == "_value");
                                             var hasValue = builder.BuildLoad2(GetLLVMTypeRef(hasValueField.FieldType),
                                                 GetFieldAddress(builder, value, hasValueField, valueType));
-                                            var valueBlock = method.Value.Item1.AppendBasicBlock($"nullable.box.value.{nextVirtualDispatchId++}");
-                                            var nullBlock = method.Value.Item1.AppendBasicBlock($"nullable.box.null.{nextVirtualDispatchId++}");
-                                            var continuation = method.Value.Item1.AppendBasicBlock($"nullable.box.cont.{nextVirtualDispatchId++}");
+                                            var valueBlock = context.AppendBasicBlock(method.Value.Item1, $"nullable.box.value.{nextVirtualDispatchId++}");
+                                            var nullBlock = context.AppendBasicBlock(method.Value.Item1, $"nullable.box.null.{nextVirtualDispatchId++}");
+                                            var continuation = context.AppendBasicBlock(method.Value.Item1, $"nullable.box.cont.{nextVirtualDispatchId++}");
                                             var sourceBlock = builder.InsertBlock;
                                             builder.BuildCondBr(builder.BuildICmp(LLVMIntPredicate.LLVMIntNE, hasValue,
                                                 LLVMValueRef.CreateConstNull(hasValue.TypeOf)), valueBlock, nullBlock);
@@ -2365,14 +2639,17 @@ sealed partial class Translator
                                         var value = stack.Pop();
                                         var valueType = SubstituteGenericParameter((TypeReference)instr.Operand, method.Value.Item3);
                                         var boxedValue = !IsManagedReferenceType(valueType) ? GetBoxedValueAddress(builder, value) : value;
+                                        LLVMValueRef result;
                                         if (instr.OpCode.Code == Code.Unbox_Any && (valueType.MetadataType is MetadataType.Boolean or MetadataType.SByte or MetadataType.Byte or MetadataType.Char or MetadataType.Int16 or MetadataType.UInt16 or MetadataType.Int32 or MetadataType.UInt32 or MetadataType.Int64 or MetadataType.UInt64 or MetadataType.IntPtr or MetadataType.UIntPtr or MetadataType.Single or MetadataType.Double))
-                                            stack.Push(builder.BuildLoad2(GetLLVMTypeRef(valueType), boxedValue));
+                                            result = builder.BuildLoad2(GetLLVMTypeRef(valueType), boxedValue);
                                         else if (instr.OpCode.Code == Code.Unbox_Any && GetEnumUnderlyingType(valueType) is not null)
-                                            stack.Push(builder.BuildLoad2(GetLLVMTypeRef(valueType), boxedValue));
+                                            result = builder.BuildLoad2(GetLLVMTypeRef(valueType), boxedValue);
                                         else if (instr.OpCode.Code == Code.Unbox_Any && !IsValueType(valueType))
-                                            stack.Push(ConvertValue(builder, value, GetLLVMTypeRef(valueType)));
+                                            result = ConvertValue(builder, value, GetLLVMTypeRef(valueType));
                                         else
-                                            stack.Push(boxedValue);
+                                            result = boxedValue;
+                                        stack.Push(result);
+                                        TrackType(result, valueType);
                                     }
                                     break;
                                 case Code.Switch:
@@ -2494,7 +2771,7 @@ sealed partial class Translator
                                         var val2 = stack.Pop();
                                         var val1 = stack.Pop();
                                         var cond = BuildComparison(builder, instr.OpCode.Code, val1, val2);
-                                        var result = builder.BuildZExt(cond, LLVMTypeRef.Int32);
+                                        var result = builder.BuildZExt(cond, int32Type);
 
                                         stack.Push(result);
                                     }
@@ -2504,7 +2781,7 @@ sealed partial class Translator
                                         var val2 = stack.Pop();
                                         var val1 = stack.Pop();
                                         var result = val1.TypeOf.Kind == LLVMTypeKind.LLVMPointerTypeKind
-                                            ? builder.BuildGEP2(LLVMTypeRef.Int8, val1,
+                                            ? builder.BuildGEP2(int8Type, val1,
                                                 [builder.BuildNeg(ConvertValue(builder, val2, sizeType, true))])
                                             : NormalizeBinaryOperands(builder, val1, val2) is var operands
                                                 ? IsFloatingValue(operands.Left)
@@ -2521,9 +2798,9 @@ sealed partial class Translator
                                         var val2 = stack.Pop();
                                         var val1 = stack.Pop();
                                         var result = val1.TypeOf.Kind == LLVMTypeKind.LLVMPointerTypeKind
-                                            ? builder.BuildGEP2(LLVMTypeRef.Int8, val1, [ConvertValue(builder, val2, sizeType, true)])
+                                            ? builder.BuildGEP2(int8Type, val1, [ConvertValue(builder, val2, sizeType, true)])
                                             : val2.TypeOf.Kind == LLVMTypeKind.LLVMPointerTypeKind
-                                                ? builder.BuildGEP2(LLVMTypeRef.Int8, val2, [ConvertValue(builder, val1, sizeType, true)])
+                                                ? builder.BuildGEP2(int8Type, val2, [ConvertValue(builder, val1, sizeType, true)])
                                                 : NormalizeBinaryOperands(builder, val1, val2) is var operands
                                                     ? IsFloatingValue(operands.Left)
                                                         ? builder.BuildFAdd(operands.Left, operands.Right)
@@ -2538,7 +2815,7 @@ sealed partial class Translator
                                         var val2 = stack.Pop();
                                         var val1 = stack.Pop();
                                         if (val1.TypeOf.Kind == LLVMTypeKind.LLVMPointerTypeKind)
-                                            stack.Push(builder.BuildGEP2(LLVMTypeRef.Int8, val1, [builder.BuildNeg(ConvertValue(builder, val2, sizeType, true))]));
+                                            stack.Push(builder.BuildGEP2(int8Type, val1, [builder.BuildNeg(ConvertValue(builder, val2, sizeType, true))]));
                                         else
                                         {
                                             var operands = NormalizeBinaryOperands(builder, val1, val2);
@@ -2624,7 +2901,9 @@ sealed partial class Translator
                                         var val2 = stack.Pop();
                                         var val1 = stack.Pop();
                                         var operands = NormalizeBinaryOperands(builder, val1, val2);
-                                        stack.Push(builder.BuildShl(operands.Left, operands.Right));
+                                        var shift = builder.BuildAnd(operands.Right, LLVMValueRef.CreateConstInt(operands.Right.TypeOf,
+                                            (ulong)(operands.Left.TypeOf.IntWidth - 1), false));
+                                        stack.Push(builder.BuildShl(operands.Left, shift));
                                     }
                                     break;
                                 case Code.Shr:
@@ -2632,7 +2911,9 @@ sealed partial class Translator
                                         var val2 = stack.Pop();
                                         var val1 = stack.Pop();
                                         var operands = NormalizeBinaryOperands(builder, val1, val2);
-                                        stack.Push(builder.BuildAShr(operands.Left, operands.Right));
+                                        var shift = builder.BuildAnd(operands.Right, LLVMValueRef.CreateConstInt(operands.Right.TypeOf,
+                                            (ulong)(operands.Left.TypeOf.IntWidth - 1), false));
+                                        stack.Push(builder.BuildAShr(operands.Left, shift));
                                     }
                                     break;
                                 case Code.Shr_Un:
@@ -2640,7 +2921,9 @@ sealed partial class Translator
                                         var val2 = stack.Pop();
                                         var val1 = stack.Pop();
                                         var operands = NormalizeBinaryOperands(builder, val1, val2);
-                                        stack.Push(builder.BuildLShr(operands.Left, operands.Right));
+                                        var shift = builder.BuildAnd(operands.Right, LLVMValueRef.CreateConstInt(operands.Right.TypeOf,
+                                            (ulong)(operands.Left.TypeOf.IntWidth - 1), false));
+                                        stack.Push(builder.BuildLShr(operands.Left, shift));
                                     }
                                     break;
                                 case Code.Neg:
@@ -2655,42 +2938,42 @@ sealed partial class Translator
                                 case Code.Conv_I1:
                                 case Code.Conv_Ovf_I1:
                                 case Code.Conv_Ovf_I1_Un:
-                                    stack.Push(ConvertValue(builder, stack.Pop(), LLVMTypeRef.Int8));
+                                    stack.Push(ConvertValue(builder, ConvertValue(builder, stack.Pop(), int8Type), int32Type));
                                     break;
                                 case Code.Conv_U1:
                                 case Code.Conv_Ovf_U1:
                                 case Code.Conv_Ovf_U1_Un:
-                                    stack.Push(ConvertValue(builder, stack.Pop(), LLVMTypeRef.Int8, false));
+                                    stack.Push(ConvertValue(builder, ConvertValue(builder, stack.Pop(), int8Type, false), int32Type, false));
                                     break;
                                 case Code.Conv_I2:
                                 case Code.Conv_Ovf_I2:
                                 case Code.Conv_Ovf_I2_Un:
-                                    stack.Push(ConvertValue(builder, stack.Pop(), LLVMTypeRef.Int16));
+                                    stack.Push(ConvertValue(builder, ConvertValue(builder, stack.Pop(), int16Type), int32Type));
                                     break;
                                 case Code.Conv_U2:
                                 case Code.Conv_Ovf_U2:
                                 case Code.Conv_Ovf_U2_Un:
-                                    stack.Push(ConvertValue(builder, stack.Pop(), LLVMTypeRef.Int16, false));
+                                    stack.Push(ConvertValue(builder, ConvertValue(builder, stack.Pop(), int16Type, false), int32Type, false));
                                     break;
                                 case Code.Conv_I4:
                                 case Code.Conv_Ovf_I4:
                                 case Code.Conv_Ovf_I4_Un:
-                                    stack.Push(ConvertValue(builder, stack.Pop(), LLVMTypeRef.Int32));
+                                    stack.Push(ConvertValue(builder, stack.Pop(), int32Type));
                                     break;
                                 case Code.Conv_U4:
                                 case Code.Conv_Ovf_U4:
                                 case Code.Conv_Ovf_U4_Un:
-                                    stack.Push(ConvertValue(builder, stack.Pop(), LLVMTypeRef.Int32, false));
+                                    stack.Push(ConvertValue(builder, stack.Pop(), int32Type, false));
                                     break;
                                 case Code.Conv_I8:
                                 case Code.Conv_Ovf_I8:
                                 case Code.Conv_Ovf_I8_Un:
-                                    stack.Push(ConvertValue(builder, stack.Pop(), LLVMTypeRef.Int64));
+                                    stack.Push(ConvertValue(builder, stack.Pop(), int64Type));
                                     break;
                                 case Code.Conv_U8:
                                 case Code.Conv_Ovf_U8:
                                 case Code.Conv_Ovf_U8_Un:
-                                    stack.Push(ConvertValue(builder, stack.Pop(), LLVMTypeRef.Int64, false));
+                                    stack.Push(ConvertValue(builder, stack.Pop(), int64Type, false));
                                     break;
                                 case Code.Conv_I:
                                 case Code.Conv_Ovf_I:
@@ -2701,11 +2984,13 @@ sealed partial class Translator
                                     stack.Push(ConvertValue(builder, stack.Pop(), sizeType, instr.OpCode.Code is not (Code.Conv_U or Code.Conv_Ovf_U or Code.Conv_Ovf_U_Un)));
                                     break;
                                 case Code.Conv_R4:
-                                    stack.Push(ConvertValue(builder, stack.Pop(), LLVMTypeRef.Float));
+                                    stack.Push(ConvertValue(builder, stack.Pop(), floatType));
                                     break;
                                 case Code.Conv_R8:
+                                    stack.Push(ConvertValue(builder, stack.Pop(), doubleType));
+                                    break;
                                 case Code.Conv_R_Un:
-                                    stack.Push(ConvertValue(builder, stack.Pop(), LLVMTypeRef.Double));
+                                    stack.Push(ConvertValue(builder, stack.Pop(), doubleType, false));
                                     break;
                                 case Code.Dup:
                                     {
@@ -2736,7 +3021,16 @@ sealed partial class Translator
                             builder.PositionAtEnd(block);
                             var returnType = SubstituteGenericParameter(method.Value.Item3.ReturnType, method.Value.Item3);
                             PopGCFrame();
-                            if (IsVoidType(returnType))
+                            if (usesValueReturnBuffer)
+                            {
+                                unsafe
+                                {
+                                    LLVM.BuildMemSet(builder, valueReturnBuffer, LLVMValueRef.CreateConstNull(int8Type),
+                                        LLVMValueRef.CreateConstInt(sizeType, (ulong)GetTypeSize(returnType), false), 1);
+                                }
+                                builder.BuildRetVoid();
+                            }
+                            else if (IsVoidType(returnType))
                                 builder.BuildRetVoid();
                             else
                                 builder.BuildRet(LLVMValueRef.CreateConstNull(GetLLVMTypeRef(returnType)));
@@ -2747,7 +3041,16 @@ sealed partial class Translator
                             builder.PositionAtEnd(entry);
                             var returnType = SubstituteGenericParameter(method.Value.Item3.ReturnType, method.Value.Item3);
                             PopGCFrame();
-                            if (IsVoidType(returnType))
+                            if (usesValueReturnBuffer)
+                            {
+                                unsafe
+                                {
+                                    LLVM.BuildMemSet(builder, valueReturnBuffer, LLVMValueRef.CreateConstNull(int8Type),
+                                        LLVMValueRef.CreateConstInt(sizeType, (ulong)GetTypeSize(returnType), false), 1);
+                                }
+                                builder.BuildRetVoid();
+                            }
+                            else if (IsVoidType(returnType))
                                 builder.BuildRetVoid();
                             else
                                 builder.BuildRet(LLVMValueRef.CreateConstNull(GetLLVMTypeRef(returnType)));
@@ -2755,11 +3058,84 @@ sealed partial class Translator
                     }
                 }
             }
+
+            var pointerType = LLVMTypeRef.CreatePointer(int8Type, 0);
+            var staticRoots = new List<(LLVMValueRef Address, LLVMValueRef Descriptor)>();
+            foreach (var (name, storage) in staticFields)
+            {
+                var fieldType = staticFieldTypes[name];
+                if (IsManagedReferenceType(fieldType))
+                    staticRoots.Add((LLVMValueRef.CreateConstPointerCast(storage.Item1, pointerType), LLVMValueRef.CreateConstNull(pointerType)));
+                else if (IsValueType(fieldType) && GetGCReferenceOffsets(fieldType).Any())
+                    staticRoots.Add((LLVMValueRef.CreateConstPointerCast(storage.Item1, pointerType),
+                        LLVMValueRef.CreateConstPointerCast(GetGCDescriptor(fieldType), pointerType)));
+            }
+            var typeFieldOffset = LLVMValueRef.CreateConstInt(sizeType, (ulong)GetFieldOffset(GetTypeDescriptorTypeField()), false);
+            foreach (var typeDescriptor in typeDescriptors.Values)
+            {
+                var descriptorAddress = LLVMValueRef.CreateConstGEP2(int8Type,
+                    LLVMValueRef.CreateConstPointerCast(typeDescriptor, pointerType), [typeFieldOffset]);
+                staticRoots.Add((descriptorAddress, LLVMValueRef.CreateConstNull(pointerType)));
+            }
+            var staticRootType = context.GetStructType([pointerType, pointerType, pointerType], false);
+            var nextStaticRoot = LLVMValueRef.CreateConstNull(pointerType);
+            for (int index = staticRoots.Count - 1; index >= 0; index--)
+            {
+                var staticRoot = AddInternalGlobal(staticRootType, $"__gc_static_root_{index}");
+                staticRoot.Initializer = LLVMValueRef.CreateConstNamedStruct(staticRootType, [nextStaticRoot,
+                    staticRoots[index].Address, staticRoots[index].Descriptor]);
+                nextStaticRoot = LLVMValueRef.CreateConstPointerCast(staticRoot, pointerType);
+            }
+            var staticRootHead = GetStaticField(localTypes["System.Runtime.GCHeap"].Fields.First(field => field.Name == "s_staticRoots"));
+            var staticRootHeadStorage = staticRootHead.Item1;
+            staticRootHeadStorage.Initializer = LLVMValueRef.CreateConstPointerCast(nextStaticRoot, staticRootHead.Item2);
+
             if (!module.TryVerify(LLVMVerifierFailureAction.LLVMReturnStatusAction, out var verificationError))
                 throw new InvalidOperationException(verificationError);
 
             machine.EmitToFile(module, outputFileName, LLVMCodeGenFileType.LLVMObjectFile);
         }
+    }
+
+    private static void InitializeLLVM()
+    {
+        lock (initializationLock)
+        {
+            if (llvmInitialized)
+                return;
+            LLVM.InitializeAllTargetInfos();
+            LLVM.InitializeAllTargets();
+            LLVM.InitializeAllTargetMCs();
+            LLVM.InitializeAllAsmParsers();
+            LLVM.InitializeAllAsmPrinters();
+            llvmInitialized = true;
+        }
+    }
+
+    private static (string TargetTriple, LLVMCodeModel CodeModel) ParseTargetSpecification(string target)
+    {
+        var specification = target.Split(';', StringSplitOptions.TrimEntries);
+        if (specification.Length is < 1 or > 2 || string.IsNullOrEmpty(specification[0]))
+            throw new ArgumentException("Target must be a target triple optionally followed by a code model.");
+        var codeModel = specification.Length == 1 ? LLVMCodeModel.LLVMCodeModelDefault : specification[1] switch
+        {
+            "default" => LLVMCodeModel.LLVMCodeModelDefault,
+            "tiny" => LLVMCodeModel.LLVMCodeModelTiny,
+            "small" => LLVMCodeModel.LLVMCodeModelSmall,
+            "kernel" => LLVMCodeModel.LLVMCodeModelKernel,
+            "medium" => LLVMCodeModel.LLVMCodeModelMedium,
+            "large" => LLVMCodeModel.LLVMCodeModelLarge,
+            _ => throw new ArgumentException($"Unsupported LLVM code model '{specification[1]}'.")
+        };
+        return (specification[0], codeModel);
+    }
+
+    private static LLVMTargetMachineRef CreateTargetMachine(string targetTriple, LLVMCodeModel codeModel)
+    {
+        var target = LLVMTargetRef.GetTargetFromTriple(targetTriple);
+        return target.CreateTargetMachine(targetTriple, "generic", "", LLVMCodeGenOptLevel.LLVMCodeGenLevelDefault,
+            codeModel == LLVMCodeModel.LLVMCodeModelKernel ? LLVMRelocMode.LLVMRelocStatic : LLVMRelocMode.LLVMRelocPIC,
+            codeModel);
     }
 
 }

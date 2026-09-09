@@ -65,7 +65,7 @@ sealed partial class Translator
         var nativeIndex = ConvertValue(builder, index, sizeType, false);
         var elementOffset = builder.BuildMul(nativeIndex,
             LLVMValueRef.CreateConstInt(sizeType, elementSize.HasValue ? (ulong)elementSize.Value : GetLLVMTypeSize(elementType), false));
-        return builder.BuildGEP2(LLVMTypeRef.Int8, GetArrayDataPointer(builder, array), [elementOffset]);
+        return builder.BuildGEP2(int8Type, GetArrayDataPointer(builder, array), [elementOffset]);
     }
 
     LLVMValueRef GetMultiArrayElementAddress(LLVMBuilderRef builder, LLVMValueRef array, LLVMValueRef[] indices,
@@ -76,13 +76,13 @@ sealed partial class Translator
             GetFieldAddress(builder, array, GetArrayLengthsField()));
         for (int i = 0; i < indices.Length; i++)
         {
-            var length = ConvertValue(builder, builder.BuildLoad2(LLVMTypeRef.Int32,
-                GetArrayElementAddress(builder, lengths, LLVMValueRef.CreateConstInt(sizeType, (ulong)i, false), LLVMTypeRef.Int32)), sizeType, false);
+            var length = ConvertValue(builder, builder.BuildLoad2(int32Type,
+                GetArrayElementAddress(builder, lengths, LLVMValueRef.CreateConstInt(sizeType, (ulong)i, false), int32Type)), sizeType, false);
             elementIndex = builder.BuildAdd(builder.BuildMul(elementIndex, length), ConvertValue(builder, indices[i], sizeType, false));
         }
         var elementOffset = builder.BuildMul(elementIndex,
             LLVMValueRef.CreateConstInt(sizeType, elementSize.HasValue ? (ulong)elementSize.Value : GetLLVMTypeSize(elementType), false));
-        return builder.BuildGEP2(LLVMTypeRef.Int8, GetArrayDataPointer(builder, array), [elementOffset]);
+        return builder.BuildGEP2(int8Type, GetArrayDataPointer(builder, array), [elementOffset]);
     }
 
     LLVMValueRef BuildStringValue(LLVMBuilderRef builder, string value, Action<LLVMValueRef, TypeReference>? storeTemporaryRoot = null)
@@ -96,8 +96,8 @@ sealed partial class Translator
         storeTemporaryRoot?.Invoke(array, charArrayType);
         for (int i = 0; i < value.Length; i++)
         {
-            var address = GetArrayElementAddress(builder, array, LLVMValueRef.CreateConstInt(sizeType, (ulong)i, false), LLVMTypeRef.Int16);
-            builder.BuildStore(LLVMValueRef.CreateConstInt(LLVMTypeRef.Int16, value[i], false), address);
+            var address = GetArrayElementAddress(builder, array, LLVMValueRef.CreateConstInt(sizeType, (ulong)i, false), int16Type);
+            builder.BuildStore(LLVMValueRef.CreateConstInt(int16Type, value[i], false), address);
         }
         var stringType = localTypes["System.String"];
         var stringObject = BuildAllocation(builder, GetTypeDefinitionSize(stringType));
@@ -147,12 +147,34 @@ sealed partial class Translator
         return false;
     }
 
-    bool IsLPWStrParameter(MethodReference method, int parameterIndex)
+    bool IsExternalMethod(MethodReference method)
     {
-        var definition = FindLocalMethod(method, localMethods);
-        if (definition is null || parameterIndex >= definition.Parameters.Count)
-            return false;
-        return definition.Parameters[parameterIndex].MarshalInfo?.NativeType == NativeType.LPWStr;
+        return (FindLocalMethod(method, localMethods) ?? method.Resolve())?.PInvokeInfo is not null;
+    }
+
+    LLVMValueRef GetSpanDataPointer(LLVMBuilderRef builder, LLVMValueRef value, TypeReference type)
+    {
+        if (type is not GenericInstanceType span || span.ElementType.FullName is not "System.Span`1" and not "System.ReadOnlySpan`1" ||
+            span.GenericArguments.Count != 1)
+            throw new NotSupportedException($"Expected Span<T> or ReadOnlySpan<T>, not {type.FullName}.");
+        var definition = span.Resolve() ?? throw new NotSupportedException($"Type is not defined in the input module: {span.FullName}");
+        var arrayField = definition.Fields.First(field => field.Name == "_array");
+        var startField = definition.Fields.First(field => field.Name == "_start");
+        var array = builder.BuildLoad2(LLVMTypeRef.CreatePointer(int8Type, 0),
+            GetFieldAddress(builder, value, arrayField, span));
+        var start = builder.BuildLoad2(int32Type, GetFieldAddress(builder, value, startField, span));
+        return GetArrayElementAddress(builder, array, start, GetLLVMTypeRef(span.GenericArguments[0]), GetTypeSize(span.GenericArguments[0]));
+    }
+
+    LLVMValueRef GetExternalArgumentPointer(LLVMBuilderRef builder, LLVMValueRef value, TypeReference type)
+    {
+        if (type.MetadataType == MetadataType.String)
+            return GetStringDataPointer(builder, value);
+        if (type is ArrayType)
+            return GetArrayDataPointer(builder, value);
+        if (type is GenericInstanceType span && span.ElementType.FullName is "System.Span`1" or "System.ReadOnlySpan`1")
+            return GetSpanDataPointer(builder, value, span);
+        return value;
     }
 
     FieldDefinition GetStringCharsField()
@@ -162,7 +184,7 @@ sealed partial class Translator
 
     LLVMValueRef GetStringDataPointer(LLVMBuilderRef builder, LLVMValueRef value)
     {
-        var chars = builder.BuildLoad2(LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0),
+        var chars = builder.BuildLoad2(LLVMTypeRef.CreatePointer(int8Type, 0),
             GetFieldAddress(builder, value, GetStringCharsField()));
         return GetArrayDataPointer(builder, chars);
     }
@@ -184,20 +206,20 @@ sealed partial class Translator
         var array = BuildAllocationSize(builder, builder.BuildAdd(
             LLVMValueRef.CreateConstInt(sizeType, (ulong)GetTypeDefinitionSize(localTypes["System.Array"]), false),
             LLVMValueRef.CreateConstInt(sizeType, (ulong)(dimensions.Length * GetTypeSize(elementType)), false)));
-        StoreField(builder, array, GetArrayLengthField(), LLVMValueRef.CreateConstInt(LLVMTypeRef.Int32, (ulong)dimensions.Length, false));
+        StoreField(builder, array, GetArrayLengthField(), LLVMValueRef.CreateConstInt(int32Type, (ulong)dimensions.Length, false));
         InitializeRuntimeType(builder, array, arrayType);
         for (int index = 0; index < dimensions.Length; index++)
         {
             var address = GetArrayElementAddress(builder, array,
-                LLVMValueRef.CreateConstInt(sizeType, (ulong)index, false), LLVMTypeRef.Int32);
-            builder.BuildStore(ConvertValue(builder, dimensions[index], LLVMTypeRef.Int32, false), address);
+                LLVMValueRef.CreateConstInt(sizeType, (ulong)index, false), int32Type);
+            builder.BuildStore(ConvertValue(builder, dimensions[index], int32Type, false), address);
         }
         return array;
     }
 
     LLVMValueRef GetArrayDataPointer(LLVMBuilderRef builder, LLVMValueRef array)
     {
-        return builder.BuildLoad2(LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0),
+        return builder.BuildLoad2(LLVMTypeRef.CreatePointer(int8Type, 0),
             GetFieldAddress(builder, array, GetArrayDataField()));
     }
 
@@ -207,15 +229,15 @@ sealed partial class Translator
         var offset = LLVMValueRef.CreateConstInt(sizeType, (ulong)(declaringType is null
             ? GetFieldOffset(field)
             : GetFieldOffsetForType(field, declaringType)), false);
-        return builder.BuildGEP2(LLVMTypeRef.Int8, obj, [offset]);
+        return builder.BuildGEP2(int8Type, obj, [offset]);
     }
 
     Tuple<LLVMValueRef, LLVMTypeRef> CreateLocalStorage(LLVMBuilderRef builder, TypeReference type)
     {
         if (IsValueType(type))
         {
-            var pointerType = LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0);
-            var storageType = LLVMTypeRef.CreateArray(LLVMTypeRef.Int8, (uint)Math.Max(1, GetTypeSize(type)));
+            var pointerType = LLVMTypeRef.CreatePointer(int8Type, 0);
+            var storageType = LLVMTypeRef.CreateArray(int8Type, (uint)Math.Max(1, GetTypeSize(type)));
             var storage = builder.BuildBitCast(builder.BuildAlloca(storageType), pointerType);
             var local = builder.BuildAlloca(pointerType);
             builder.BuildStore(storage, local);
@@ -228,7 +250,7 @@ sealed partial class Translator
 
     void CopyValue(LLVMBuilderRef builder, LLVMValueRef destination, LLVMValueRef source, int size)
     {
-        var pointerType = LLVMTypeRef.CreatePointer(LLVMTypeRef.Int8, 0);
+        var pointerType = LLVMTypeRef.CreatePointer(int8Type, 0);
         var destinationPointer = destination.TypeOf.Kind == LLVMTypeKind.LLVMPointerTypeKind
             ? (destination.TypeOf.Equals(pointerType) ? destination : builder.BuildBitCast(destination, pointerType))
             : builder.BuildAlloca(destination.TypeOf);
@@ -269,17 +291,15 @@ sealed partial class Translator
         return type.FullName;
     }
 
-    ulong GetRuntimeTypeId(TypeReference type)
+    int GetRuntimeTypeId(TypeReference type)
     {
-        var runtimeType = type is GenericInstanceType generic && generic.Resolve()?.IsClass == true
-            ? generic.ElementType
-            : type;
-        var key = GetRuntimeTypeKey(runtimeType);
+        var key = GetRuntimeTypeKey(type);
         if (!runtimeTypeIds.TryGetValue(key, out var id))
         {
             id = nextRuntimeTypeId++;
             runtimeTypeIds.Add(key, id);
         }
+        runtimeTypes.TryAdd(key, type);
         return id;
     }
 
@@ -287,13 +307,10 @@ sealed partial class Translator
     {
         if (obj == default || IsValueType(type))
             return;
-        StoreField(builder, obj, GetObjectMethodTableField(),
-            LLVMValueRef.CreateConstInt(sizeType, GetRuntimeTypeId(type), false));
-        StoreField(builder, obj, GetObjectGCDescriptorField(),
-            LLVMValueRef.CreateConstPtrToInt(GetGCDescriptor(type), sizeType));
+        StoreField(builder, obj, GetObjectTypeDescriptorField(), GetTypeDescriptor(type));
         if (type is ArrayType)
         {
-            StoreField(builder, obj, GetArrayDataField(), builder.BuildGEP2(LLVMTypeRef.Int8, obj,
+            StoreField(builder, obj, GetArrayDataField(), builder.BuildGEP2(int8Type, obj,
                 [LLVMValueRef.CreateConstInt(sizeType, (ulong)GetTypeDefinitionSize(localTypes["System.Array"]), false)]));
         }
     }
@@ -305,16 +322,46 @@ sealed partial class Translator
 
     LLVMValueRef GetBoxedValueAddress(LLVMBuilderRef builder, LLVMValueRef box)
     {
-        return builder.BuildGEP2(LLVMTypeRef.Int8, box,
+        return builder.BuildGEP2(int8Type, box,
             [LLVMValueRef.CreateConstInt(sizeType, (ulong)GetBoxedObjectHeaderSize(), false)]);
     }
 
     void InitializeBoxedRuntimeType(LLVMBuilderRef builder, LLVMValueRef box, TypeReference type)
     {
-        StoreField(builder, box, GetObjectMethodTableField(),
-            LLVMValueRef.CreateConstInt(sizeType, GetRuntimeTypeId(type), false));
-        StoreField(builder, box, GetObjectGCDescriptorField(),
-            LLVMValueRef.CreateConstPtrToInt(GetGCDescriptor(type), sizeType));
+        StoreField(builder, box, GetObjectTypeDescriptorField(), GetTypeDescriptor(type));
+    }
+
+    LLVMValueRef GetTypeDescriptor(TypeReference type)
+    {
+        var key = GetRuntimeTypeKey(type);
+        if (typeDescriptors.TryGetValue(key, out var descriptor))
+            return descriptor;
+        var descriptorType = context.GetStructType([
+            int32Type,
+            LLVMTypeRef.CreatePointer(int8Type, 0),
+            LLVMTypeRef.CreatePointer(int8Type, 0)
+        ], false);
+        descriptor = AddInternalGlobal(descriptorType, $"__type_descriptor_{GetStableSymbolSuffix(key)}");
+        var pointerType = LLVMTypeRef.CreatePointer(int8Type, 0);
+        descriptor.Initializer = LLVMValueRef.CreateConstNamedStruct(descriptorType, [
+            LLVMValueRef.CreateConstInt(int32Type, (ulong)GetRuntimeTypeId(type), false),
+            LLVMValueRef.CreateConstPointerCast(GetGCDescriptor(type), pointerType),
+            LLVMValueRef.CreateConstNull(pointerType)
+        ]);
+        typeDescriptors.Add(key, descriptor);
+        return descriptor;
+    }
+
+    LLVMValueRef GetObjectTypeDescriptor(LLVMBuilderRef builder, LLVMValueRef obj)
+    {
+        return builder.BuildLoad2(LLVMTypeRef.CreatePointer(int8Type, 0),
+            GetFieldAddress(builder, obj, GetObjectTypeDescriptorField()));
+    }
+
+    LLVMValueRef GetObjectRuntimeTypeId(LLVMBuilderRef builder, LLVMValueRef obj)
+    {
+        return ConvertValue(builder, builder.BuildLoad2(int32Type,
+            GetFieldAddress(builder, GetObjectTypeDescriptor(builder, obj), GetTypeDescriptorRuntimeTypeIdField())), sizeType, false);
     }
 
     (LLVMValueRef Function, LLVMValueRef State)? GetCctorGuard(TypeReference type)
@@ -330,26 +377,27 @@ sealed partial class Translator
         if (cctor is null || cctor.Item1 == default)
             return null;
 
-        var suffix = $"{SanitizeSymbolPart(GetRuntimeTypeKey(type))}_{cctorGuards.Count}";
-        var state = AddInternalGlobal(LLVMTypeRef.Int8, $"__cctor_state_{suffix}");
-        state.Initializer = LLVMValueRef.CreateConstNull(LLVMTypeRef.Int8);
-        var guardType = LLVMTypeRef.CreateFunction(LLVMTypeRef.Void, []);
+        var suffix = GetStableSymbolSuffix(GetRuntimeTypeKey(type));
+        var state = AddInternalGlobal(int8Type, $"__cctor_state_{suffix}");
+        state.Initializer = LLVMValueRef.CreateConstNull(int8Type);
+        var guardType = LLVMTypeRef.CreateFunction(voidType, []);
         var guard = module.AddFunction($"__cctor_guard_{suffix}", guardType);
+        guard.Linkage = LLVMLinkage.LLVMExternalLinkage;
         cctorGuards.Add(key, (guard, state));
 
         var guardBuilder = context.CreateBuilder();
-        var entry = guard.AppendBasicBlock("entry");
-        var initialize = guard.AppendBasicBlock("initialize");
-        var done = guard.AppendBasicBlock("done");
+        var entry = context.AppendBasicBlock(guard, "entry");
+        var initialize = context.AppendBasicBlock(guard, "initialize");
+        var done = context.AppendBasicBlock(guard, "done");
         guardBuilder.PositionAtEnd(entry);
-        var currentState = guardBuilder.BuildLoad2(LLVMTypeRef.Int8, state);
+        var currentState = guardBuilder.BuildLoad2(int8Type, state);
         var alreadyInitialized = guardBuilder.BuildICmp(LLVMIntPredicate.LLVMIntNE, currentState,
-            LLVMValueRef.CreateConstInt(LLVMTypeRef.Int8, 0, false));
+            LLVMValueRef.CreateConstInt(int8Type, 0, false));
         guardBuilder.BuildCondBr(alreadyInitialized, done, initialize);
         guardBuilder.PositionAtEnd(initialize);
-        guardBuilder.BuildStore(LLVMValueRef.CreateConstInt(LLVMTypeRef.Int8, 1, false), state);
+        guardBuilder.BuildStore(LLVMValueRef.CreateConstInt(int8Type, 1, false), state);
         guardBuilder.BuildCall2(cctor.Item2, cctor.Item1, []);
-        guardBuilder.BuildStore(LLVMValueRef.CreateConstInt(LLVMTypeRef.Int8, 2, false), state);
+        guardBuilder.BuildStore(LLVMValueRef.CreateConstInt(int8Type, 2, false), state);
         guardBuilder.BuildBr(done);
         guardBuilder.PositionAtEnd(done);
         guardBuilder.BuildRetVoid();
@@ -401,8 +449,8 @@ sealed partial class Translator
         var gcDescFields = allGCDescFields.Where(field => headerValues.ContainsKey(field.Name)).ToArray();
         headerValues["TotalSlotCount"] = (ulong)(gcDescFields.Length + fixedReferences.Length + elementReferences.Length);
         if (gcDescFields.Length != headerValues.Count ||
-            !allGCDescFields.Any(field => field.Name == "FixedReferenceOffsets") ||
-            allGCDescFields.Any(field => !headerValues.ContainsKey(field.Name) && field.Name != "FixedReferenceOffsets") ||
+            !allGCDescFields.Any(field => field.Name == "ReferenceOffsets") ||
+            allGCDescFields.Any(field => !headerValues.ContainsKey(field.Name) && field.Name != "ReferenceOffsets") ||
             gcDescFields.Any(field => GetTypeSize(field.FieldType) != pointerSize) ||
             gcDescFields.Any(field => !headerValues.ContainsKey(field.Name)))
             throw new InvalidOperationException("System.GCDesc must contain exactly six pointer-sized instance fields: TotalSlotCount, BaseSize, FixedReferenceCount, ArrayLengthOffset, ArrayElementSize, ArrayElementReferenceCount.");
@@ -415,21 +463,21 @@ sealed partial class Translator
         }
         if (fixedReferences.Length != 0)
         {
-            var offsetType = LLVMTypeRef.CreateArray(LLVMTypeRef.Int16, (uint)fixedReferences.Length);
+            var offsetType = LLVMTypeRef.CreateArray(int16Type, (uint)fixedReferences.Length);
             fieldTypes.Add(offsetType);
-            values.Add(LLVMValueRef.CreateConstArray(LLVMTypeRef.Int16,
-                fixedReferences.Select(offset => LLVMValueRef.CreateConstInt(LLVMTypeRef.Int16, (ulong)offset, false)).ToArray()));
+            values.Add(LLVMValueRef.CreateConstArray(int16Type,
+                fixedReferences.Select(offset => LLVMValueRef.CreateConstInt(int16Type, (ulong)offset, false)).ToArray()));
         }
         if (elementReferences.Length != 0)
         {
-            var offsetType = LLVMTypeRef.CreateArray(LLVMTypeRef.Int16, (uint)elementReferences.Length);
+            var offsetType = LLVMTypeRef.CreateArray(int16Type, (uint)elementReferences.Length);
             fieldTypes.Add(offsetType);
-            values.Add(LLVMValueRef.CreateConstArray(LLVMTypeRef.Int16,
-                elementReferences.Select(offset => LLVMValueRef.CreateConstInt(LLVMTypeRef.Int16, (ulong)offset, false)).ToArray()));
+            values.Add(LLVMValueRef.CreateConstArray(int16Type,
+                elementReferences.Select(offset => LLVMValueRef.CreateConstInt(int16Type, (ulong)offset, false)).ToArray()));
         }
-        var descriptorType = LLVMTypeRef.CreateStruct(fieldTypes.ToArray(), false);
-        descriptor = AddInternalGlobal(descriptorType, $"__gc_desc_{gcDescriptors.Count}");
-        descriptor.Initializer = LLVMValueRef.CreateConstStruct(values.ToArray(), false);
+        var descriptorType = context.GetStructType(fieldTypes.ToArray(), false);
+        descriptor = AddInternalGlobal(descriptorType, $"__gc_desc_{GetStableSymbolSuffix(key)}");
+        descriptor.Initializer = LLVMValueRef.CreateConstNamedStruct(descriptorType, values.ToArray());
         gcDescriptors.Add(key, descriptor);
         return descriptor;
     }
@@ -486,15 +534,16 @@ sealed partial class Translator
             : definition.BaseType;
     }
 
-    bool IsRuntimeTypeCompatible(TypeDefinition runtimeType, TypeReference targetType)
+    bool IsRuntimeTypeCompatible(TypeReference runtimeType, TypeReference targetType)
     {
         var targetDefinition = targetType.Resolve();
-        if (targetDefinition is null)
+        var runtimeDefinition = runtimeType.Resolve();
+        if (targetDefinition is null || runtimeDefinition is null)
             return false;
-        if (runtimeType.IsValueType && targetDefinition.FullName is "System.Object" or "System.ValueType")
+        if (runtimeDefinition.IsValueType && targetDefinition.FullName is "System.Object" or "System.ValueType")
             return true;
         if (targetDefinition.IsInterface)
-            return ImplementsInterface(runtimeType, targetType);
+            return GetImplementedInterfaces(runtimeType).Any(interfaceType => SameType(interfaceType, targetType));
         for (TypeReference? current = runtimeType; current is not null; current = GetClosedBaseType(current))
         {
             if (SameType(current, targetType))
