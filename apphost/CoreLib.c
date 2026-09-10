@@ -1,29 +1,29 @@
 #include <stdio.h>
 #include <wchar.h>
 
-void System_Console_Write_System_ReadOnlySpan_System_Byte(const char* str)
+void System_Console_Write_System_ByReference_System_Byte(const char* str)
 {
     if (str == NULL)
         return;
     printf("%s", str);
 }
 
-void System_Console_WriteLine_System_ReadOnlySpan_System_Byte(const char* str)
+void System_Console_WriteLine_System_ByReference_System_Byte(const char* str)
 {
-    System_Console_Write_System_ReadOnlySpan_System_Byte(str);
+    System_Console_Write_System_ByReference_System_Byte(str);
     printf("\n");
 }
 
-void System_Console_Write_String(const wchar_t* str)
+void System_Console_Write_System_ByReference_System_Char(const wchar_t* str)
 {
     if (str == NULL)
         return;
     wprintf(L"%ls", str);
 }
 
-void System_Console_WriteLine_String(const wchar_t* str)
+void System_Console_WriteLine_System_ByReference_System_Char(const wchar_t* str)
 {
-    System_Console_Write_String(str);
+    System_Console_Write_System_ByReference_System_Char(str);
     wprintf(L"\n");
 }
 

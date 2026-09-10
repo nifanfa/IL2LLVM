@@ -5,7 +5,7 @@ namespace System
 {
     public class Object
     {
-        internal unsafe TypeDescriptor* m_pTypeDescriptor;
+        internal Type m_pType;
 
         public Object() { }
 
@@ -14,14 +14,7 @@ namespace System
         public static bool Equals(object left, object right) => left == null ? right == null : left.Equals(right);
         public virtual int GetHashCode() => 1;
         public virtual string ToString() => GetType().FullName;
-        public unsafe Type GetType() => Type.GetTypeFromDescriptor(m_pTypeDescriptor);
-    }
-
-    public unsafe struct TypeDescriptor
-    {
-        internal int RuntimeTypeId;
-        internal GCDesc* GCDescriptor;
-        internal Type Type;
+        public Type GetType() => m_pType;
     }
 
     public unsafe struct GCDesc
@@ -186,7 +179,39 @@ namespace System
     }
 
     public abstract class ValueType { }
-    public abstract class Enum : ValueType { }
+    public abstract class Enum : ValueType
+    {
+        internal ulong m_value;
+
+        public override string ToString()
+        {
+            Type type = GetType();
+            string[] names = type.EnumNames;
+            ulong[] values = type.EnumValues;
+            ulong value = m_value;
+            for (int index = 0; index < values.Length; index++)
+                if (values[index] == value)
+                    return names[index];
+
+            if (type.IsFlagsEnum && value != 0)
+            {
+                ulong remaining = value;
+                string result = null;
+                for (int index = values.Length - 1; index >= 0; index--)
+                {
+                    ulong candidate = values[index];
+                    if (candidate == 0 || (remaining & candidate) != candidate)
+                        continue;
+                    remaining &= ~candidate;
+                    result = result == null ? names[index] : string.Concat(names[index], ", ", result);
+                }
+                if (remaining == 0 && result != null)
+                    return result;
+            }
+
+            return type.IsSignedEnum ? Number.Format((long)value) : Number.Format(value);
+        }
+    }
     public struct Nullable<T> where T : struct
     {
         private bool _hasValue;
@@ -315,6 +340,39 @@ namespace System
         }
     }
 
+    public ref struct ByReference<T>
+    {
+        private ref T _value;
+
+        internal ByReference(ref T value)
+        {
+            _value = ref value;
+        }
+
+        public ref T Value => ref _value;
+
+        public static implicit operator ByReference<T>(T[] array)
+        {
+            if (array == null || array.Length == 0)
+                return default;
+            return new ByReference<T>(ref array[0]);
+        }
+
+        public static implicit operator ByReference<T>(Span<T> span)
+        {
+            if (span.Length == 0)
+                return default;
+            return new ByReference<T>(ref span[0]);
+        }
+
+        public static implicit operator ByReference<T>(ReadOnlySpan<T> span)
+        {
+            if (span.Length == 0)
+                return default;
+            return new ByReference<T>(ref span[0]);
+        }
+    }
+
     public ref struct Span<T>
     {
         private T[] _array;
@@ -380,7 +438,7 @@ namespace System
         public int Length => _length;
         public bool IsEmpty => _length == 0;
 
-        public ref readonly T this[int index]
+        public ref T this[int index]
         {
             get
             {
@@ -420,11 +478,20 @@ namespace System
         public String() { }
         public String(char[] value)
         {
-            _chars = value;
-            Length = value == null ? 0 : value.Length;
+            int length = value == null ? 0 : value.Length;
+            _chars = new char[length + 1];
+            for (int index = 0; index < length; index++)
+                _chars[index] = value[index];
+            Length = length;
         }
 
         public char this[int index] => _chars[index];
+        public static implicit operator ByReference<char>(string value)
+        {
+            if (value == null || value.Length == 0)
+                return default;
+            return new ByReference<char>(ref value._chars[0]);
+        }
         public override string ToString() => this;
         public override bool Equals(object other) => other is string value && Equals(this, value);
         public bool Equals(string other) => Equals(this, other);
@@ -651,6 +718,12 @@ namespace System
         public OverflowException(string message) : base(message) { }
     }
 
+    public class DivideByZeroException : Exception
+    {
+        public DivideByZeroException() : base("Attempted to divide by zero.") { }
+        public DivideByZeroException(string message) : base(message) { }
+    }
+
     public class TypeLoadException : Exception
     {
         public TypeLoadException() : base("Failure has occurred while loading a type.") { }
@@ -747,11 +820,17 @@ namespace System
     }
     public class MulticastDelegate : Delegate { }
 
-    public sealed class Type
+    public sealed unsafe class Type
     {
         public string Name;
         public string Namespace;
         public string FullName;
+        internal int RuntimeTypeId;
+        internal GCDesc* GCDescriptor;
+        internal string[] EnumNames;
+        internal ulong[] EnumValues;
+        internal bool IsFlagsEnum;
+        internal bool IsSignedEnum;
 
         internal Type(string name, string @namespace, string fullName)
         {
@@ -761,7 +840,6 @@ namespace System
         }
 
         public static Type GetTypeFromHandle(RuntimeTypeHandle handle) => handle.Type;
-        internal static unsafe Type GetTypeFromDescriptor(TypeDescriptor* descriptor) => descriptor->Type;
     }
 
     public struct RuntimeTypeHandle
@@ -820,13 +898,13 @@ namespace System
     public sealed class Console
     {
         [DllImport("*")]
-        public static extern void Write(string value);
+        public static extern void Write(ByReference<char> value);
         [DllImport("*")]
-        public static extern void WriteLine(string value);
+        public static extern void WriteLine(ByReference<char> value);
         [DllImport("*")]
-        public static extern void Write(ReadOnlySpan<byte> value);
+        public static extern void Write(ByReference<byte> value);
         [DllImport("*")]
-        public static extern void WriteLine(ReadOnlySpan<byte> value);
+        public static extern void WriteLine(ByReference<byte> value);
         [DllImport("*")]
         public static extern void WriteLine(int value);
         [DllImport("*")]
@@ -906,7 +984,7 @@ namespace System.Runtime.CompilerServices
 
     public static class RuntimeFeature
     {
-        public static bool IsDynamicCodeSupported => false;
+        public const string ByRefFields = "ByRefFields";
     }
 
     public static unsafe class RuntimeHelpers
@@ -962,10 +1040,16 @@ namespace System.Runtime.CompilerServices
         public void Start<TStateMachine>(ref TStateMachine stateMachine) where TStateMachine : IAsyncStateMachine => stateMachine.MoveNext();
         public void AwaitUnsafeOnCompleted<TAwaiter, TStateMachine>(ref TAwaiter awaiter, ref TStateMachine stateMachine)
             where TAwaiter : ICriticalNotifyCompletion where TStateMachine : IAsyncStateMachine
-            => awaiter.UnsafeOnCompleted(stateMachine.MoveNext);
+        {
+            AsyncStateMachineRunner<TStateMachine> runner = new AsyncStateMachineRunner<TStateMachine>(stateMachine);
+            awaiter.UnsafeOnCompleted(runner.MoveNext);
+        }
         public void AwaitOnCompleted<TAwaiter, TStateMachine>(ref TAwaiter awaiter, ref TStateMachine stateMachine)
             where TAwaiter : INotifyCompletion where TStateMachine : IAsyncStateMachine
-            => awaiter.OnCompleted(stateMachine.MoveNext);
+        {
+            AsyncStateMachineRunner<TStateMachine> runner = new AsyncStateMachineRunner<TStateMachine>(stateMachine);
+            awaiter.OnCompleted(runner.MoveNext);
+        }
     }
     public struct AsyncTaskMethodBuilder<TResult>
     {
@@ -978,10 +1062,28 @@ namespace System.Runtime.CompilerServices
         public void Start<TStateMachine>(ref TStateMachine stateMachine) where TStateMachine : IAsyncStateMachine => stateMachine.MoveNext();
         public void AwaitUnsafeOnCompleted<TAwaiter, TStateMachine>(ref TAwaiter awaiter, ref TStateMachine stateMachine)
             where TAwaiter : ICriticalNotifyCompletion where TStateMachine : IAsyncStateMachine
-            => awaiter.UnsafeOnCompleted(stateMachine.MoveNext);
+        {
+            AsyncStateMachineRunner<TStateMachine> runner = new AsyncStateMachineRunner<TStateMachine>(stateMachine);
+            awaiter.UnsafeOnCompleted(runner.MoveNext);
+        }
         public void AwaitOnCompleted<TAwaiter, TStateMachine>(ref TAwaiter awaiter, ref TStateMachine stateMachine)
             where TAwaiter : INotifyCompletion where TStateMachine : IAsyncStateMachine
-            => awaiter.OnCompleted(stateMachine.MoveNext);
+        {
+            AsyncStateMachineRunner<TStateMachine> runner = new AsyncStateMachineRunner<TStateMachine>(stateMachine);
+            awaiter.OnCompleted(runner.MoveNext);
+        }
+    }
+
+    internal sealed class AsyncStateMachineRunner<TStateMachine> where TStateMachine : IAsyncStateMachine
+    {
+        private TStateMachine _stateMachine;
+
+        internal AsyncStateMachineRunner(TStateMachine stateMachine)
+        {
+            _stateMachine = stateMachine;
+        }
+
+        internal void MoveNext() => _stateMachine.MoveNext();
     }
     public interface INotifyCompletion
     {
@@ -1017,7 +1119,7 @@ namespace System.Runtime
 
     internal unsafe struct GCObjectHeader
     {
-        public TypeDescriptor* TypeDescriptor;
+        public Type Type;
     }
 
     internal unsafe struct GCStaticRoot
@@ -1128,13 +1230,23 @@ namespace System.Runtime
         {
             if (value == null)
                 return;
-            GCAllocation* allocation = (GCAllocation*)((byte*)value - sizeof(GCAllocation));
+            GCAllocation* allocation = s_allocations;
+            while (allocation != null)
+            {
+                byte* start = (byte*)allocation + sizeof(GCAllocation);
+                if ((byte*)value >= start && (byte*)value < start + allocation->Size)
+                    break;
+                allocation = allocation->Next;
+            }
+            if (allocation == null)
+                return;
             if (allocation->Marked != 0)
                 return;
             allocation->Marked = 1;
-            GCDesc* descriptor = ((GCObjectHeader*)value)->TypeDescriptor->GCDescriptor;
+            byte* objectAddress = (byte*)allocation + sizeof(GCAllocation);
+            GCDesc* descriptor = ((GCObjectHeader*)objectAddress)->Type.GCDescriptor;
             if (descriptor != null)
-                ScanValue((byte*)value, descriptor);
+                ScanValue(objectAddress, descriptor);
         }
 
         private static void ScanValue(byte* value, GCDesc* descriptor)

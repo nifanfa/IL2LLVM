@@ -1,17 +1,14 @@
-sealed partial class Translator
+sealed class TypeSystem(Translator translator) : TranslationComponent(translator)
 {
-    List<(TypeReference RuntimeType, MethodReference Implementation)> GetVirtualImplementations(
+    internal new List<(TypeReference RuntimeType, MethodReference Implementation)> GetVirtualImplementations(
         MethodReference targetMethod, TypeReference contractType)
     {
         var implementations = new List<(TypeReference RuntimeType, MethodReference Implementation)>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var type in localTypes.Values.Where(candidate => !candidate.IsInterface)
+        foreach (var runtimeType in runtimeTypes.Values
+                     .Where(candidate => candidate.Resolve()?.IsInterface == false && !ContainsGenericParameter(candidate))
                      .OrderByDescending(GetTypeDepth))
         {
-            TypeReference runtimeType = type;
-            if (type.HasGenericParameters &&
-                TryCloseRuntimeType(type, contractType, out var closedType))
-                runtimeType = closedType;
             var implementation = FindMethodImplementation(runtimeType, targetMethod);
             if (implementation is null || FindLocalMethod(implementation, localMethods)?.HasBody != true ||
                 !seen.Add(GetRuntimeTypeKey(runtimeType)))
@@ -21,12 +18,12 @@ sealed partial class Translator
         return implementations;
     }
 
-    bool IsKnownRuntimeType(TypeReference type)
+    internal new bool IsKnownRuntimeType(TypeReference type)
     {
         return type.Resolve() is { } definition && localTypes.ContainsKey(definition.FullName);
     }
 
-    int GetTypeDepth(TypeDefinition type)
+    internal new int GetTypeDepth(TypeReference type)
     {
         int depth = 0;
         for (TypeReference? current = type; GetClosedBaseType(current) is not null; current = GetClosedBaseType(current)!)
@@ -34,7 +31,23 @@ sealed partial class Translator
         return depth;
     }
 
-    FieldDefinition GetDelegateField(TypeReference type, string name)
+    internal new bool ContainsGenericParameter(TypeReference type)
+    {
+        return type switch
+        {
+            GenericParameter => true,
+            GenericInstanceType generic => generic.GenericArguments.Any(ContainsGenericParameter),
+            ArrayType array => ContainsGenericParameter(array.ElementType),
+            ByReferenceType byReference => ContainsGenericParameter(byReference.ElementType),
+            PointerType pointer => ContainsGenericParameter(pointer.ElementType),
+            RequiredModifierType requiredModifier => ContainsGenericParameter(requiredModifier.ElementType),
+            OptionalModifierType optionalModifier => ContainsGenericParameter(optionalModifier.ElementType),
+            PinnedType pinned => ContainsGenericParameter(pinned.ElementType),
+            _ => type.HasGenericParameters
+        };
+    }
+
+    internal new FieldDefinition GetDelegateField(TypeReference type, string name)
     {
         var current = type.Resolve();
         while (current is not null)
@@ -47,11 +60,11 @@ sealed partial class Translator
         throw new NotSupportedException($"Delegate field is not defined: {type.FullName}.{name}");
     }
 
-    bool IsDelegateType(TypeReference type)
+    internal new bool IsDelegateType(TypeReference type)
     {
         for (var current = type.Resolve(); current is not null;)
         {
-            if (current.FullName == "System.Delegate" || current.FullName == "System.MulticastDelegate")
+            if (coreLib.IsDelegate(current))
                 return true;
             if (current.BaseType is null)
                 break;
@@ -60,7 +73,7 @@ sealed partial class Translator
         return false;
     }
 
-    LLVMTypeRef GetLLVMTypeRef(TypeReference type)
+    internal new LLVMTypeRef GetLLVMTypeRef(TypeReference type)
     {
         if (type is RequiredModifierType requiredModifier)
             return GetLLVMTypeRef(requiredModifier.ElementType);
@@ -71,6 +84,8 @@ sealed partial class Translator
         var enumUnderlyingType = GetEnumUnderlyingType(type);
         if (enumUnderlyingType is not null)
             return GetLLVMTypeRef(enumUnderlyingType);
+        if (IsByReferenceValue(type))
+            return LLVMTypeRef.CreatePointer(int8Type, 0);
         if (type is ByReferenceType byReference)
             return LLVMTypeRef.CreatePointer(GetLLVMTypeRef(byReference.ElementType), 0);
         if (type is PointerType)
@@ -82,7 +97,7 @@ sealed partial class Translator
         return GetLLVMTypeRefFromMetadataType(type.MetadataType);
     }
 
-    bool IsVoidType(TypeReference type)
+    internal new bool IsVoidType(TypeReference type)
     {
         if (type is RequiredModifierType requiredModifier)
             return IsVoidType(requiredModifier.ElementType);
@@ -91,7 +106,7 @@ sealed partial class Translator
         return type.MetadataType == MetadataType.Void;
     }
 
-    TypeReference? GetEnumUnderlyingType(TypeReference type)
+    internal new TypeReference? GetEnumUnderlyingType(TypeReference type)
     {
         var resolved = type.Resolve();
         return resolved is { IsEnum: true } definition
@@ -99,7 +114,7 @@ sealed partial class Translator
             : null;
     }
 
-    bool IsNoReturnMethod(MethodReference method, Dictionary<string, MethodDefinition> methods)
+    internal new bool IsNoReturnMethod(MethodReference method, Dictionary<string, MethodDefinition> methods)
     {
         var definition = FindLocalMethod(method, methods);
         if (definition is null || !definition.HasBody || definition.Body.Instructions.Count == 0)
@@ -108,7 +123,7 @@ sealed partial class Translator
         return last?.OpCode.Code is Code.Throw or Code.Rethrow;
     }
 
-    MethodDefinition GetRequiredConstructor(TypeDefinition type, params TypeReference[] parameterTypes)
+    internal new MethodDefinition GetRequiredConstructor(TypeDefinition type, params TypeReference[] parameterTypes)
     {
         var matches = type.Methods.Where(method => method.IsConstructor && !method.IsStatic &&
             method.Parameters.Count == parameterTypes.Length &&
@@ -119,7 +134,7 @@ sealed partial class Translator
             : throw new InvalidOperationException($"Expected one matching constructor on {type.FullName}, found {matches.Count}.");
     }
 
-    MethodDefinition GetRequiredMethod(TypeDefinition type, string name, bool hasThis,
+    internal new MethodDefinition GetRequiredMethod(TypeDefinition type, string name, bool hasThis,
         TypeReference returnType, params TypeReference[] parameterTypes)
     {
         var matches = type.Methods.Where(method => method.Name == name && method.HasThis == hasThis &&
@@ -131,7 +146,7 @@ sealed partial class Translator
             : throw new InvalidOperationException($"Expected one matching method named {name} on {type.FullName}, found {matches.Count}.");
     }
 
-    MethodDefinition? FindLocalMethod(MethodReference reference, Dictionary<string, MethodDefinition> methods)
+    internal new MethodDefinition? FindLocalMethod(MethodReference reference, Dictionary<string, MethodDefinition> methods)
     {
         if (methods.TryGetValue(reference.FullName, out var exact))
             return exact;
@@ -142,28 +157,32 @@ sealed partial class Translator
         {
             if (!SameTypeDefinition(candidate.DeclaringType, reference.DeclaringType))
                 return false;
-            var bound = reference.DeclaringType is GenericInstanceType
+            var bound = reference.DeclaringType is GenericInstanceType || reference is GenericInstanceMethod
                 ? BindMethodToDeclaringType(candidate, reference.DeclaringType, reference)
                 : candidate;
             return SameMethodSignature(bound, reference);
         });
     }
 
-    MethodReference SpecializeMethodReference(MethodReference reference, MethodReference context)
+    internal new MethodReference SpecializeMethodReference(MethodReference reference, MethodReference context)
     {
         var elementMethod = reference is GenericInstanceMethod genericReference
             ? genericReference.ElementMethod
             : reference;
         var declaringType = ResolveGenericType(elementMethod.DeclaringType, context);
+        TypeReference ResolveSignatureType(TypeReference type)
+        {
+            return ResolveGenericType(ResolveGenericType(type, reference), context);
+        }
         var specialized = new MethodReference(elementMethod.Name,
-            ResolveGenericType(elementMethod.ReturnType, context), declaringType)
+            ResolveSignatureType(elementMethod.ReturnType), declaringType)
         {
             HasThis = elementMethod.HasThis,
             ExplicitThis = elementMethod.ExplicitThis,
             CallingConvention = elementMethod.CallingConvention
         };
         foreach (var parameter in elementMethod.Parameters)
-            specialized.Parameters.Add(new ParameterDefinition(ResolveGenericType(parameter.ParameterType, context)));
+            specialized.Parameters.Add(new ParameterDefinition(ResolveSignatureType(parameter.ParameterType)));
         foreach (var parameter in elementMethod.GenericParameters)
             specialized.GenericParameters.Add(new GenericParameter(parameter.Name, specialized));
         if (reference is not GenericInstanceMethod genericMethod)
@@ -174,7 +193,7 @@ sealed partial class Translator
         return genericInstance;
     }
 
-    TypeReference SubstituteGenericParameter(TypeReference type, MethodReference method)
+    internal new TypeReference SubstituteGenericParameter(TypeReference type, MethodReference method)
     {
         if (type is not GenericParameter parameter)
             return ResolveGenericType(type, method);
@@ -185,7 +204,7 @@ sealed partial class Translator
         return type;
     }
 
-    TypeReference? GetMethodVariableType(MethodReference method, int index)
+    internal new TypeReference? GetMethodVariableType(MethodReference method, int index)
     {
         var definition = method.Resolve();
         if (definition?.HasBody != true || index < 0 || index >= definition.Body.Variables.Count)
@@ -193,33 +212,33 @@ sealed partial class Translator
         return SubstituteGenericParameter(definition.Body.Variables[index].VariableType, method);
     }
 
-    FieldDefinition GetObjectTypeDescriptorField()
+    internal new FieldDefinition GetObjectTypeField()
     {
-        return localTypes["System.Object"].Fields.First(field => field.Name == "m_pTypeDescriptor");
+        return coreLib.ObjectTypeField;
     }
 
-    FieldDefinition GetTypeDescriptorRuntimeTypeIdField()
+    internal new FieldDefinition GetTypeRuntimeTypeIdField()
     {
-        return localTypes["System.TypeDescriptor"].Fields.First(field => field.Name == "RuntimeTypeId");
+        return coreLib.TypeRuntimeTypeIdField;
     }
 
-    FieldDefinition GetTypeDescriptorGCDescriptorField()
+    internal new FieldDefinition GetTypeGCDescriptorField()
     {
-        return localTypes["System.TypeDescriptor"].Fields.First(field => field.Name == "GCDescriptor");
+        return coreLib.TypeGCDescriptorField;
     }
 
-    FieldDefinition GetTypeDescriptorTypeField()
+    internal new FieldDefinition GetEnumValueField()
     {
-        return localTypes["System.TypeDescriptor"].Fields.First(field => field.Name == "Type");
+        return coreLib.EnumValueField;
     }
 
-    int GetObjectHeaderSize()
+    internal new int GetObjectHeaderSize()
     {
-        return localTypes["System.Object"].Fields.Where(field => !field.IsStatic)
+        return coreLib.Object.Fields.Where(field => !field.IsStatic)
             .Max(field => GetFieldOffset(field) + GetTypeSize(field.FieldType));
     }
 
-    FieldDefinition GetLocalField(FieldReference field)
+    internal new FieldDefinition GetLocalField(FieldReference field)
     {
         var resolvedField = field.Resolve();
         if (resolvedField is not null && localTypes.ContainsKey(resolvedField.DeclaringType.FullName))
@@ -240,7 +259,7 @@ sealed partial class Translator
         throw new NotSupportedException($"Field is not defined in the input module: {field.FullName}");
     }
 
-    TypeReference SubstituteFieldType(FieldReference field, MethodReference? context = null)
+    internal new TypeReference SubstituteFieldType(FieldReference field, MethodReference? context = null)
     {
         var resolved = field.Resolve();
         var declaringType = field.DeclaringType as GenericInstanceType;
@@ -266,16 +285,15 @@ sealed partial class Translator
         return context is null ? fieldType : SubstituteGenericParameter(fieldType, context);
     }
 
-    TypeReference ResolveGenericType(TypeReference type, MethodReference context)
+    internal new TypeReference ResolveGenericType(TypeReference type, MethodReference context)
     {
         if (type is GenericParameter parameter)
         {
-            if (parameter.Type == GenericParameterType.Type && parameter.Owner is TypeReference parameterType &&
+            if (parameter.Type == GenericParameterType.Type &&
                 context.DeclaringType is GenericInstanceType declaring &&
-                SameTypeDefinition(parameterType, declaring.ElementType) && parameter.Position < declaring.GenericArguments.Count)
+                parameter.Position < declaring.GenericArguments.Count)
                 return declaring.GenericArguments[parameter.Position];
-            if (parameter.Type == GenericParameterType.Method && parameter.Owner is MethodReference parameterMethod &&
-                context is GenericInstanceMethod method && SameMethodDefinition(parameterMethod, method.ElementMethod) &&
+            if (parameter.Type == GenericParameterType.Method && context is GenericInstanceMethod method &&
                 parameter.Position < method.GenericArguments.Count)
                 return method.GenericArguments[parameter.Position];
         }
@@ -301,7 +319,7 @@ sealed partial class Translator
         return type;
     }
 
-    TypeReference SubstituteGenericTypeArguments(TypeReference type, GenericInstanceType declaringType)
+    internal new TypeReference SubstituteGenericTypeArguments(TypeReference type, GenericInstanceType declaringType)
     {
         if (type is GenericParameter parameter && parameter.Type == GenericParameterType.Type &&
             parameter.Position < declaringType.GenericArguments.Count)
@@ -322,12 +340,12 @@ sealed partial class Translator
         return type;
     }
 
-    int GetFieldOffset(FieldDefinition field)
+    internal new int GetFieldOffset(FieldDefinition field)
     {
         return GetFieldOffsetForType(field, field.DeclaringType);
     }
 
-    int GetFieldOffsetForType(FieldDefinition field, TypeReference declaringType)
+    internal new int GetFieldOffsetForType(FieldDefinition field, TypeReference declaringType)
     {
         var definition = declaringType.Resolve() ?? field.DeclaringType;
         var baseType = GetClosedBaseType(declaringType);
@@ -348,7 +366,7 @@ sealed partial class Translator
         return AlignUp(offset, GetTypeAlignment(fieldType));
     }
 
-    int GetBaseTypeSize(TypeReference? type)
+    internal new int GetBaseTypeSize(TypeReference? type)
     {
         if (type is null)
             return 0;
@@ -360,7 +378,7 @@ sealed partial class Translator
             : GetMetadataTypeSize(type.MetadataType);
     }
 
-    int GetObjectSize(TypeReference type)
+    internal new int GetObjectSize(TypeReference type)
     {
         var definition = type.Resolve();
         if (definition is null || definition.IsInterface || IsValueType(type))
@@ -378,12 +396,12 @@ sealed partial class Translator
             offset += GetTypeSize(fieldType);
             alignment = Math.Max(alignment, GetTypeAlignment(fieldType));
         }
-        if (SameTypeDefinition(definition, GetObjectTypeDescriptorField().DeclaringType))
+        if (SameTypeDefinition(definition, GetObjectTypeField().DeclaringType))
             offset = Math.Max(offset, GetObjectHeaderSize());
         return Math.Max(AlignUp(offset, alignment), definition.ClassSize);
     }
 
-    int GetTypeSize(TypeReference type)
+    internal new int GetTypeSize(TypeReference type)
     {
         if (type is RequiredModifierType requiredModifier)
             return GetTypeSize(requiredModifier.ElementType);
@@ -391,6 +409,8 @@ sealed partial class Translator
             return GetTypeSize(optionalModifier.ElementType);
         if (type is PinnedType pinned)
             return GetTypeSize(pinned.ElementType);
+        if (IsByReferenceValue(type))
+            return pointerSize;
         if (type is GenericInstanceType genericInstance && localTypes.TryGetValue(genericInstance.ElementType.FullName, out var genericDefinition))
         {
             if (!IsValueType(genericDefinition))
@@ -423,7 +443,7 @@ sealed partial class Translator
         return GetMetadataTypeSize(type.MetadataType);
     }
 
-    int GetTypeDefinitionSize(TypeDefinition type)
+    internal new int GetTypeDefinitionSize(TypeDefinition type)
     {
         var offset = IsValueType(type) || type.BaseType is null ? 0 : GetBaseTypeSize(type.BaseType);
         var alignment = GetTypeDefinitionAlignment(type);
@@ -434,12 +454,12 @@ sealed partial class Translator
             offset += GetTypeSize(field.FieldType);
             alignment = Math.Max(alignment, fieldAlignment);
         }
-        if (SameTypeDefinition(type, GetObjectTypeDescriptorField().DeclaringType))
+        if (SameTypeDefinition(type, GetObjectTypeField().DeclaringType))
             offset = Math.Max(offset, GetObjectHeaderSize());
         return Math.Max(AlignUp(offset, alignment), type.ClassSize);
     }
 
-    int GetTypeDefinitionAlignment(TypeDefinition type)
+    internal new int GetTypeDefinitionAlignment(TypeDefinition type)
     {
         var alignment = IsValueType(type) || type.BaseType is null ? 1 : GetTypeAlignment(type.BaseType);
         foreach (var field in type.Fields.Where(field => !field.IsStatic))
@@ -447,9 +467,9 @@ sealed partial class Translator
         return alignment;
     }
 
-    bool IsValueType(TypeReference type)
+    internal new bool IsValueType(TypeReference type)
     {
-        if (type.FullName is "System.ValueType" or "System.Enum")
+        if (coreLib.IsValueType(type) || coreLib.IsEnum(type))
             return false;
         if (type.Resolve()?.IsEnum == true)
             return false;
@@ -464,7 +484,15 @@ sealed partial class Translator
             localTypes.TryGetValue(type.FullName, out var definition) && definition.IsValueType;
     }
 
-    bool IsManagedReferenceType(TypeReference type)
+    internal new bool IsByReferenceValue(TypeReference type)
+    {
+        var definition = type.Resolve();
+        if (definition?.IsValueType != true)
+            return false;
+        return definition.Fields.Any(field => !field.IsStatic && field.FieldType is ByReferenceType);
+    }
+
+    internal new bool IsManagedReferenceType(TypeReference type)
     {
         if (type is RequiredModifierType requiredModifier)
             return IsManagedReferenceType(requiredModifier.ElementType);
@@ -472,7 +500,7 @@ sealed partial class Translator
             return IsManagedReferenceType(optionalModifier.ElementType);
         if (type is PinnedType pinned)
             return IsManagedReferenceType(pinned.ElementType);
-        if (type.FullName is "System.IntPtr" or "System.UIntPtr")
+        if (coreLib.IsNativeInteger(type))
             return false;
         if (type is ArrayType || type.MetadataType is MetadataType.Object or MetadataType.Class or MetadataType.String or MetadataType.Array)
             return true;
@@ -482,7 +510,7 @@ sealed partial class Translator
         return type.Resolve() is { IsValueType: false };
     }
 
-    int GetTypeAlignment(TypeReference type)
+    internal new int GetTypeAlignment(TypeReference type)
     {
         if (type is RequiredModifierType requiredModifier)
             return GetTypeAlignment(requiredModifier.ElementType);
@@ -490,6 +518,8 @@ sealed partial class Translator
             return GetTypeAlignment(optionalModifier.ElementType);
         if (type is PinnedType pinned)
             return GetTypeAlignment(pinned.ElementType);
+        if (IsByReferenceValue(type))
+            return pointerSize;
         var enumUnderlyingType = GetEnumUnderlyingType(type);
         if (enumUnderlyingType is not null)
             return GetTypeAlignment(enumUnderlyingType);
@@ -506,12 +536,12 @@ sealed partial class Translator
         return (int)machine.CreateTargetDataLayout().ABIAlignmentOfType(GetLLVMTypeRefFromMetadataType(type.MetadataType));
     }
 
-    int AlignUp(int value, int alignment)
+    internal new int AlignUp(int value, int alignment)
     {
         return alignment <= 1 ? value : checked((value + alignment - 1) / alignment * alignment);
     }
 
-    ulong GetLLVMTypeSize(LLVMTypeRef type)
+    internal new ulong GetLLVMTypeSize(LLVMTypeRef type)
     {
         return (ulong)machine.CreateTargetDataLayout().ABISizeOfType(type);
     }

@@ -1,6 +1,6 @@
-sealed partial class Translator
+sealed class Methods(Translator translator) : TranslationComponent(translator)
 {
-    MethodReference ResolveCallTarget(MethodReference targetMethod)
+    internal new MethodReference ResolveCallTarget(MethodReference targetMethod)
     {
         var declaringType = targetMethod.DeclaringType.Resolve();
         if (declaringType is null || !declaringType.IsInterface)
@@ -19,7 +19,7 @@ sealed partial class Translator
         return targetMethod;
     }
 
-    MethodReference ResolveVirtualTarget(MethodReference targetMethod, TypeReference receiverType)
+    internal new MethodReference ResolveVirtualTarget(MethodReference targetMethod, TypeReference receiverType)
     {
         if (receiverType is ByReferenceType byReference)
             receiverType = byReference.ElementType;
@@ -32,12 +32,12 @@ sealed partial class Translator
             : ResolveCallTarget(targetMethod);
     }
 
-    bool ImplementsInterface(TypeDefinition type, TypeReference interfaceType)
+    internal new bool ImplementsInterface(TypeDefinition type, TypeReference interfaceType)
     {
         return TryCloseRuntimeType(type, interfaceType, out _);
     }
 
-    bool TryCloseRuntimeType(TypeDefinition type, TypeReference contractType, out TypeReference runtimeType)
+    internal new bool TryCloseRuntimeType(TypeDefinition type, TypeReference contractType, out TypeReference runtimeType)
     {
         runtimeType = type;
         if (contractType.Resolve()?.IsInterface != true)
@@ -62,7 +62,7 @@ sealed partial class Translator
         return false;
     }
 
-    IEnumerable<TypeReference> GetImplementedInterfaces(TypeReference type)
+    internal new IEnumerable<TypeReference> GetImplementedInterfaces(TypeReference type)
     {
         var seen = new HashSet<string>(StringComparer.Ordinal);
         return Visit(type);
@@ -92,7 +92,7 @@ sealed partial class Translator
         }
     }
 
-    bool TryBindTypePattern(TypeReference pattern, TypeReference actual, TypeDefinition owner,
+    internal new bool TryBindTypePattern(TypeReference pattern, TypeReference actual, TypeDefinition owner,
         Dictionary<int, TypeReference> bindings)
     {
         if (pattern is GenericParameter parameter && parameter.Type == GenericParameterType.Type &&
@@ -123,7 +123,7 @@ sealed partial class Translator
         return SameType(pattern, actual);
     }
 
-    bool SameType(TypeReference left, TypeReference right)
+    internal new bool SameType(TypeReference left, TypeReference right)
     {
         if (ReferenceEquals(left, right))
             return true;
@@ -166,7 +166,7 @@ sealed partial class Translator
         return SameTypeDefinition(left, right);
     }
 
-    bool IsOpenSelfInstantiation(GenericInstanceType type)
+    internal new bool IsOpenSelfInstantiation(GenericInstanceType type)
     {
         var definition = type.ElementType.Resolve();
         if (definition is null || definition.GenericParameters.Count != type.GenericArguments.Count)
@@ -179,7 +179,7 @@ sealed partial class Translator
         return true;
     }
 
-    bool SameTypeDefinition(TypeReference left, TypeReference right)
+    internal new bool SameTypeDefinition(TypeReference left, TypeReference right)
     {
         if (localTypes.TryGetValue(left.FullName, out var leftLocal) &&
             localTypes.TryGetValue(right.FullName, out var rightLocal))
@@ -192,19 +192,34 @@ sealed partial class Translator
         return left.Namespace == right.Namespace && left.Name == right.Name && left.Scope?.Name == right.Scope?.Name;
     }
 
-    bool SameMethodDefinition(MethodReference left, MethodReference right)
+    internal new bool SameMethodDefinition(MethodReference left, MethodReference right)
     {
-        if (SameTypeDefinition(left.DeclaringType, right.DeclaringType) &&
-            localTypes.ContainsKey(left.DeclaringType.FullName) && SameMethodDeclarationSignature(left, right))
-            return true;
-        var leftDefinition = left.Resolve();
-        var rightDefinition = right.Resolve();
+        var leftDefinition = FindMethodDefinition(left);
+        var rightDefinition = FindMethodDefinition(right);
         return leftDefinition is not null && rightDefinition is not null &&
             leftDefinition.MetadataToken == rightDefinition.MetadataToken &&
             leftDefinition.Module.Mvid == rightDefinition.Module.Mvid;
     }
 
-    bool SameMethodDeclarationSignature(MethodReference left, MethodReference right)
+    internal new MethodDefinition? FindMethodDefinition(MethodReference method)
+    {
+        var resolved = method.Resolve();
+        if (resolved is not null)
+            return resolved;
+        var declaringType = method.DeclaringType.Resolve();
+        if (declaringType is null)
+            return null;
+        return declaringType.Methods.FirstOrDefault(candidate =>
+        {
+            if (candidate.Name != method.Name || candidate.HasThis != method.HasThis ||
+                candidate.Parameters.Count != method.Parameters.Count ||
+                GetGenericMethodArity(candidate) != GetGenericMethodArity(method))
+                return false;
+            return SameMethodSignature(BindMethodToDeclaringType(candidate, method.DeclaringType, method), method);
+        });
+    }
+
+    internal new bool SameMethodDeclarationSignature(MethodReference left, MethodReference right)
     {
         if (left.Name != right.Name || left.HasThis != right.HasThis ||
             left.Parameters.Count != right.Parameters.Count || GetGenericMethodArity(left) != GetGenericMethodArity(right) ||
@@ -216,7 +231,7 @@ sealed partial class Translator
         return true;
     }
 
-    bool SameMethodSignature(MethodReference left, MethodReference right)
+    internal new bool SameMethodSignature(MethodReference left, MethodReference right)
     {
         if (left.Name != right.Name || left.Parameters.Count != right.Parameters.Count ||
             GetGenericMethodArity(left) != GetGenericMethodArity(right))
@@ -229,7 +244,7 @@ sealed partial class Translator
             SubstituteGenericParameter(right.ReturnType, right));
     }
 
-    bool SameMethodInstantiation(MethodReference left, MethodReference right)
+    internal new bool SameMethodInstantiation(MethodReference left, MethodReference right)
     {
         if (!SameMethodDefinition(left, right) && !SameMethodSignature(left, right))
             return false;
@@ -245,19 +260,19 @@ sealed partial class Translator
             leftArguments.Zip(rightArguments).All(pair => SameType(pair.First, pair.Second));
     }
 
-    Tuple<LLVMValueRef, LLVMTypeRef, MethodReference, Collection<Instruction>?>? GetRegisteredMethod(MethodReference method)
+    internal new Tuple<LLVMValueRef, LLVMTypeRef, MethodReference, Collection<Instruction>?>? GetRegisteredMethod(MethodReference method)
     {
         return moduleMethods.Values.FirstOrDefault(candidate => SameMethodInstantiation(candidate.Item3, method));
     }
 
-    int GetGenericMethodArity(MethodReference method)
+    internal new int GetGenericMethodArity(MethodReference method)
     {
         return method is GenericInstanceMethod genericMethod
             ? genericMethod.GenericArguments.Count
             : method.GenericParameters.Count;
     }
 
-    MethodReference BindMethodToDeclaringType(MethodDefinition method, TypeReference declaringType,
+    internal new MethodReference BindMethodToDeclaringType(MethodDefinition method, TypeReference declaringType,
         MethodReference? requestedMethod = null)
     {
         var reference = new MethodReference(method.Name,
@@ -286,8 +301,9 @@ sealed partial class Translator
         return reference;
     }
 
-    MethodReference? FindMethodImplementation(TypeReference type, MethodReference targetMethod)
+    internal new MethodReference? FindMethodImplementation(TypeReference type, MethodReference targetMethod)
     {
+        var contractIsInterface = targetMethod.DeclaringType.Resolve()?.IsInterface == true;
         var currentType = type;
         if (type is TypeDefinition typeDefinition && typeDefinition.HasGenericParameters &&
             TryCloseRuntimeType(typeDefinition, targetMethod.DeclaringType, out var closedType))
@@ -304,7 +320,8 @@ sealed partial class Translator
             foreach (var method in current.Methods.Where(method => !method.IsStatic && method.Name == targetMethod.Name))
             {
                 var implementation = BindMethodToDeclaringType(method, currentType, targetMethod);
-                if (SameMethodSignature(implementation, targetMethod))
+                if (SameMethodSignature(implementation, targetMethod) &&
+                    (contractIsInterface || SameMethodDefinition(method, targetMethod) || method.IsVirtual && !method.IsNewSlot))
                     return implementation;
             }
 
@@ -317,12 +334,13 @@ sealed partial class Translator
         return null;
     }
 
-    bool UsesValueReturnBuffer(MethodReference method)
+    internal new bool UsesValueReturnBuffer(MethodReference method)
     {
-        return !IsExternalMethod(method) && IsValueType(SubstituteGenericParameter(method.ReturnType, method));
+        var returnType = SubstituteGenericParameter(method.ReturnType, method);
+        return !IsExternalMethod(method) && IsValueType(returnType) && !IsByReferenceValue(returnType);
     }
 
-    LLVMTypeRef CreateLLVMFunction(LLVMModuleRef module, MethodReference method)
+    internal new LLVMTypeRef CreateLLVMFunction(LLVMModuleRef module, MethodReference method)
     {
         List<LLVMTypeRef> paramTypes = new List<LLVMTypeRef>();
         if (UsesValueReturnBuffer(method))
@@ -343,7 +361,7 @@ sealed partial class Translator
         return func;
     }
 
-    string GetFriendlyMethodName(MethodReference method, TypeReference? methodDeclareType = null)
+    internal new string GetFriendlyMethodName(MethodReference method, TypeReference? methodDeclareType = null)
     {
         TypeReference declareType = methodDeclareType ?? method.DeclaringType;
         List<string> names = [GetFriendlyTypeName(declareType), SanitizeSymbolPart(method.Name)];
@@ -356,7 +374,7 @@ sealed partial class Translator
         return string.Join("_", names);
     }
 
-    string GetFriendlyTypeName(TypeReference type, bool includeGenericMarker = true)
+    internal new string GetFriendlyTypeName(TypeReference type, bool includeGenericMarker = true)
     {
         if (type is RequiredModifierType requiredModifier)
             return GetFriendlyTypeName(requiredModifier.ElementType, includeGenericMarker);
@@ -380,7 +398,7 @@ sealed partial class Translator
         return SanitizeSymbolPart(name);
     }
 
-    static string RemoveGenericArity(string value)
+    internal new static string RemoveGenericArity(string value)
     {
         var result = new System.Text.StringBuilder(value.Length);
         for (int index = 0; index < value.Length; index++)
@@ -396,7 +414,7 @@ sealed partial class Translator
         return result.ToString();
     }
 
-    string GetFriendlyParameterTypeName(TypeReference type)
+    internal new string GetFriendlyParameterTypeName(TypeReference type)
     {
         if (type is RequiredModifierType requiredModifier)
             return GetFriendlyParameterTypeName(requiredModifier.ElementType);
@@ -410,14 +428,14 @@ sealed partial class Translator
             : type.MetadataType.ToString();
     }
 
-    string SanitizeSymbolPart(string value)
+    internal new string SanitizeSymbolPart(string value)
     {
         return new string(value.Select(character => char.IsLetterOrDigit(character) || character == '_'
             ? character
             : '_').ToArray());
     }
 
-    string GetStableSymbolSuffix(string value)
+    internal new string GetStableSymbolSuffix(string value)
     {
         uint hash = 2166136261;
         foreach (var character in value)
@@ -428,7 +446,7 @@ sealed partial class Translator
         return $"{SanitizeSymbolPart(RemoveGenericArity(value))}_{hash:X8}";
     }
 
-    Tuple<LLVMValueRef, LLVMTypeRef> GetStaticField(FieldReference field, MethodReference? context = null)
+    internal new Tuple<LLVMValueRef, LLVMTypeRef> GetStaticField(FieldReference field, MethodReference? context = null)
     {
         var declaringType = context is null ? field.DeclaringType : ResolveGenericType(field.DeclaringType, context);
         var fieldName = $"{GetFriendlyTypeName(declaringType)}_{SanitizeSymbolPart(field.Name)}";
@@ -454,7 +472,7 @@ sealed partial class Translator
         return result;
     }
 
-    LLVMValueRef GetRuntimeFieldHandle(LLVMBuilderRef builder, LLVMBuilderRef allocationBuilder, FieldReference field)
+    internal new LLVMValueRef GetRuntimeFieldHandle(LLVMBuilderRef builder, LLVMBuilderRef allocationBuilder, FieldReference field)
     {
         var definition = GetLocalField(field);
         var key = definition.FullName;
@@ -470,18 +488,18 @@ sealed partial class Translator
             runtimeFieldData.Add(key, data);
         }
 
-        var handleType = localTypes["System.RuntimeFieldHandle"];
+        var handleType = coreLib.RuntimeFieldHandle;
         var storage = CreateLocalStorage(allocationBuilder, handleType);
         var handle = builder.BuildLoad2(storage.Item2, storage.Item1);
         var dataPointer = builder.BuildGEP2(dataType, data,
             [LLVMValueRef.CreateConstInt(sizeType, 0, false), LLVMValueRef.CreateConstInt(sizeType, 0, false)]);
-        StoreField(builder, handle, handleType.Fields.First(candidate => candidate.Name == "Data"), dataPointer);
-        StoreField(builder, handle, handleType.Fields.First(candidate => candidate.Name == "Length"),
+        StoreField(builder, handle, coreLib.RuntimeFieldDataField, dataPointer);
+        StoreField(builder, handle, coreLib.RuntimeFieldLengthField,
             LLVMValueRef.CreateConstInt(int32Type, (ulong)(definition.InitialValue?.Length ?? 0), false));
         return handle;
     }
 
-    void RegisterMethodFunction(LLVMModuleRef module, MethodReference method, Collection<Instruction>? instructions,
+    internal new void RegisterMethodFunction(LLVMModuleRef module, MethodReference method, Collection<Instruction>? instructions,
         string? symbolName = null)
     {
         if (method.DeclaringType is ArrayType array && array.Rank > 1 &&
@@ -519,14 +537,14 @@ sealed partial class Translator
         moduleMethods.Add(friendlyName, new(funcValue, funcType, method, instructions));
     }
 
-    LLVMValueRef AddInternalGlobal(LLVMTypeRef type, string name)
+    internal new LLVMValueRef AddInternalGlobal(LLVMTypeRef type, string name)
     {
         var value = module.AddGlobal(type, name);
         value.Linkage = LLVMLinkage.LLVMInternalLinkage;
         return value;
     }
 
-    unsafe LLVMTypeRef GetFunctionType(LLVMValueRef function)
+    internal new unsafe LLVMTypeRef GetFunctionType(LLVMValueRef function)
     {
         return new LLVMTypeRef((IntPtr)LLVM.GlobalGetValueType((LLVMOpaqueValue*)function.Handle));
     }

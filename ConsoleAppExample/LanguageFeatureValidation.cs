@@ -12,6 +12,7 @@ public static partial class LanguageFeatureValidation
     private static volatile int s_filterMode;
     private static volatile int s_expectedSum;
     private static volatile int s_runtimeBias = 1;
+    private static int s_instructionStatic;
     private static readonly bool s_boolean = true;
     private static readonly char s_character = 'L';
     private static readonly sbyte s_sbyte = -1;
@@ -37,6 +38,12 @@ public static partial class LanguageFeatureValidation
         Read = 1,
         Write = 2,
         Execute = 4,
+    }
+
+    private enum SignedFeatureKind : int
+    {
+        Negative = -1,
+        Positive = 2,
     }
 
     private interface IFeatureValue
@@ -170,6 +177,13 @@ public static partial class LanguageFeatureValidation
         public override int Evaluate() => base.Evaluate() + 1;
 
         public void RaiseChanged() => Changed?.Invoke();
+    }
+
+    private sealed class HiddenFeature : FeatureBase
+    {
+        public HiddenFeature(int seed) : base(seed) { }
+
+        public new int Evaluate() => 100;
     }
 
     private class HierarchyRoot
@@ -321,6 +335,8 @@ public static partial class LanguageFeatureValidation
         VerifyTypes(values, list);
         VerifyEnums();
         VerifyNumericOperators();
+        VerifyInstructionCoverage(values);
+        VerifyConversionsAndUnsignedArithmetic();
         VerifyStrings();
         VerifyObjectAndGenericFeatures(values);
         VerifyInheritanceAndInterfaces();
@@ -365,7 +381,10 @@ public static partial class LanguageFeatureValidation
         Type stringType = typeof(string);
         Type localType = typeof(FeatureObject);
         Type validationType = typeof(LanguageFeatureValidation);
-        if (intType == null || stringType == null || localType == null || validationType == null)
+        Type genericType = typeof(GenericContainer<int>);
+        Type genericValueType = typeof(GenericPair<int, FeatureValue>);
+        if (intType == null || stringType == null || localType == null || validationType == null ||
+            genericType == null || genericValueType == null)
             Fail("typeof");
 
         if (validationType.Name != nameof(LanguageFeatureValidation) ||
@@ -440,6 +459,25 @@ public static partial class LanguageFeatureValidation
             fromValue != (FeatureFlags.Read | FeatureFlags.Write) ||
             selected != RuntimeValue(5))
             Fail("enum flags");
+
+        if (FeatureKind.Value.ToString() != "Value")
+            Fail("named enum ToString");
+        if (((FeatureKind)RuntimeValue(7)).ToString() != "7")
+            Fail("unnamed enum ToString");
+        if (FeatureFlags.Read.ToString() != "Read")
+            Fail("single flag ToString");
+        if (configured.ToString() != "Read, Execute")
+            Fail("combined flags ToString");
+        if (FeatureFlags.None.ToString() != "None")
+            Fail("zero flag ToString");
+        if (((FeatureFlags)RuntimeValue(8)).ToString() != "8")
+            Fail("unknown flag ToString");
+        if (SignedFeatureKind.Negative.ToString() != "Negative")
+            Fail("negative named enum ToString");
+        if (((SignedFeatureKind)(-RuntimeValue(3))).ToString() != "-3")
+            Fail("negative unnamed enum ToString");
+        if (SignedFeatureKind.Positive.ToString() != "Positive")
+            Fail("signed named enum ToString");
     }
 
     private static void VerifyNumericOperators()
@@ -493,6 +531,207 @@ public static partial class LanguageFeatureValidation
         if (skippedAnd || !skippedOr || !evaluated || s_volatileValue != RuntimeValue(1))
             Fail("short circuit boolean operators");
     }
+
+    private static void VerifyInstructionCoverage(int[] values)
+    {
+        s_instructionStatic = RuntimeValue(2);
+        s_instructionStatic += RuntimeValue(3);
+        ref int staticReference = ref s_instructionStatic;
+        staticReference++;
+
+        byte[] bytes = new byte[1];
+        sbyte[] signedBytes = new sbyte[1];
+        short[] shorts = new short[1];
+        ushort[] unsignedShorts = new ushort[1];
+        int[] integers = new int[1];
+        uint[] unsignedIntegers = new uint[1];
+        long[] longs = new long[1];
+        ulong[] unsignedLongs = new ulong[1];
+        float[] singles = new float[1];
+        double[] doubles = new double[1];
+        bool[] booleans = new bool[1];
+        char[] characters = new char[1];
+        object[] references = new object[1];
+        nint[] nativeIntegers = new nint[1];
+
+        bytes[0] = 1;
+        signedBytes[0] = -2;
+        shorts[0] = -3;
+        unsignedShorts[0] = 4;
+        integers[0] = 5;
+        unsignedIntegers[0] = 6;
+        longs[0] = 7;
+        unsignedLongs[0] = 8;
+        singles[0] = 9.0f;
+        doubles[0] = 10.0;
+        booleans[0] = true;
+        characters[0] = 'A';
+        references[0] = new FeatureObject(RuntimeValue(11));
+        nativeIntegers[0] = RuntimeValue(12);
+
+        FeatureObject feature = (FeatureObject)references[0];
+        FeatureBase baseFeature = feature;
+        HiddenFeature hidden = new HiddenFeature(RuntimeValue(12));
+        FeatureBase hiddenAsBase = hidden;
+        Func<int> virtualMethod = baseFeature.Evaluate;
+        Func<int> hiddenMethod = hidden.Evaluate;
+        IHierarchyFeature interfaceFeature = new AlternateHierarchyFeature(RuntimeValue(13));
+        Func<int> interfaceMethod = interfaceFeature.EvaluateHierarchy;
+
+        int switched = SelectInstruction(RuntimeValue(3));
+        int mutated = MutateArgument(RuntimeValue(2));
+        int local = RuntimeValue(4);
+        local = local + RuntimeValue(5);
+        ref int localReference = ref integers[0];
+        localReference = RuntimeValue(14);
+
+        Coordinate[] coordinates = new Coordinate[] { new Coordinate(RuntimeValue(1), RuntimeValue(2)) };
+        Coordinate coordinate = ReadArrayElement(coordinates, RuntimeValue(0));
+        WriteArrayElement(coordinates, RuntimeValue(0), new Coordinate(RuntimeValue(3), RuntimeValue(4)));
+
+        if (s_instructionStatic != RuntimeValue(6))
+            Fail("static field instructions");
+
+        if (bytes[0] != 1 || signedBytes[0] != -2 || shorts[0] != -3 ||
+            unsignedShorts[0] != 4 || integers[0] != RuntimeValue(14) ||
+            unsignedIntegers[0] != 6 || longs[0] != 7 || unsignedLongs[0] != 8 ||
+            singles[0] != 9.0f || doubles[0] != 10.0 || !booleans[0] ||
+            characters[0] != 'A' || feature.Value != RuntimeValue(12))
+            Fail("array element instructions");
+
+        if (nativeIntegers[0] != RuntimeValue(12) || coordinate.Sum() != RuntimeValue(3) ||
+            coordinates[0].Sum() != RuntimeValue(7))
+            Fail("native or generic array elements");
+
+        if (baseFeature.Evaluate() != RuntimeValue(12))
+            Fail("override dispatch");
+        if (hidden.Evaluate() != RuntimeValue(100))
+            Fail("hidden method direct call");
+        if (hiddenAsBase.Evaluate() != RuntimeValue(12))
+            Fail("hidden method base dispatch");
+        if (virtualMethod() != RuntimeValue(12))
+            Fail("virtual method delegate");
+        if (hiddenMethod() != RuntimeValue(100))
+            Fail("hidden method delegate");
+        if (interfaceMethod() != RuntimeValue(26))
+            Fail("interface method delegate");
+
+        if (switched != RuntimeValue(8) || mutated != RuntimeValue(6) ||
+            local != RuntimeValue(9) || values[0] != RuntimeValue(1))
+            Fail("argument, local, or switch instructions");
+    }
+
+    private static void VerifyConversionsAndUnsignedArithmetic()
+    {
+        uint unsignedLeft = (uint)RuntimeValue(100);
+        uint unsignedRight = (uint)RuntimeValue(9);
+        ulong wideUnsignedLeft = (ulong)RuntimeValue(1000);
+        ulong wideUnsignedRight = (ulong)RuntimeValue(64);
+
+        int signedAdd = checked(RuntimeValue(20) + RuntimeValue(3));
+        int signedSubtract = checked(RuntimeValue(20) - RuntimeValue(3));
+        int signedMultiply = checked(RuntimeValue(20) * RuntimeValue(3));
+        uint unsignedAdd = checked(unsignedLeft + unsignedRight);
+        uint unsignedSubtract = checked(unsignedLeft - unsignedRight);
+        uint unsignedMultiply = checked(unsignedRight * (uint)RuntimeValue(3));
+
+        long signedSource = RuntimeValue(120);
+        ulong unsignedSource = (ulong)RuntimeValue(120);
+        sbyte signedByte = checked((sbyte)signedSource);
+        byte unsignedByte = checked((byte)signedSource);
+        short signedShort = checked((short)signedSource);
+        ushort unsignedShort = checked((ushort)signedSource);
+        int signedInteger = checked((int)signedSource);
+        uint unsignedInteger = checked((uint)signedSource);
+        nint nativeInteger = checked((nint)signedSource);
+        nuint nativeUnsigned = checked((nuint)signedSource);
+        int integerFromUnsigned = checked((int)unsignedSource);
+        uint unsignedFromUnsigned = checked((uint)unsignedSource);
+        sbyte signedByteFromUnsigned = checked((sbyte)unsignedSource);
+        byte unsignedByteFromUnsigned = checked((byte)unsignedSource);
+        short signedShortFromUnsigned = checked((short)unsignedSource);
+        ushort unsignedShortFromUnsigned = checked((ushort)unsignedSource);
+        long signedLongFromUnsigned = checked((long)unsignedSource);
+        ulong unsignedLongFromSigned = checked((ulong)signedSource);
+        nint nativeFromUnsigned = checked((nint)unsignedSource);
+        nuint nativeUnsignedFromUnsigned = checked((nuint)unsignedSource);
+        uint uncheckedUnsignedInteger = unchecked((uint)signedSource);
+        long signedLongFromDouble = checked((long)(120.0 + ZeroForConversion()));
+        ulong unsignedLongFromDouble = checked((ulong)(120.0 + ZeroForConversion()));
+        double floatingUnsigned = wideUnsignedLeft;
+
+        if (unsignedLeft / unsignedRight != (uint)RuntimeValue(11) ||
+            unsignedLeft % unsignedRight != (uint)RuntimeValue(1) ||
+            wideUnsignedLeft / wideUnsignedRight != (ulong)RuntimeValue(15) ||
+            wideUnsignedLeft % wideUnsignedRight != (ulong)RuntimeValue(40))
+            Fail("unsigned division or remainder");
+
+        if (signedAdd != RuntimeValue(23) || signedSubtract != RuntimeValue(17) ||
+            signedMultiply != RuntimeValue(60) || unsignedAdd != (uint)RuntimeValue(109) ||
+            unsignedSubtract != (uint)RuntimeValue(91) || unsignedMultiply != (uint)RuntimeValue(27))
+            Fail("checked arithmetic");
+
+        bool signedAddOverflow = false;
+        bool signedSubtractOverflow = false;
+        bool signedMultiplyOverflow = false;
+        bool unsignedAddOverflow = false;
+        bool unsignedSubtractOverflow = false;
+        bool unsignedMultiplyOverflow = false;
+        try { _ = checked(int.MaxValue + RuntimeValue(1)); }
+        catch (OverflowException) { signedAddOverflow = true; }
+        try { _ = checked(int.MinValue - RuntimeValue(1)); }
+        catch (OverflowException) { signedSubtractOverflow = true; }
+        try { _ = checked(int.MaxValue * RuntimeValue(2)); }
+        catch (OverflowException) { signedMultiplyOverflow = true; }
+        try { _ = checked(uint.MaxValue + (uint)RuntimeValue(1)); }
+        catch (OverflowException) { unsignedAddOverflow = true; }
+        try { _ = checked((uint)RuntimeValue(0) - (uint)RuntimeValue(1)); }
+        catch (OverflowException) { unsignedSubtractOverflow = true; }
+        try { _ = checked(uint.MaxValue * (uint)RuntimeValue(2)); }
+        catch (OverflowException) { unsignedMultiplyOverflow = true; }
+        if (!signedAddOverflow || !signedSubtractOverflow || !signedMultiplyOverflow ||
+            !unsignedAddOverflow || !unsignedSubtractOverflow || !unsignedMultiplyOverflow)
+            Fail("checked arithmetic overflow");
+
+        bool signedDivideByZero = false;
+        bool unsignedDivideByZero = false;
+        bool signedRemainderByZero = false;
+        bool divisionOverflow = false;
+        try { _ = RuntimeValue(1) / RuntimeValue(0); }
+        catch (DivideByZeroException) { signedDivideByZero = true; }
+        try { _ = (uint)RuntimeValue(1) / (uint)RuntimeValue(0); }
+        catch (DivideByZeroException) { unsignedDivideByZero = true; }
+        try { _ = RuntimeValue(1) % RuntimeValue(0); }
+        catch (DivideByZeroException) { signedRemainderByZero = true; }
+        try { _ = int.MinValue / -RuntimeValue(1); }
+        catch (OverflowException) { divisionOverflow = true; }
+        if (!signedDivideByZero || !unsignedDivideByZero || !signedRemainderByZero || !divisionOverflow)
+            Fail("integer division exceptions");
+
+        if (signedByte != (sbyte)RuntimeValue(120) || unsignedByte != (byte)RuntimeValue(120) ||
+            signedShort != (short)RuntimeValue(120) || unsignedShort != (ushort)RuntimeValue(120) ||
+            signedInteger != RuntimeValue(120) || unsignedInteger != (uint)RuntimeValue(120) ||
+            nativeInteger != RuntimeValue(120) || nativeUnsigned != (nuint)RuntimeValue(120) ||
+            integerFromUnsigned != RuntimeValue(120) || unsignedFromUnsigned != (uint)RuntimeValue(120) ||
+            signedByteFromUnsigned != (sbyte)RuntimeValue(120) ||
+            unsignedByteFromUnsigned != (byte)RuntimeValue(120) ||
+            signedShortFromUnsigned != (short)RuntimeValue(120) ||
+            unsignedShortFromUnsigned != (ushort)RuntimeValue(120) ||
+            signedLongFromUnsigned != RuntimeValue(120) || unsignedLongFromSigned != (ulong)RuntimeValue(120) ||
+            nativeFromUnsigned != RuntimeValue(120) || nativeUnsignedFromUnsigned != (nuint)RuntimeValue(120) ||
+            uncheckedUnsignedInteger != (uint)RuntimeValue(120) ||
+            signedLongFromDouble != RuntimeValue(120) || unsignedLongFromDouble != (ulong)RuntimeValue(120) ||
+            floatingUnsigned != RuntimeValue(1000))
+            Fail("checked numeric conversions");
+
+        double zero = RuntimeValue(0);
+        double notANumber = zero / zero;
+        if (notANumber == notANumber || notANumber < zero || notANumber > zero ||
+            !(notANumber != zero) || notANumber <= zero || notANumber >= zero)
+            Fail("floating point unordered comparisons");
+    }
+
+    private static double ZeroForConversion() => RuntimeValue(0);
 
     private static void VerifyStrings()
     {
@@ -684,6 +923,12 @@ public static partial class LanguageFeatureValidation
             ReadNestedValue(in values[1]) != RuntimeValue(15) ||
             values[0].Coordinate.Sum() != RuntimeValue(4))
             Fail("struct fields or parameters");
+
+        Coordinate original = new Coordinate(RuntimeValue(3), RuntimeValue(4));
+        Coordinate changed = ChangeCoordinate(original);
+        if (original.Sum() != RuntimeValue(7) || changed.Sum() != RuntimeValue(16))
+            Fail("struct value parameter copy");
+
     }
 
     private static void CreateNestedValue(out NestedValue value)
@@ -869,6 +1114,26 @@ public static partial class LanguageFeatureValidation
         if (jagged.Length != rows || jagged[0].Length != columns ||
             jagged[1].Length != RuntimeValue(1) || jagged[0][columns - 1] != RuntimeValue(8))
             Fail("jagged array");
+
+        bool negativeIndex = false;
+        bool upperIndex = false;
+        bool nullArray = false;
+        bool negativeLength = false;
+        int[] one = new int[RuntimeValue(1)];
+        try { _ = one[-RuntimeValue(1)]; }
+        catch (IndexOutOfRangeException) { negativeIndex = true; }
+        try { one[RuntimeValue(1)] = RuntimeValue(2); }
+        catch (IndexOutOfRangeException) { upperIndex = true; }
+        try
+        {
+            int[] missing = null;
+            _ = missing[RuntimeValue(0)];
+        }
+        catch (NullReferenceException) { nullArray = true; }
+        try { _ = new int[-RuntimeValue(1)]; }
+        catch (OverflowException) { negativeLength = true; }
+        if (!negativeIndex || !upperIndex || !nullArray || !negativeLength)
+            Fail("array exceptions");
     }
 
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
@@ -882,8 +1147,36 @@ public static partial class LanguageFeatureValidation
         where T : class
         => value;
 
+    private static T ReadArrayElement<T>(T[] values, int index) => values[index];
+
+    private static void WriteArrayElement<T>(T[] values, int index, T value) => values[index] = value;
+
     private static int CombineValues(int left, int right = 4, int multiplier = 1)
         => (left + right) * multiplier;
+
+    private static int MutateArgument(int value)
+    {
+        value += RuntimeValue(1);
+        value *= RuntimeValue(2);
+        return value;
+    }
+
+    private static int SelectInstruction(int value)
+    {
+        switch (value)
+        {
+            case 0:
+                return RuntimeValue(1);
+            case 1:
+                return RuntimeValue(2);
+            case 2:
+                return RuntimeValue(4);
+            case 3:
+                return RuntimeValue(8);
+            default:
+                return RuntimeValue(16);
+        }
+    }
 
     private static ref int GetElement(int[] values, int index) => ref values[index];
 
@@ -976,13 +1269,56 @@ public static partial class LanguageFeatureValidation
         int first = values[0];
         Increment(ref first);
 
-        if (!TryRead(values, 2, out int third))
+        int second = values[1];
+        AddThroughReferences(ref first, ref second);
+
+        if (!TryRead(values, 2, out int third) ||
+            TryRead(values, values.Length, out int missing) || missing != 0)
             Fail("out parameter");
 
         int inValue = RuntimeValue(4);
-        if (ReadIn(in inValue) != RuntimeValue(4) || first != RuntimeValue(2) ||
-            third != RuntimeValue(3))
+        Coordinate inCoordinate = new Coordinate { X = RuntimeValue(5), Y = RuntimeValue(6) };
+        int outValue;
+        int outDouble;
+        WriteOut(out outValue, out outDouble);
+        if (ReadIn(in inValue) != RuntimeValue(4) ||
+            ForwardIn(in inValue) != RuntimeValue(8) ||
+            ReadCoordinate(in inCoordinate) != RuntimeValue(11) ||
+            first != RuntimeValue(3) || second != RuntimeValue(4) ||
+            third != RuntimeValue(3) || outValue != RuntimeValue(7) ||
+            outDouble != RuntimeValue(14))
             Fail("ref or in parameter");
+
+        int[] refValues = new int[] { RuntimeValue(8), RuntimeValue(9), RuntimeValue(10) };
+        ref int refElement = ref GetElement(refValues, 1);
+        Increment(ref refElement);
+        ref int sameElement = ref GetElement(refValues, 1);
+        if (refElement != RuntimeValue(10) || sameElement != RuntimeValue(10) ||
+            refValues[1] != RuntimeValue(10))
+            Fail("ref alias or ref return");
+
+        FeatureObject original = new FeatureObject(RuntimeValue(1));
+        FeatureObject replacement = new FeatureObject(RuntimeValue(2));
+        ReplaceReference(ref original, replacement);
+        if (original != replacement || original.Value != RuntimeValue(3))
+            Fail("ref reference value");
+
+        sbyte signedByteReference = (sbyte)RuntimeValue(-7);
+        ushort unsignedShortReference = (ushort)RuntimeValue(60000);
+        uint unsignedIntegerReference = 0xf0000000u;
+        nint nativeReference = RuntimeValue(15);
+        object objectReference = replacement;
+        WriteNativeReference(ref nativeReference, RuntimeValue(16));
+        if (ReadSignedByteReference(ref signedByteReference) != (sbyte)RuntimeValue(-7))
+            Fail("indirect signed byte load");
+        if (ReadUnsignedShortReference(ref unsignedShortReference) != (ushort)RuntimeValue(60000))
+            Fail("indirect unsigned short load");
+        if (ReadUnsignedIntegerReference(ref unsignedIntegerReference) != 0xf0000000u)
+            Fail("indirect unsigned integer load");
+        if (ReadNativeReference(ref nativeReference) != RuntimeValue(16))
+            Fail("indirect native integer load or store");
+        if (ReadObjectReference(ref objectReference) != replacement)
+            Fail("indirect reference load");
 
         int* stackValues = stackalloc int[2];
         stackValues[0] = RuntimeValue(6);
@@ -1157,6 +1493,47 @@ public static partial class LanguageFeatureValidation
 
         if (nestedRethrown != expected)
             Fail("nested exception rethrow");
+
+        int nestedFinallyState = 0;
+        if (ReturnThroughNestedFinally(ref nestedFinallyState) != RuntimeValue(7) ||
+            nestedFinallyState != RuntimeValue(123))
+            Fail("nested finally or leave");
+
+        bool invalidCastCaught = false;
+        try
+        {
+            object value = HideObject(new FeatureObject(RuntimeValue(1)));
+            AlternateHierarchyFeature invalid = (AlternateHierarchyFeature)value;
+            if (invalid.SecondaryValue == RuntimeValue(1))
+                Fail("invalid cast");
+        }
+        catch (InvalidCastException)
+        {
+            invalidCastCaught = true;
+        }
+
+        if (!invalidCastCaught)
+            Fail("invalid cast exception");
+    }
+
+    private static int ReturnThroughNestedFinally(ref int state)
+    {
+        try
+        {
+            try
+            {
+                state = RuntimeValue(1);
+                return RuntimeValue(7);
+            }
+            finally
+            {
+                state = state * RuntimeValue(10) + RuntimeValue(2);
+            }
+        }
+        finally
+        {
+            state = state * RuntimeValue(10) + RuntimeValue(3);
+        }
     }
 
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
@@ -1313,6 +1690,43 @@ public static partial class LanguageFeatureValidation
     private static void Increment(ref int value) => value++;
 
     private static int ReadIn(in int value) => value;
+
+    private static int ForwardIn(in int value) => ReadIn(in value) + value;
+
+    private static int ReadCoordinate(in Coordinate value) => value.X + value.Y;
+
+    private static void AddThroughReferences(ref int left, ref int right)
+    {
+        left++;
+        right += RuntimeValue(2);
+    }
+
+    private static void WriteOut(out int value, out int doubled)
+    {
+        value = RuntimeValue(7);
+        doubled = value * 2;
+    }
+
+    private static void ReplaceReference(ref FeatureObject value, FeatureObject replacement)
+        => value = replacement;
+
+    private static sbyte ReadSignedByteReference(ref sbyte value) => value;
+
+    private static ushort ReadUnsignedShortReference(ref ushort value) => value;
+
+    private static uint ReadUnsignedIntegerReference(ref uint value) => value;
+
+    private static nint ReadNativeReference(ref nint value) => value;
+
+    private static object ReadObjectReference(ref object value) => value;
+
+    private static void WriteNativeReference(ref nint value, nint replacement) => value = replacement;
+
+    private static Coordinate ChangeCoordinate(Coordinate value)
+    {
+        value.X += RuntimeValue(9);
+        return value;
+    }
 
     private static unsafe void WritePointer(int* pointer, int value) => *pointer = value;
 

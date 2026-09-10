@@ -1,6 +1,6 @@
-sealed partial class Translator
+sealed class InstructionHelpers(Translator translator) : TranslationComponent(translator)
 {
-    LLVMValueRef ConvertValue(LLVMBuilderRef builder, LLVMValueRef value, LLVMTypeRef target, bool signed = true)
+    internal new LLVMValueRef ConvertValue(LLVMBuilderRef builder, LLVMValueRef value, LLVMTypeRef target, bool signed = true)
     {
         var source = value.TypeOf;
         if (source.Equals(target)) return value;
@@ -28,7 +28,7 @@ sealed partial class Translator
         return value;
     }
 
-    LLVMValueRef PromoteSmallIntegerLoad(LLVMBuilderRef builder, LLVMValueRef value, TypeReference type)
+    internal new LLVMValueRef PromoteSmallIntegerLoad(LLVMBuilderRef builder, LLVMValueRef value, TypeReference type)
     {
         while (type is RequiredModifierType or OptionalModifierType or PinnedType)
         {
@@ -51,7 +51,7 @@ sealed partial class Translator
         };
     }
 
-    (LLVMValueRef Left, LLVMValueRef Right) NormalizeBinaryOperands(LLVMBuilderRef builder, LLVMValueRef left, LLVMValueRef right)
+    internal new (LLVMValueRef Left, LLVMValueRef Right) NormalizeBinaryOperands(LLVMBuilderRef builder, LLVMValueRef left, LLVMValueRef right)
     {
         if (left.TypeOf.Equals(right.TypeOf))
             return (left, right);
@@ -76,12 +76,12 @@ sealed partial class Translator
         return (left, right);
     }
 
-    bool IsFloatingValue(LLVMValueRef value)
+    internal new bool IsFloatingValue(LLVMValueRef value)
     {
         return value.TypeOf.Kind is LLVMTypeKind.LLVMFloatTypeKind or LLVMTypeKind.LLVMDoubleTypeKind;
     }
 
-    LLVMValueRef BuildComparison(LLVMBuilderRef builder, Code code, LLVMValueRef left, LLVMValueRef right)
+    internal new LLVMValueRef BuildComparison(LLVMBuilderRef builder, Code code, LLVMValueRef left, LLVMValueRef right)
     {
         var leftType = left.TypeOf;
         var rightType = right.TypeOf;
@@ -144,9 +144,9 @@ sealed partial class Translator
         return builder.BuildICmp(intPredicate, left, right);
     }
 
-    string GetLabelName(Instruction instr) => $"IL_{instr.Offset.ToString("x2").PadLeft(4, '0').ToUpper()}";
+    internal new string GetLabelName(Instruction instr) => $"IL_{instr.Offset.ToString("x2").PadLeft(4, '0').ToUpper()}";
 
-    int GetMetadataTypeSize(MetadataType type) => type switch
+    internal new int GetMetadataTypeSize(MetadataType type) => type switch
     {
         MetadataType.Boolean => 1,
         MetadataType.SByte => 1,
@@ -172,7 +172,7 @@ sealed partial class Translator
         _ => pointerSize
     };
 
-    LLVMTypeRef GetLLVMTypeRefFromMetadataType(MetadataType type) => type switch
+    internal new LLVMTypeRef GetLLVMTypeRefFromMetadataType(MetadataType type) => type switch
     {
         MetadataType.Void => voidType,
         MetadataType.Boolean => int8Type,
@@ -199,7 +199,7 @@ sealed partial class Translator
         _ => LLVMTypeRef.CreatePointer(int8Type, 0)
     };
 
-    int GetMethodParameterCount(MethodReference method)
+    internal new int GetMethodParameterCount(MethodReference method)
     {
         int count = method.Parameters.Count;
         if (method.HasThis) count++;

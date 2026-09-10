@@ -28,7 +28,7 @@ static void __exit my_module_exit(void)
     printk(KERN_INFO "My Module: Unloaded successfully!\n");
 }
 
-void System_Console_Write_System_ReadOnlySpan_System_Byte(const char* str)
+void System_Console_WriteLine_System_ByReference_System_Byte(const char* str)
 {
     if (str == NULL)
         return;
@@ -37,7 +37,7 @@ void System_Console_Write_System_ReadOnlySpan_System_Byte(const char* str)
 
 void System_Console_WriteLine_System_ReadOnlySpan_System_Byte(const char* str)
 {
-    System_Console_Write_System_ReadOnlySpan_System_Byte(str);
+    System_Console_WriteLine_System_ByReference_System_Byte(str);
     printk(KERN_INFO "\n");
 }
 
