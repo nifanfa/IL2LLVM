@@ -24,9 +24,14 @@ sealed class Returns(Translator translator) : TranslationComponent(translator)
         }
         else if (!IsVoidType(returnType))
         {
-            var value = ConvertValue(builder, stack.Count == 0
-                ? LLVMValueRef.CreateConstNull(GetLLVMTypeRef(returnType))
-                : stack.Pop(), GetLLVMTypeRef(returnType));
+            var value = stack.Count == 0
+                ? LLVMValueRef.CreateConstNull(UsesUnmanagedSignature(method)
+                    ? GetUnmanagedCallType(returnType)
+                    : GetLLVMTypeRef(returnType))
+                : stack.Pop();
+            value = UsesUnmanagedSignature(method) && IsValueType(returnType) && !IsByReferenceValue(returnType)
+                ? builder.BuildLoad2(GetUnmanagedCallType(returnType), value)
+                : ConvertValue(builder, value, GetLLVMTypeRef(returnType));
             popGCFrame();
             builder.BuildRet(value);
         }

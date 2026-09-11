@@ -30,8 +30,7 @@ namespace System
 
     public static class GC
     {
-        public static void Collect() => Runtime.GCHeap.Collect();
-        public static int CollectionCount(int generation) => Runtime.GCHeap.CollectionCount(generation);
+        public static int Collect() => Runtime.GCHeap.Collect();
     }
 
     public struct Void { }
@@ -43,6 +42,15 @@ namespace System
     {
         int CompareTo(T value);
     }
+    public interface IEquatable<T>
+    {
+        bool Equals(T other);
+    }
+
+    public interface IFormatProvider
+    {
+        object GetFormat(Type formatType);
+    }
     public struct Boolean
     {
         public override string ToString() => this ? "True" : "False";
@@ -53,59 +61,86 @@ namespace System
         public const char MaxValue = (char)0xffff;
         public override string ToString() => new string(new char[] { this });
     }
-    public struct SByte
+    public partial struct SByte
     {
         public const sbyte MinValue = -128;
         public const sbyte MaxValue = 127;
         public override string ToString() => Number.Format((long)this);
     }
-    public struct Byte
+    public partial struct Byte
     {
         public const byte MinValue = 0;
         public const byte MaxValue = 255;
         public override string ToString() => Number.Format((ulong)this);
     }
-    public struct Int16
+    public partial struct Int16
     {
         public const short MinValue = -32768;
         public const short MaxValue = 32767;
         public override string ToString() => Number.Format((long)this);
     }
-    public struct UInt16
+    public partial struct UInt16
     {
         public const ushort MinValue = 0;
         public const ushort MaxValue = 65535;
         public override string ToString() => Number.Format((ulong)this);
     }
-    public struct Int32
+    public partial struct Int32 : IEquatable<int>
     {
         public const int MinValue = -2147483648;
         public const int MaxValue = 2147483647;
+        public bool Equals(int other) => this == other;
+        public override bool Equals(object other) => other is int value && Equals(value);
+        public override int GetHashCode() => this;
         public override string ToString() => Number.Format((long)this);
     }
-    public struct UInt32
+    public partial struct UInt32
     {
         public const uint MinValue = 0;
         public const uint MaxValue = 0xffffffff;
         public override string ToString() => Number.Format((ulong)this);
     }
-    public struct Int64
+    public partial struct Int64
     {
         public const long MinValue = -9223372036854775808;
         public const long MaxValue = 9223372036854775807;
         public override string ToString() => Number.Format(this);
     }
-    public struct UInt64
+    public partial struct UInt64
     {
         public const ulong MinValue = 0;
         public const ulong MaxValue = 0xffffffffffffffff;
         public override string ToString() => Number.Format(this);
     }
-    public unsafe struct IntPtr
+    public struct IntPtr
     {
+        unsafe private void* _value;
+
         public static readonly IntPtr Zero;
-        public override string ToString() => "0";
-        public static explicit operator int(IntPtr value) => *(int*)&value;
+
+        public unsafe IntPtr(void* value)
+        {
+            _value = value;
+        }
+
+        public unsafe IntPtr(int value)
+        {
+            _value = (void*)value;
+        }
+
+        public unsafe IntPtr(long value)
+        {
+            _value = (void*)value;
+        }
+
+        public static explicit operator IntPtr(int value) => new IntPtr(value);
+        public static explicit operator IntPtr(long value) => new IntPtr(value);
+        public static unsafe explicit operator IntPtr(void* value) => new IntPtr(value);
+        public static unsafe explicit operator void*(IntPtr value) => value._value;
+        public static unsafe explicit operator int(IntPtr value) => unchecked((int)value._value);
+        public static unsafe explicit operator long(IntPtr value) => unchecked((long)value._value);
+        public static unsafe bool operator ==(IntPtr value1, IntPtr value2) => value1._value == value2._value;
+        public static unsafe bool operator !=(IntPtr value1, IntPtr value2) => value1._value != value2._value;
     }
     public struct UIntPtr
     {
@@ -137,18 +172,18 @@ namespace System
         public static Index FromEnd(int value) => new Index(~value);
         public static implicit operator Index(int value) => FromStart(value);
     }
-    public struct Single
+    public partial struct Single
     {
         public const float MinValue = -3.4028234663852886E+38F;
         public const float MaxValue = 3.4028234663852886E+38F;
     }
-    public struct Double
+    public partial struct Double
     {
         public const double MinValue = -1.7976931348623157E+308;
         public const double MaxValue = 1.7976931348623157E+308;
     }
 
-    internal static class Number
+    internal static partial class Number
     {
         public static string Format(long value)
         {
@@ -393,6 +428,14 @@ namespace System
             _length = length;
         }
 
+        public unsafe Span(void* pointer, int length)
+        {
+            _array = new T[length];
+            ((Array)_array).m_pData = (byte*)pointer;
+            _start = 0;
+            _length = length;
+        }
+
         public int Length => _length;
         public bool IsEmpty => _length == 0;
 
@@ -415,7 +458,7 @@ namespace System
             => new ReadOnlySpan<T>(span._array, span._start, span._length);
     }
 
-    public readonly ref struct ReadOnlySpan<T>
+    public readonly ref partial struct ReadOnlySpan<T>
     {
         private readonly T[] _array;
         private readonly int _start;
@@ -453,6 +496,8 @@ namespace System
         public ReadOnlySpan<T> Slice(int start, int length)
             => new ReadOnlySpan<T>(_array, _start + start, length);
 
+        public ref T GetPinnableReference() => ref _array[_start];
+
         public static implicit operator ReadOnlySpan<T>(T[] array) => new ReadOnlySpan<T>(array);
     }
 
@@ -469,7 +514,7 @@ namespace System
         public void Dispose() { }
     }
 
-    public sealed class String
+    public sealed partial class String
     {
         public int Length;
         private char[] _chars;
@@ -492,6 +537,7 @@ namespace System
                 return default;
             return new ByReference<char>(ref value._chars[0]);
         }
+        public ref char GetPinnableReference() => ref _chars[0];
         public override string ToString() => this;
         public override bool Equals(object other) => other is string value && Equals(this, value);
         public bool Equals(string other) => Equals(this, other);
@@ -534,6 +580,157 @@ namespace System
 
         public static string Concat(string first, string second, string third, string fourth)
             => Concat(Concat(first, second), Concat(third, fourth));
+
+        public static string Format(string format, object arg0)
+            => Format(format, new object[] { arg0 });
+
+        public static string Format(string format, object arg0, object arg1)
+            => Format(format, new object[] { arg0, arg1 });
+
+        public static string Format(string format, object arg0, object arg1, object arg2)
+            => Format(format, new object[] { arg0, arg1, arg2 });
+
+        public static string Format(string format, params object[] args)
+        {
+            if (format == null)
+                throw new ArgumentNullException("The format string cannot be null.");
+            if (args == null)
+                throw new ArgumentNullException("The format arguments cannot be null.");
+
+            Text.StringBuilder result = new Text.StringBuilder(format.Length + 16);
+            int index = 0;
+            while (index < format.Length)
+            {
+                char current = format[index++];
+                if (current == '{')
+                {
+                    if (index < format.Length && format[index] == '{')
+                    {
+                        result.Append('{');
+                        index++;
+                        continue;
+                    }
+
+                    int argumentIndex = 0;
+                    int digits = 0;
+                    while (index < format.Length && format[index] >= '0' && format[index] <= '9')
+                    {
+                        argumentIndex = argumentIndex * 10 + format[index++] - '0';
+                        digits++;
+                    }
+                    if (digits == 0 || argumentIndex >= args.Length)
+                        throw new FormatException("The format contains an invalid argument index.");
+
+                    while (index < format.Length && format[index] == ' ')
+                        index++;
+
+                    string specifier = null;
+                    if (index < format.Length && format[index] == ':')
+                    {
+                        int start = ++index;
+                        while (index < format.Length && format[index] != '}')
+                            index++;
+                        if (index > start)
+                            specifier = format.Substring(start, index - start);
+                    }
+                    if (index >= format.Length || format[index++] != '}')
+                        throw new FormatException("The format item is missing its closing brace.");
+
+                    result.Append(FormatValue(args[argumentIndex], specifier));
+                    continue;
+                }
+
+                if (current == '}')
+                {
+                    if (index < format.Length && format[index] == '}')
+                    {
+                        result.Append('}');
+                        index++;
+                        continue;
+                    }
+                    throw new FormatException("The format contains an unmatched closing brace.");
+                }
+                result.Append(current);
+            }
+            return result.ToString();
+        }
+
+        private static string FormatValue(object value, string specifier)
+        {
+            if (value == null)
+                return Empty;
+            if (IsNullOrEmpty(specifier))
+                return value.ToString();
+
+            char type = specifier[0];
+            if (type == 'x' || type == 'X')
+            {
+                int width = ParseWidth(specifier);
+                if (value is byte) return FormatUnsigned((byte)value, type == 'X', width);
+                if (value is ushort) return FormatUnsigned((ushort)value, type == 'X', width);
+                if (value is uint) return FormatUnsigned((uint)value, type == 'X', width);
+                if (value is ulong) return FormatUnsigned((ulong)value, type == 'X', width);
+                if (value is sbyte) return FormatUnsigned(unchecked((byte)(sbyte)value), type == 'X', width < 2 ? 2 : width);
+                if (value is short) return FormatUnsigned(unchecked((ushort)(short)value), type == 'X', width < 4 ? 4 : width);
+                if (value is int) return FormatUnsigned(unchecked((uint)(int)value), type == 'X', width < 8 ? 8 : width);
+                if (value is long) return FormatUnsigned(unchecked((ulong)(long)value), type == 'X', width < 16 ? 16 : width);
+            }
+
+            if (type == 'd' || type == 'D')
+            {
+                int width = ParseWidth(specifier);
+                string text = value.ToString();
+                int sign = text.Length > 0 && text[0] == '-' ? 1 : 0;
+                Text.StringBuilder padded = new Text.StringBuilder(text.Length > width + sign ? text.Length : width + sign);
+                if (sign != 0)
+                    padded.Append('-');
+                for (int index = text.Length - sign; index < width; index++)
+                    padded.Append('0');
+                for (int index = sign; index < text.Length; index++)
+                    padded.Append(text[index]);
+                return padded.ToString();
+            }
+
+            throw new FormatException("The format specifier is not supported.");
+        }
+
+        private static int ParseWidth(string specifier)
+        {
+            int width = 0;
+            for (int index = 1; index < specifier.Length; index++)
+            {
+                if (specifier[index] < '0' || specifier[index] > '9')
+                    throw new FormatException("The numeric format width is invalid.");
+                width = width * 10 + specifier[index] - '0';
+            }
+            return width;
+        }
+
+        private static string FormatUnsigned(ulong value, bool upper, int width)
+        {
+            char[] digits = new char[32];
+            int position = digits.Length;
+            do
+            {
+                int digit = (int)(value & 0xf);
+                digits[--position] = (char)(digit < 10 ? '0' + digit : (upper ? 'A' : 'a') + digit - 10);
+                value >>= 4;
+            }
+            while (value != 0);
+
+            int count = digits.Length - position;
+            int total = count > width ? count : width;
+            char[] result = new char[total];
+            int padding = total - count;
+            for (int index = 0; index < padding; index++)
+                result[index] = '0';
+            for (int index = 0; index < count; index++)
+                result[padding + index] = digits[position + index];
+            return new string(result);
+        }
+
+        public static string Format(IFormatProvider provider, string format, params object[] args)
+            => Format(format, args);
 
         public static bool IsNullOrEmpty(string value) => value == null || value.Length == 0;
 
@@ -694,6 +891,12 @@ namespace System
         public ArgumentOutOfRangeException(string message) : base(message) { }
     }
 
+    public class FormatException : Exception
+    {
+        public FormatException() : base("Input string was not in a correct format.") { }
+        public FormatException(string message) : base(message) { }
+    }
+
     public class OperationCanceledException : Exception
     {
         public OperationCanceledException() : base("The operation was canceled.") { }
@@ -840,6 +1043,13 @@ namespace System
         }
 
         public static Type GetTypeFromHandle(RuntimeTypeHandle handle) => handle.Type;
+        public static bool operator ==(Type left, Type right) => ReferenceEquals(left, right);
+        public static bool operator !=(Type left, Type right) => !ReferenceEquals(left, right);
+    }
+
+    public static class Activator
+    {
+        public static T CreateInstance<T>() => default;
     }
 
     public struct RuntimeTypeHandle
@@ -895,7 +1105,7 @@ namespace System
 
     [AttributeUsage(AttributeTargets.Parameter)]
     public sealed class ParamArrayAttribute : Attribute { }
-    public sealed class Console
+    public static partial class Console
     {
         [DllImport("*")]
         public static extern void Write(ByReference<char> value);
@@ -905,10 +1115,6 @@ namespace System
         public static extern void Write(ByReference<byte> value);
         [DllImport("*")]
         public static extern void WriteLine(ByReference<byte> value);
-        [DllImport("*")]
-        public static extern void WriteLine(int value);
-        [DllImport("*")]
-        public static extern void WriteLine(nint value);
     }
 }
 
@@ -922,7 +1128,11 @@ namespace System.Runtime.InteropServices
     }
 
     [AttributeUsage(AttributeTargets.Method)]
-    public sealed class UnmanagedCallersOnlyAttribute : Attribute { }
+    public sealed class UnmanagedCallersOnlyAttribute : Attribute
+    {
+        public Type[] CallConvs { get; set; }
+        public string EntryPoint { get; set; }
+    }
     [AttributeUsage(AttributeTargets.Parameter)]
     public sealed class InAttribute : Attribute { }
     [AttributeUsage(AttributeTargets.Parameter)]
@@ -955,6 +1165,54 @@ namespace System.Runtime.InteropServices
         ThisCall = 4,
         FastCall = 5
     }
+
+    public enum UnmanagedType
+    {
+        Bool = 2,
+        I1 = 3,
+        U1 = 4,
+        I2 = 5,
+        U2 = 6,
+        I4 = 7,
+        U4 = 8,
+        I8 = 9,
+        U8 = 10,
+        R4 = 11,
+        R8 = 12,
+        LPStr = 20,
+        LPWStr = 21,
+        LPTStr = 22,
+        ByValTStr = 23,
+        IUnknown = 25,
+        Struct = 27,
+        Interface = 28,
+        SafeArray = 29,
+        ByValArray = 30,
+        SysInt = 31,
+        SysUInt = 32,
+        VBByRefStr = 34,
+        AnsiBStr = 35,
+        TBStr = 36,
+        VariantBool = 37,
+        FunctionPtr = 38,
+        AsAny = 40,
+        LPArray = 42,
+        LPStruct = 43,
+        CustomMarshaler = 44,
+        Error = 45,
+        IInspectable = 46,
+        HString = 47,
+        LPUTF8Str = 48,
+    }
+}
+
+namespace System.Runtime
+{
+    [AttributeUsage(AttributeTargets.Method)]
+    public sealed class RuntimeExportAttribute : Attribute
+    {
+        public RuntimeExportAttribute(string entry) { }
+    }
 }
 
 namespace System.Runtime.CompilerServices
@@ -970,6 +1228,8 @@ namespace System.Runtime.CompilerServices
     public sealed class IsVolatile { }
     public sealed class IsByRefLikeAttribute : Attribute { }
     public sealed class IsReadOnlyAttribute : Attribute { }
+    [AttributeUsage(AttributeTargets.Method)]
+    public sealed class PreserveBaseOverridesAttribute : Attribute { }
     public sealed class MethodImplAttribute : Attribute
     {
         public MethodImplAttribute(MethodImplOptions options) { }
@@ -985,7 +1245,17 @@ namespace System.Runtime.CompilerServices
     public static class RuntimeFeature
     {
         public const string ByRefFields = "ByRefFields";
+        public const string CovariantReturnsOfClasses = "CovariantReturnsOfClasses";
+        public const string DefaultImplementationsOfInterfaces = "DefaultImplementationsOfInterfaces";
+        public const string UnmanagedSignatureCallingConvention = "UnmanagedSignatureCallingConvention";
+        public const string VirtualStaticsInInterfaces = "VirtualStaticsInInterfaces";
     }
+
+    public sealed class CallConvCdecl { }
+    public sealed class CallConvFastcall { }
+    public sealed class CallConvStdcall { }
+    public sealed class CallConvSuppressGCTransition { }
+    public sealed class CallConvThiscall { }
 
     public static unsafe class RuntimeHelpers
     {
@@ -1132,11 +1402,9 @@ namespace System.Runtime
     internal static unsafe class GCHeap
     {
         private static GCAllocation* s_allocations;
-        private static GCFrame* s_frames;
         private static GCStaticRoot* s_staticRoots;
         private static int s_allocatedBytes;
         private static int s_collectionThreshold = int.MaxValue;
-        private static int s_collectionCount;
 
         [DllImport("*", EntryPoint = "calloc")]
         private static extern byte* Calloc(nuint count, nuint size);
@@ -1159,24 +1427,19 @@ namespace System.Runtime
             return (Object*)((byte*)allocation + sizeof(GCAllocation));
         }
 
-        public static void Push(GCFrame* frame, GCRoot* roots, int rootCount)
-        {
-            frame->Previous = s_frames;
-            frame->Roots = roots;
-            frame->RootCount = rootCount;
-            s_frames = frame;
-        }
+        [DllImport("*", EntryPoint = "PushGCFrame")]
+        public static extern void Push(GCFrame* frame, GCRoot* roots, int rootCount);
 
-        public static void Pop(GCFrame* frame)
-        {
-            s_frames = frame->Previous;
-        }
+        [DllImport("*", EntryPoint = "PopGCFrame")]
+        public static extern void Pop(GCFrame* frame);
 
-        public static GCFrame* GetTopFrame() => s_frames;
+        [DllImport("*", EntryPoint = "GetTopGCFrame")]
+        public static extern GCFrame* GetTopFrame();
 
-        public static void UnwindTo(GCFrame* frame) => s_frames = frame;
+        [DllImport("*", EntryPoint = "UnwindGCFrames")]
+        public static extern void UnwindTo(GCFrame* frame);
 
-        public static void Collect()
+        public static int Collect()
         {
             for (GCStaticRoot* root = s_staticRoots; root != null; root = root->Next)
             {
@@ -1185,12 +1448,13 @@ namespace System.Runtime
                 else
                     ScanValue((byte*)root->Address, root->Descriptor);
             }
-            for (GCFrame* frame = s_frames; frame != null; frame = frame->Previous)
+            for (GCFrame* frame = GetTopFrame(); frame != null; frame = frame->Previous)
                 for (int index = 0; index < frame->RootCount; index++)
                     MarkRoot(frame->Roots[index].Address, frame->Roots[index].Descriptor);
 
             GCAllocation* previous = null;
             GCAllocation* allocation = s_allocations;
+            int collected = 0;
             while (allocation != null)
             {
                 if (allocation->Marked != 0)
@@ -1207,14 +1471,13 @@ namespace System.Runtime
                     else
                         previous->Next = next;
                     Free(allocation);
+                    collected++;
                     allocation = next;
                 }
             }
             s_allocatedBytes = 0;
-            s_collectionCount++;
+            return collected;
         }
-
-        public static int CollectionCount(int generation) => s_collectionCount;
 
         private static void MarkRoot(Object** address, GCDesc* descriptor)
         {
@@ -1291,26 +1554,18 @@ namespace System.Runtime
 
     internal static unsafe class ExceptionRuntime
     {
-        private static ExceptionFrame* _top;
         private static Exception _current;
 
-        public static void Push(ExceptionFrame* frame, JumpBuffer* buffer)
-        {
-            frame->Previous = _top;
-            frame->Buffer = buffer;
-            frame->GCFrame = GCHeap.GetTopFrame();
-            _top = frame;
-        }
+        [DllImport("*", EntryPoint = "PushExceptionFrame")]
+        public static extern void Push(ExceptionFrame* frame, JumpBuffer* buffer);
 
-        public static void Pop(ExceptionFrame* frame)
-        {
-            if (_top == frame)
-                _top = frame->Previous;
-        }
+        [DllImport("*", EntryPoint = "PopExceptionFrame")]
+        public static extern void Pop(ExceptionFrame* frame);
 
         public static JumpBuffer* GetBuffer(ExceptionFrame* frame) => frame->Buffer;
 
-        public static ExceptionFrame* GetTop() => _top;
+        [DllImport("*", EntryPoint = "GetTopExceptionFrame")]
+        public static extern ExceptionFrame* GetTop();
 
         public static Exception GetCurrent() => _current;
 
@@ -2145,7 +2400,7 @@ namespace System.Linq
 {
     using System.Collections.Generic;
 
-    public static class Enumerable
+    public static partial class Enumerable
     {
         public static IEnumerable<TResult> Select<TSource, TResult>(this IEnumerable<TSource> source, Func<TSource, TResult> selector)
         {
@@ -2370,39 +2625,27 @@ namespace System.Linq
 
 namespace System.Threading
 {
-    public struct CancellationToken
-    {
-        private bool _canceled;
-        public bool IsCancellationRequested => _canceled;
-        public bool CanBeCanceled => _canceled;
-        internal CancellationToken(bool canceled) { _canceled = canceled; }
-        public CancellationTokenRegistration Register(Action callback)
-        {
-            if (_canceled && callback != null)
-                callback();
-            return new CancellationTokenRegistration();
-        }
-    }
-
-    public sealed class CancellationTokenSource : IDisposable
-    {
-        private bool _canceled;
-        public CancellationToken Token => new CancellationToken(_canceled);
-        public bool IsCancellationRequested => _canceled;
-        public void Cancel() => _canceled = true;
-        public void Dispose() { }
-    }
-
-    public struct CancellationTokenRegistration : IDisposable
-    {
-        public void Dispose() { }
-    }
-
     public static class Monitor
     {
-        [DllImport("*")]
-        public static extern void Enter(object value);
-        [DllImport("*")]
+        public static void Enter(object value)
+        {
+            bool lockTaken = false;
+            Enter(value, ref lockTaken);
+        }
+
+        public static void Enter(object value, ref bool lockTaken)
+        {
+            if (lockTaken)
+                throw new InvalidOperationException("The lock is already held.");
+
+            EnterCore(value);
+            lockTaken = true;
+        }
+
+        [DllImport("*", EntryPoint = "Enter")]
+        private static extern void EnterCore(object value);
+
+        [DllImport("*", EntryPoint = "Exit")]
         public static extern void Exit(object value);
     }
 }
@@ -2421,13 +2664,13 @@ namespace System.Threading.Tasks
         Faulted
     }
 
-    public class Task
+    public partial class Task
     {
         private const int Pending = 0;
         private const int Completed = 1;
         private const int Faulted = 2;
         private const int Canceled = 3;
-        private int _state;
+        private volatile int _state;
         private Exception _exception;
         private Action _continuation;
         internal Task() { }
@@ -2459,11 +2702,14 @@ namespace System.Threading.Tasks
         }
         public void Wait()
         {
+            while (_state == Pending)
+                WaitForCompletion();
             if (_state == Faulted)
                 throw _exception;
             if (_state == Canceled)
                 throw new OperationCanceledException();
         }
+        static partial void WaitForCompletion();
         internal bool TrySetResult()
         {
             if (_state != Pending)
@@ -2514,61 +2760,12 @@ namespace System.Threading.Tasks
             task.TrySetException(exception);
             return task;
         }
-        public static Task FromCanceled(CancellationToken cancellationToken)
-        {
-            Task task = new Task();
-            task.TrySetCanceled();
-            return task;
-        }
         public static Task<TResult> FromResult<TResult>(TResult result) { Task<TResult> task = new Task<TResult>(); task.SetResult(result); return task; }
         public static Task<TResult> FromException<TResult>(Exception exception)
         {
             Task<TResult> task = new Task<TResult>();
             task.SetException(exception);
             return task;
-        }
-        public static Task<TResult> FromCanceled<TResult>(CancellationToken cancellationToken)
-        {
-            Task<TResult> task = new Task<TResult>();
-            task.SetCanceled();
-            return task;
-        }
-        public static Task Run(Action action)
-        {
-            if (action == null)
-                return FromException(new ArgumentNullException("The action cannot be null."));
-            try { action(); return CompletedTask; }
-            catch (Exception exception) { return FromException(exception); }
-        }
-        public static Task<TResult> Run<TResult>(Func<TResult> function)
-        {
-            if (function == null)
-                return FromException<TResult>(new ArgumentNullException("The function cannot be null."));
-            try { return FromResult(function()); }
-            catch (Exception exception) { return FromException<TResult>(exception); }
-        }
-        public static Task WhenAll(params Task[] tasks)
-        {
-            if (tasks == null)
-                return FromException(new ArgumentNullException("The task collection cannot be null."));
-            for (int index = 0; index < tasks.Length; index++)
-                if (tasks[index] == null)
-                    return FromException(new ArgumentException("The task collection cannot contain null."));
-            for (int index = 0; index < tasks.Length; index++)
-                if (tasks[index].IsFaulted)
-                    return FromException(tasks[index].Exception);
-                else if (tasks[index].IsCanceled)
-                    return FromCanceled(default);
-            return CompletedTask;
-        }
-        public static Task<Task> WhenAny(params Task[] tasks)
-        {
-            if (tasks == null || tasks.Length == 0)
-                return FromException<Task>(new ArgumentException("At least one task is required."));
-            for (int index = 0; index < tasks.Length; index++)
-                if (tasks[index] == null)
-                    return FromException<Task>(new ArgumentException("The task collection cannot contain null."));
-            return FromResult(tasks[0]);
         }
     }
 
@@ -2577,6 +2774,7 @@ namespace System.Threading.Tasks
         private TResult _result;
         public new TaskAwaiter<TResult> GetAwaiter() => new TaskAwaiter<TResult>(this);
         public new ConfiguredTaskAwaitable<TResult> ConfigureAwait(bool continueOnCapturedContext) => new ConfiguredTaskAwaitable<TResult>(this);
+        public TResult Result => GetResult();
         public void SetResult(TResult result) { _result = result; base.SetResult(); }
         internal bool TrySetResult(TResult result) { _result = result; return base.TrySetResult(); }
         public new TResult GetResult() { base.GetResult(); return _result; }
@@ -2639,5 +2837,222 @@ namespace System.Threading.Tasks
         private readonly Task<TResult> _task;
         public ConfiguredTaskAwaitable(Task<TResult> task) { _task = task; }
         public TaskAwaiter<TResult> GetAwaiter() => _task.GetAwaiter();
+    }
+}
+
+namespace System.Text
+{
+    public sealed class StringBuilder
+    {
+        private char[] _buffer;
+        private int _length;
+
+        public StringBuilder()
+            : this(16)
+        {
+        }
+
+        public StringBuilder(int capacity)
+        {
+            if (capacity < 0)
+                throw new ArgumentException("The StringBuilder capacity cannot be negative.");
+            _buffer = new char[capacity == 0 ? 1 : capacity];
+        }
+
+        public StringBuilder(string value)
+        {
+            if (value == null)
+                throw new ArgumentNullException("The initial string cannot be null.");
+            _buffer = new char[value.Length == 0 ? 1 : value.Length];
+            Append(value);
+        }
+
+        public StringBuilder(string value, int capacity)
+        {
+            if (value == null)
+                throw new ArgumentNullException("The initial string cannot be null.");
+            if (capacity < value.Length)
+                capacity = value.Length;
+            _buffer = new char[capacity == 0 ? 1 : capacity];
+            Append(value);
+        }
+
+        public int Length
+        {
+            get => _length;
+            set
+            {
+                if (value < 0)
+                    throw new ArgumentException("The StringBuilder length cannot be negative.");
+                EnsureCapacity(value);
+                if (value > _length)
+                    for (int index = _length; index < value; index++)
+                        _buffer[index] = '\0';
+                _length = value;
+            }
+        }
+
+        public int Capacity
+        {
+            get => _buffer.Length;
+            set
+            {
+                if (value < _length)
+                    throw new ArgumentException("The StringBuilder capacity cannot be less than Length.");
+                if (value == 0)
+                    value = 1;
+                if (value == _buffer.Length)
+                    return;
+                char[] buffer = new char[value];
+                for (int index = 0; index < _length; index++)
+                    buffer[index] = _buffer[index];
+                _buffer = buffer;
+            }
+        }
+
+        public char this[int index]
+        {
+            get
+            {
+                ValidateIndex(index);
+                return _buffer[index];
+            }
+            set
+            {
+                ValidateIndex(index);
+                _buffer[index] = value;
+            }
+        }
+
+        public StringBuilder Append(char value)
+        {
+            EnsureCapacity(_length + 1);
+            _buffer[_length++] = value;
+            return this;
+        }
+
+        public StringBuilder Append(char value, int repeatCount)
+        {
+            if (repeatCount < 0)
+                throw new ArgumentException("The repeat count cannot be negative.");
+            EnsureCapacity(_length + repeatCount);
+            for (int index = 0; index < repeatCount; index++)
+                _buffer[_length++] = value;
+            return this;
+        }
+
+        public StringBuilder Append(string value)
+        {
+            if (value == null)
+                return this;
+            EnsureCapacity(_length + value.Length);
+            for (int index = 0; index < value.Length; index++)
+                _buffer[_length++] = value[index];
+            return this;
+        }
+
+        public StringBuilder Append(string value, int startIndex, int count)
+        {
+            if (value == null)
+                return this;
+            if (startIndex < 0 || count < 0 || startIndex > value.Length - count)
+                throw new ArgumentException("The source string range is invalid.");
+            EnsureCapacity(_length + count);
+            for (int index = 0; index < count; index++)
+                _buffer[_length++] = value[startIndex + index];
+            return this;
+        }
+
+        public StringBuilder Append(char[] value)
+        {
+            if (value == null)
+                return this;
+            return Append(value, 0, value.Length);
+        }
+
+        public StringBuilder Append(char[] value, int startIndex, int count)
+        {
+            if (value == null)
+                return this;
+            if (startIndex < 0 || count < 0 || startIndex > value.Length - count)
+                throw new ArgumentException("The source character array range is invalid.");
+            EnsureCapacity(_length + count);
+            for (int index = 0; index < count; index++)
+                _buffer[_length++] = value[startIndex + index];
+            return this;
+        }
+
+        public StringBuilder Append(object value) => Append(value == null ? null : value.ToString());
+        public StringBuilder Append(int value) => Append(value.ToString());
+        public StringBuilder Append(uint value) => Append(value.ToString());
+        public StringBuilder Append(long value) => Append(value.ToString());
+        public StringBuilder Append(ulong value) => Append(value.ToString());
+        public StringBuilder Append(bool value) => Append(value.ToString());
+
+        public StringBuilder AppendLine() => Append('\r').Append('\n');
+        public StringBuilder AppendLine(string value) => Append(value).Append('\r').Append('\n');
+
+        public StringBuilder Clear()
+        {
+            _length = 0;
+            return this;
+        }
+
+        public StringBuilder Remove(int startIndex, int length)
+        {
+            if (startIndex < 0 || length < 0 || startIndex > _length - length)
+                throw new ArgumentException("The StringBuilder range is invalid.");
+            for (int index = startIndex; index < _length - length; index++)
+                _buffer[index] = _buffer[index + length];
+            _length -= length;
+            return this;
+        }
+
+        public StringBuilder Replace(char oldChar, char newChar)
+        {
+            for (int index = 0; index < _length; index++)
+                if (_buffer[index] == oldChar)
+                    _buffer[index] = newChar;
+            return this;
+        }
+
+        public override string ToString()
+        {
+            if (_length == 0)
+                return string.Empty;
+            char[] value = new char[_length];
+            for (int index = 0; index < _length; index++)
+                value[index] = _buffer[index];
+            return new string(value);
+        }
+
+        public string ToString(int startIndex, int length)
+        {
+            if (startIndex < 0 || length < 0 || startIndex > _length - length)
+                throw new ArgumentException("The StringBuilder range is invalid.");
+            char[] value = new char[length];
+            for (int index = 0; index < length; index++)
+                value[index] = _buffer[startIndex + index];
+            return new string(value);
+        }
+
+        private void EnsureCapacity(int required)
+        {
+            if (required <= _buffer.Length)
+                return;
+            int capacity = _buffer.Length * 2;
+            if (capacity < required)
+                capacity = required;
+            char[] buffer = new char[capacity];
+            for (int index = 0; index < _length; index++)
+                buffer[index] = _buffer[index];
+            _buffer = buffer;
+        }
+
+        private void ValidateIndex(int index)
+        {
+            if ((uint)index >= (uint)_length)
+                throw new IndexOutOfRangeException("The StringBuilder index is outside the current contents.");
+        }
     }
 }

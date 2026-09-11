@@ -16,6 +16,7 @@ sealed class CoreLibMetadata
     public TypeDefinition Delegate => GetType("System.Delegate");
     public TypeDefinition MulticastDelegate => GetType("System.MulticastDelegate");
     public TypeDefinition Nullable => GetType("System.Nullable`1");
+    public TypeDefinition Activator => GetType("System.Activator");
     public TypeDefinition IntPtr => GetType("System.IntPtr");
     public TypeDefinition Exception => GetType("System.Exception");
     public TypeDefinition InvalidCastException => GetType("System.InvalidCastException");
@@ -32,6 +33,8 @@ sealed class CoreLibMetadata
     public TypeDefinition RuntimeFieldHandle => GetType("System.RuntimeFieldHandle");
     public TypeDefinition GCDesc => GetType("System.GCDesc");
     public TypeDefinition FlagsAttribute => GetType("System.FlagsAttribute");
+    public TypeDefinition RuntimeExportAttribute => GetType("System.Runtime.RuntimeExportAttribute");
+    public TypeDefinition UnmanagedCallersOnlyAttribute => GetType("System.Runtime.InteropServices.UnmanagedCallersOnlyAttribute");
     public TypeDefinition ExceptionRuntime => GetType("System.Runtime.ExceptionRuntime");
     public TypeDefinition ExceptionFrame => GetType("System.Runtime.ExceptionFrame");
     public TypeDefinition JumpBuffer => GetType("System.Runtime.JumpBuffer");
@@ -51,6 +54,10 @@ sealed class CoreLibMetadata
     public FieldDefinition RuntimeFieldDataField => GetInstanceField(RuntimeFieldHandle, "Data");
     public FieldDefinition RuntimeFieldLengthField => GetInstanceField(RuntimeFieldHandle, "Length");
 
+    public MethodDefinition ActivatorCreateInstanceMethod => Activator.Methods.Single(method =>
+        method.Name == "CreateInstance" && method.IsStatic && method.GenericParameters.Count == 1 &&
+        method.Parameters.Count == 0);
+
     public bool IsObject(TypeReference type) => IsType(type, Object);
     public bool IsValueType(TypeReference type) => IsType(type, ValueType);
     public bool IsEnum(TypeReference type) => IsType(type, Enum);
@@ -58,6 +65,8 @@ sealed class CoreLibMetadata
     public bool IsNullable(TypeReference type) => IsType(type, Nullable);
     public bool IsNativeInteger(TypeReference type) => IsType(type, IntPtr) || IsType(type, UIntPtr);
     public bool IsFlagsAttribute(TypeReference type) => IsType(type, FlagsAttribute);
+    public bool IsRuntimeExportAttribute(TypeReference type) => IsType(type, RuntimeExportAttribute);
+    public bool IsUnmanagedCallersOnlyAttribute(TypeReference type) => IsType(type, UnmanagedCallersOnlyAttribute);
 
     public FieldDefinition GetNullableHasValueField(TypeReference type) => GetInstanceField(Resolve(type), "_hasValue");
     public FieldDefinition GetNullableValueField(TypeReference type) => GetInstanceField(Resolve(type), "_value");
@@ -72,7 +81,7 @@ sealed class CoreLibMetadata
     private static bool IsType(TypeReference type, TypeDefinition definition)
     {
         var elementType = type is GenericInstanceType generic ? generic.ElementType : type;
-        return elementType.Resolve()?.FullName == definition.FullName;
+        return elementType.FullName == definition.FullName;
     }
 
     private static TypeDefinition Resolve(TypeReference type)

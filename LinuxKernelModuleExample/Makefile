@@ -1,7 +1,7 @@
 obj-m += my_module.o
 managed_object := bin/Debug/net10.0/LinuxKernelModuleExample.o
 managed_input := bin/Debug/net10.0/LinuxKernelModuleExample.obj
-my_module-objs := my_module_main.o runtime_jump_x86_64.o $(managed_object)
+my_module-objs := my_module_main.o Runtime.o runtime_jump_x86_64.o $(managed_object)
 
 PWD  := $(shell pwd)
 

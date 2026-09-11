@@ -57,6 +57,7 @@ abstract class TranslationComponent(Translator translator)
     protected FieldDefinition GetDelegateField(TypeReference type, string name) => Translator.TypeSystem.GetDelegateField(type, name);
     protected bool IsDelegateType(TypeReference type) => Translator.TypeSystem.IsDelegateType(type);
     protected LLVMTypeRef GetLLVMTypeRef(TypeReference type) => Translator.TypeSystem.GetLLVMTypeRef(type);
+    protected LLVMTypeRef GetUnmanagedCallType(TypeReference type) => Translator.TypeSystem.GetUnmanagedCallType(type);
     protected bool IsVoidType(TypeReference type) => Translator.TypeSystem.IsVoidType(type);
     protected TypeReference? GetEnumUnderlyingType(TypeReference type) => Translator.TypeSystem.GetEnumUnderlyingType(type);
     protected bool IsNoReturnMethod(MethodReference method, Dictionary<string, MethodDefinition> methods) => Translator.TypeSystem.IsNoReturnMethod(method, methods);
@@ -108,6 +109,7 @@ abstract class TranslationComponent(Translator translator)
     protected MethodReference BindMethodToDeclaringType(MethodDefinition method, TypeReference declaringType, MethodReference? requestedMethod = null) => Translator.Methods.BindMethodToDeclaringType(method, declaringType, requestedMethod);
     protected MethodReference? FindMethodImplementation(TypeReference type, MethodReference targetMethod) => Translator.Methods.FindMethodImplementation(type, targetMethod);
     protected bool UsesValueReturnBuffer(MethodReference method) => Translator.Methods.UsesValueReturnBuffer(method);
+    protected bool UsesUnmanagedSignature(MethodReference method) => Translator.Methods.UsesUnmanagedSignature(method);
     protected LLVMTypeRef CreateLLVMFunction(LLVMModuleRef llvmModule, MethodReference method) => Translator.Methods.CreateLLVMFunction(llvmModule, method);
     protected string GetFriendlyMethodName(MethodReference method, TypeReference? methodDeclareType = null) => Translator.Methods.GetFriendlyMethodName(method, methodDeclareType);
     protected string GetFriendlyTypeName(TypeReference type, bool includeGenericMarker = true) => Translator.Methods.GetFriendlyTypeName(type, includeGenericMarker);
@@ -131,7 +133,6 @@ abstract class TranslationComponent(Translator translator)
     protected LLVMValueRef BuildAllocationSize(LLVMBuilderRef builder, LLVMValueRef size) => Translator.Runtime.BuildAllocationSize(builder, size);
     protected LLVMValueRef BuildBoxedValue(LLVMBuilderRef builder, LLVMValueRef value, TypeReference valueType) => Translator.Runtime.BuildBoxedValue(builder, value, valueType);
     protected bool TryGetNullableElementType(TypeReference type, out TypeReference elementType) => Translator.Runtime.TryGetNullableElementType(type, out elementType);
-    protected bool IsExternalMethod(MethodReference method) => Translator.Runtime.IsExternalMethod(method);
     protected FieldDefinition GetArrayDataField() => Translator.Runtime.GetArrayDataField();
     protected FieldDefinition GetArrayLengthsField() => Translator.Runtime.GetArrayLengthsField();
     protected LLVMValueRef BuildArrayLengthTable(LLVMBuilderRef builder, LLVMValueRef[] dimensions) => Translator.Runtime.BuildArrayLengthTable(builder, dimensions);

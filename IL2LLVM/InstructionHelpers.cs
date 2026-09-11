@@ -54,10 +54,17 @@ sealed class InstructionHelpers(Translator translator) : TranslationComponent(tr
     internal new (LLVMValueRef Left, LLVMValueRef Right) NormalizeBinaryOperands(LLVMBuilderRef builder, LLVMValueRef left, LLVMValueRef right)
     {
         if (left.TypeOf.Equals(right.TypeOf))
+        {
+            if (left.TypeOf.Kind == LLVMTypeKind.LLVMPointerTypeKind)
+                return (ConvertValue(builder, left, sizeType), ConvertValue(builder, right, sizeType));
             return (left, right);
+        }
 
         var leftType = left.TypeOf;
         var rightType = right.TypeOf;
+        if (leftType.Kind == LLVMTypeKind.LLVMPointerTypeKind || rightType.Kind == LLVMTypeKind.LLVMPointerTypeKind)
+            return (ConvertValue(builder, left, sizeType), ConvertValue(builder, right, sizeType));
+
         if (leftType.Kind == LLVMTypeKind.LLVMIntegerTypeKind && rightType.Kind == LLVMTypeKind.LLVMIntegerTypeKind)
         {
             var target = leftType.IntWidth >= rightType.IntWidth ? leftType : rightType;

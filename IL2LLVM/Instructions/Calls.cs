@@ -12,13 +12,33 @@ sealed class Calls(Translator translator) : TranslationComponent(translator)
                     var functionPointer = stack.Pop();
                     var arguments = Enumerable.Range(0, callSite.Parameters.Count)
                         .Select(_ => stack.Pop()).Reverse().ToArray();
-                    var functionType = LLVMTypeRef.CreateFunction(GetLLVMTypeRef(callSite.ReturnType),
-                        callSite.Parameters.Select(parameter => GetLLVMTypeRef(parameter.ParameterType)).ToArray());
+                    var parameterTypes = callSite.Parameters
+                        .Select(parameter => GetUnmanagedCallType(parameter.ParameterType)).ToArray();
+                    for (int index = 0; index < arguments.Length; index++)
+                    {
+                        var parameterType = callSite.Parameters[index].ParameterType;
+                        arguments[index] = IsValueType(parameterType) && !IsByReferenceValue(parameterType)
+                            ? builder.BuildLoad2(parameterTypes[index], arguments[index])
+                            : ConvertValue(builder, arguments[index], parameterTypes[index]);
+                    }
+                    var returnType = GetUnmanagedCallType(callSite.ReturnType);
+                    var functionType = LLVMTypeRef.CreateFunction(
+                        returnType, parameterTypes);
                     var result = builder.BuildCall2(functionType, functionPointer, arguments);
                     if (!IsVoidType(callSite.ReturnType))
                     {
+                        var callSiteReturnType = SubstituteGenericParameter(callSite.ReturnType, methodContext.Method);
+                        if (IsValueType(callSite.ReturnType) && !IsByReferenceValue(callSite.ReturnType))
+                        {
+                            var storage = CreateLocalStorage(methodContext.EntryBuilder, callSite.ReturnType);
+                            var address = builder.BuildLoad2(storage.Item2, storage.Item1);
+                            builder.BuildStore(result, address);
+                            result = address;
+                        }
+                        else
+                            result = PromoteSmallIntegerLoad(builder, result, callSiteReturnType);
                         stack.Push(result);
-                        methodContext.TrackType(result, SubstituteGenericParameter(callSite.ReturnType, methodContext.Method));
+                        methodContext.TrackType(result, callSiteReturnType);
                     }
                     return true;
                 }
@@ -110,7 +130,7 @@ sealed class Calls(Translator translator) : TranslationComponent(translator)
                         useRuntimeDispatch = false;
                     }
                     else if (instr.OpCode.Code == Code.Callvirt && targetMethod.HasThis &&
-                        (targetMethod.DeclaringType.Resolve()?.IsInterface == true || targetMethod.Resolve()?.IsVirtual == true))
+                        (targetMethod.DeclaringType.Resolve()?.IsInterface == true || FindMethodDefinition(targetMethod)?.IsVirtual == true))
                     {
                         var stackValues = stack.ToArray();
                         if (stackValues.Length > targetMethod.Parameters.Count &&
@@ -123,7 +143,6 @@ sealed class Calls(Translator translator) : TranslationComponent(translator)
                         else
                             useRuntimeDispatch = true;
                     }
-
                     if (instr.OpCode.Code == Code.Callvirt && targetMethod.Name == "Invoke" && IsDelegateType(targetMethod.DeclaringType))
                     {
                         var invokeArguments = new List<LLVMValueRef>();
@@ -193,6 +212,50 @@ sealed class Calls(Translator translator) : TranslationComponent(translator)
                             : stack.Pop());
                         break;
                     }
+                    if (SameMethodDefinition(targetMethod, coreLib.ActivatorCreateInstanceMethod) &&
+                        targetMethod is GenericInstanceMethod { GenericArguments.Count: 1 } activatorMethod &&
+                        !ContainsGenericParameter(SubstituteGenericParameter(activatorMethod.GenericArguments[0], method)))
+                    {
+                        var instanceType = SubstituteGenericParameter(activatorMethod.GenericArguments[0], method);
+                        var instanceDefinition = instanceType.Resolve() ??
+                            throw new NotSupportedException($"Activator type is not defined: {instanceType.FullName}.");
+                        var constructorDefinition = instanceDefinition.Methods.FirstOrDefault(candidate =>
+                            candidate.IsConstructor && !candidate.IsStatic && candidate.Parameters.Count == 0);
+
+                        SynchronizeEvaluationStackRoots();
+                        LLVMValueRef instance;
+                        if (IsValueType(instanceType))
+                        {
+                            var storage = CreateLocalStorage(entryBuilder, instanceType);
+                            instance = builder.BuildLoad2(storage.Item2, storage.Item1);
+                            unsafe
+                            {
+                                LLVM.BuildMemSet(builder, instance, LLVMValueRef.CreateConstNull(int8Type),
+                                    LLVMValueRef.CreateConstInt(sizeType, (ulong)GetTypeSize(instanceType), false), 1);
+                            }
+                        }
+                        else
+                        {
+                            if (constructorDefinition is null)
+                                throw new NotSupportedException($"Activator type has no parameterless constructor: {instanceType.FullName}.");
+                            instance = BuildAllocation(builder, GetObjectSize(instanceType));
+                            InitializeRuntimeType(builder, instance, instanceType);
+                        }
+                        StoreTemporaryRoot(0, instance, instanceType);
+
+                        if (constructorDefinition is not null)
+                        {
+                            var activatorConstructor = BindMethodToDeclaringType(constructorDefinition, instanceType);
+                            RegisterMethodFunction(module, activatorConstructor, constructorDefinition.Body.Instructions);
+                            var registeredConstructor = GetRegisteredMethod(activatorConstructor) ??
+                                throw new NotSupportedException($"Activator constructor is not registered: {activatorConstructor.FullName}.");
+                            builder.BuildCall2(registeredConstructor.Item2, registeredConstructor.Item1, [instance]);
+                        }
+
+                        stack.Push(instance);
+                        TrackType(instance, instanceType);
+                        break;
+                    }
                     if (targetMethod.DeclaringType is ArrayType multidimensionalArray && multidimensionalArray.Rank > 1)
                     {
                         var elementType = GetLLVMTypeRef(multidimensionalArray.ElementType);
@@ -256,6 +319,7 @@ sealed class Calls(Translator translator) : TranslationComponent(translator)
                     }
                     LLVMValueRef ptr = default;
                     bool byReferenceValueConstructor = false;
+                    bool scalarValueConstructor = false;
 
                     if (instr.OpCode.Code == Code.Newobj)
                     {
@@ -282,18 +346,29 @@ sealed class Calls(Translator translator) : TranslationComponent(translator)
                             break;
                         }
                         var targetType = targetMethod.DeclaringType.Resolve();
+                        scalarValueConstructor = targetType?.IsValueType == true &&
+                            !IsValueType(targetMethod.DeclaringType) &&
+                            !IsByReferenceValue(targetMethod.DeclaringType);
                         SynchronizeEvaluationStackRoots();
-                        if (IsValueType(targetMethod.DeclaringType))
+                        if (IsValueType(targetMethod.DeclaringType) || scalarValueConstructor)
                         {
                             byReferenceValueConstructor = IsByReferenceValue(targetMethod.DeclaringType);
                             if (!byReferenceValueConstructor)
                             {
                                 var storage = CreateLocalStorage(entryBuilder, targetMethod.DeclaringType);
-                                ptr = builder.BuildLoad2(storage.Item2, storage.Item1);
-                                unsafe
+                                if (scalarValueConstructor)
                                 {
-                                    LLVM.BuildMemSet(builder, ptr, LLVMValueRef.CreateConstNull(int8Type),
-                                        LLVMValueRef.CreateConstInt(sizeType, (ulong)GetTypeSize(targetMethod.DeclaringType), false), 1);
+                                    ptr = storage.Item1;
+                                    builder.BuildStore(LLVMValueRef.CreateConstNull(storage.Item2), ptr);
+                                }
+                                else
+                                {
+                                    ptr = builder.BuildLoad2(storage.Item2, storage.Item1);
+                                    unsafe
+                                    {
+                                        LLVM.BuildMemSet(builder, ptr, LLVMValueRef.CreateConstNull(int8Type),
+                                            LLVMValueRef.CreateConstInt(sizeType, (ulong)GetTypeSize(targetMethod.DeclaringType), false), 1);
+                                    }
                                 }
                             }
                         }
@@ -309,22 +384,25 @@ sealed class Calls(Translator translator) : TranslationComponent(translator)
                     }
 
                     var m = GetRegisteredMethod(callTarget);
-                    if (m is null && callTarget.DeclaringType.Resolve()?.IsInterface == true)
-                        m = new(default, CreateLLVMFunction(module, callTarget), callTarget, null);
+                    var callDefinition = FindMethodDefinition(callTarget);
                     if (m is null && FindLocalMethod(callTarget, localMethods) is { HasBody: true } definition)
                     {
                         RegisterMethodFunction(module, callTarget, definition.Body.Instructions);
                         m = GetRegisteredMethod(callTarget);
                     }
+                    if (m is null && (callTarget.DeclaringType.Resolve()?.IsInterface == true ||
+                        callDefinition?.IsAbstract == true))
+                        m = new(default, CreateLLVMFunction(module, callTarget), callTarget, null);
                     if (m is null)
                         throw new NotSupportedException($"Method is not defined in the input module: {callTarget.FullName}, called from {method.FullName} at IL_{instr.Offset:X4}.");
 
                     var targetFuncCreated = m.Item2;
-                    var targetFunc = FindLocalMethod(callTarget, localMethods)?.IsAbstract == true ||
+                    var targetFunc = m.Item4?.Any() == true || !(
+                        FindLocalMethod(callTarget, localMethods)?.IsAbstract == true ||
                         FindLocalMethod(m.Item3, localMethods)?.IsAbstract == true ||
-                        callTarget.Resolve()?.IsAbstract == true || m.Item3.Resolve()?.IsAbstract == true
-                        ? default
-                        : m.Item1;
+                        callTarget.Resolve()?.IsAbstract == true || m.Item3.Resolve()?.IsAbstract == true)
+                        ? m.Item1
+                        : default;
                     var targetArgsList = new List<LLVMValueRef>();
                     int parameterCount = instr.OpCode.Code == Code.Newobj
                         ? targetMethod.Parameters.Count
@@ -359,6 +437,14 @@ sealed class Calls(Translator translator) : TranslationComponent(translator)
                         targetArgs[0] = boxedEnum;
                         callTargetArgs[0] = boxedEnum;
                         TrackType(boxedEnum, callConstrainedType);
+                    }
+                    else if (callConstrainedType is not null && targetArgs.Length != 0 &&
+                        IsValueType(callConstrainedType) && !IsValueType(callTarget.DeclaringType))
+                    {
+                        var boxedValue = BuildBoxedValue(builder, targetArgs[0], callConstrainedType);
+                        targetArgs[0] = boxedValue;
+                        callTargetArgs[0] = boxedValue;
+                        TrackType(boxedValue, callConstrainedType);
                     }
                     for (int i = 0; i < callTargetArgs.Length; i++)
                     {
@@ -424,6 +510,8 @@ sealed class Calls(Translator translator) : TranslationComponent(translator)
                             ? SubstituteGenericParameter(targetMethod.Parameters[parameterIndex].ParameterType, targetMethod)
                             : null));
                     }
+                    rootArgs.AddRange(stack.Reverse().Select(value =>
+                        (value, trackedTypes.TryGetValue(value, out var type) ? type : null)));
                     SynchronizeRoots(rootArgs);
 
                     if (ptr != default)
@@ -473,10 +561,13 @@ sealed class Calls(Translator translator) : TranslationComponent(translator)
                     }
                     if (ptr != default)
                     {
-                        stack.Push(ptr);
-                        TrackType(ptr, targetMethod.DeclaringType);
+                        var constructedValue = scalarValueConstructor
+                            ? builder.BuildLoad2(GetLLVMTypeRef(targetMethod.DeclaringType), ptr)
+                            : ptr;
+                        stack.Push(constructedValue);
+                        TrackType(constructedValue, targetMethod.DeclaringType);
                     }
-                    if (IsNoReturnMethod(callTarget, localMethods))
+                    if (!useVirtualDispatch && IsNoReturnMethod(callTarget, localMethods))
                     {
                         builder.BuildUnreachable();
                         terminatedBlocks.Add(builder.InsertBlock);

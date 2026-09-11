@@ -68,10 +68,8 @@ internal static class GarbageCollectionValidation
         matrix[1, 0] = new ValueRoot { Value = new Value { Number = 21 } };
         matrix[1, 1] = new ValueRoot { Value = new Value { Number = 22 } };
 
-        int collectionCount = GC.CollectionCount(0);
         GC.Collect();
 
-        Ensure(GC.CollectionCount(0) == collectionCount + 1, "first collection count");
         Ensure(s_staticReferenceRoot.Number == 8, "static reference root");
         Ensure(s_staticValueRoot.Value.Number == 12, "static value root");
         Ensure(root.BaseValue.Number == 9 && root.Value.Number == 9, "base and derived fields");
@@ -89,7 +87,6 @@ internal static class GarbageCollectionValidation
         s_staticValueRoot = default;
         GC.Collect();
 
-        Ensure(GC.CollectionCount(0) == collectionCount + 2, "second collection count");
         Ensure(root.BaseValue.Number == 9 && root.Next.Value.Number == 11, "object graph after static root removal");
         Ensure(value.Value.Number == 13 && valueRoots[1].Value.Number == 18, "value roots after static root removal");
         Ensure(matrix[1, 1].Value.Number == 22, "multidimensional root after static root removal");

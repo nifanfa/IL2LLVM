@@ -156,11 +156,6 @@ sealed class Runtime(Translator translator) : TranslationComponent(translator)
         return false;
     }
 
-    internal new bool IsExternalMethod(MethodReference method)
-    {
-        return (FindLocalMethod(method, localMethods) ?? method.Resolve())?.PInvokeInfo is not null;
-    }
-
     internal new FieldDefinition GetArrayDataField()
     {
         return coreLib.ArrayDataField;
@@ -489,11 +484,22 @@ sealed class Runtime(Translator translator) : TranslationComponent(translator)
         var definition = type.Resolve();
         if (definition is null)
             return null;
-        var key = definition.FullName;
+        var key = GetRuntimeTypeKey(type);
         if (cctorGuards.TryGetValue(key, out var existing))
             return existing;
-        var cctor = moduleMethods.Values.FirstOrDefault(candidate =>
-            candidate.Item3.Name == ".cctor" && SameTypeDefinition(candidate.Item3.DeclaringType, definition));
+
+        var cctorDefinition = definition.Methods.FirstOrDefault(method => method.Name == ".cctor" && method.IsStatic);
+        if (cctorDefinition?.HasBody != true)
+            return null;
+        MethodReference cctorReference = type is GenericInstanceType
+            ? BindMethodToDeclaringType(cctorDefinition, type)
+            : cctorDefinition;
+        var cctor = GetRegisteredMethod(cctorReference);
+        if (cctor is null)
+        {
+            RegisterMethodFunction(module, cctorReference, cctorDefinition.Body.Instructions);
+            cctor = GetRegisteredMethod(cctorReference);
+        }
         if (cctor is null || cctor.Item1 == default)
             return null;
 

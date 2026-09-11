@@ -23,10 +23,10 @@ sealed class Methods(Translator translator) : TranslationComponent(translator)
     {
         if (receiverType is ByReferenceType byReference)
             receiverType = byReference.ElementType;
-        var definition = receiverType.Resolve();
+        var definition = ResolveInputType(receiverType);
         if (definition is null)
             return ResolveCallTarget(targetMethod);
-        var implementation = FindMethodImplementation(definition, targetMethod);
+        var implementation = FindMethodImplementation(receiverType, targetMethod);
         return implementation is not null && implementation.Resolve()?.IsAbstract != true
             ? implementation
             : ResolveCallTarget(targetMethod);
@@ -303,21 +303,26 @@ sealed class Methods(Translator translator) : TranslationComponent(translator)
 
     internal new MethodReference? FindMethodImplementation(TypeReference type, MethodReference targetMethod)
     {
+        targetMethod = CloseMethodContract(type, targetMethod);
         var contractIsInterface = targetMethod.DeclaringType.Resolve()?.IsInterface == true;
+        var targetIsStatic = !targetMethod.HasThis;
         var currentType = type;
         if (type is TypeDefinition typeDefinition && typeDefinition.HasGenericParameters &&
             TryCloseRuntimeType(typeDefinition, targetMethod.DeclaringType, out var closedType))
             currentType = closedType;
 
-        while (currentType.Resolve() is { } current)
+        while (ResolveInputType(currentType) is { } current)
         {
-            foreach (var method in current.Methods.Where(method => !method.IsStatic))
+            foreach (var method in current.Methods.Where(method => method.IsStatic == targetIsStatic))
             {
-                if (!method.Overrides.Any(@override => SameMethodDefinition(@override, targetMethod)))
+                if (!method.Overrides.Any(@override =>
+                    SameMethodDefinition(@override, targetMethod) ||
+                    (GetRuntimeTypeKey(@override.DeclaringType) == GetRuntimeTypeKey(targetMethod.DeclaringType) &&
+                     SameMethodSignature(@override, targetMethod))))
                     continue;
                 return BindMethodToDeclaringType(method, currentType, targetMethod);
             }
-            foreach (var method in current.Methods.Where(method => !method.IsStatic && method.Name == targetMethod.Name))
+            foreach (var method in current.Methods.Where(method => method.IsStatic == targetIsStatic && method.Name == targetMethod.Name))
             {
                 var implementation = BindMethodToDeclaringType(method, currentType, targetMethod);
                 if (SameMethodSignature(implementation, targetMethod) &&
@@ -334,14 +339,61 @@ sealed class Methods(Translator translator) : TranslationComponent(translator)
         return null;
     }
 
+    private TypeDefinition? ResolveInputType(TypeReference type)
+    {
+        var name = type is GenericInstanceType generic ? generic.ElementType.FullName : type.FullName;
+        return localTypes.TryGetValue(name, out var definition) ? definition : type.Resolve();
+    }
+
+    private MethodReference CloseMethodContract(TypeReference runtimeType, MethodReference targetMethod)
+    {
+        if (!ContainsGenericParameter(targetMethod.DeclaringType))
+            return targetMethod;
+
+        for (TypeReference? current = runtimeType; current is not null; current = GetClosedBaseType(current))
+        {
+            if (ContainsGenericParameter(current) ||
+                !SameTypeDefinition(current, targetMethod.DeclaringType))
+                continue;
+            var definition = FindMethodDefinition(targetMethod);
+            return definition is null
+                ? targetMethod
+                : BindMethodToDeclaringType(definition, current, targetMethod);
+        }
+
+        foreach (var contract in GetImplementedInterfaces(runtimeType))
+        {
+            if (ContainsGenericParameter(contract) ||
+                !SameTypeDefinition(contract, targetMethod.DeclaringType))
+                continue;
+            var definition = FindMethodDefinition(targetMethod);
+            return definition is null
+                ? targetMethod
+                : BindMethodToDeclaringType(definition, contract, targetMethod);
+        }
+
+        return targetMethod;
+    }
+
     internal new bool UsesValueReturnBuffer(MethodReference method)
     {
+        if (UsesUnmanagedSignature(method))
+            return false;
         var returnType = SubstituteGenericParameter(method.ReturnType, method);
-        return !IsExternalMethod(method) && IsValueType(returnType) && !IsByReferenceValue(returnType);
+        return IsValueType(returnType) && !IsByReferenceValue(returnType);
+    }
+
+    internal new bool UsesUnmanagedSignature(MethodReference method)
+    {
+        var definition = method.Resolve();
+        return definition is not null && definition.CustomAttributes.Any(attribute =>
+            coreLib.IsRuntimeExportAttribute(attribute.AttributeType) ||
+            coreLib.IsUnmanagedCallersOnlyAttribute(attribute.AttributeType));
     }
 
     internal new LLVMTypeRef CreateLLVMFunction(LLVMModuleRef module, MethodReference method)
     {
+        var usesUnmanagedSignature = UsesUnmanagedSignature(method);
         List<LLVMTypeRef> paramTypes = new List<LLVMTypeRef>();
         if (UsesValueReturnBuffer(method))
             paramTypes.Add(LLVMTypeRef.CreatePointer(int8Type, 0));
@@ -352,11 +404,16 @@ sealed class Methods(Translator translator) : TranslationComponent(translator)
         }
         foreach (var p in method.Parameters)
         {
-            paramTypes.Add(GetLLVMTypeRef(SubstituteGenericParameter(p.ParameterType, method)));
+            var parameterType = SubstituteGenericParameter(p.ParameterType, method);
+            paramTypes.Add(usesUnmanagedSignature
+                ? GetUnmanagedCallType(parameterType)
+                : GetLLVMTypeRef(parameterType));
         }
         LLVMTypeRef returnType = UsesValueReturnBuffer(method)
             ? voidType
-            : GetLLVMTypeRef(SubstituteGenericParameter(method.ReturnType, method));
+            : usesUnmanagedSignature
+                ? GetUnmanagedCallType(SubstituteGenericParameter(method.ReturnType, method))
+                : GetLLVMTypeRef(SubstituteGenericParameter(method.ReturnType, method));
         var func = LLVMTypeRef.CreateFunction(returnType, paramTypes.ToArray());
         return func;
     }
@@ -393,7 +450,8 @@ sealed class Methods(Translator translator) : TranslationComponent(translator)
         if (type is GenericParameter parameter)
             return $"{parameter.Type}{parameter.Position}";
         var name = RemoveGenericArity(type.FullName);
-        if (includeGenericMarker && type.Resolve() is { GenericParameters.Count: > 0 } definition)
+        if (includeGenericMarker && localTypes.TryGetValue(type.FullName, out var definition) &&
+            definition.GenericParameters.Count > 0)
             name += "_" + string.Join("_", definition.GenericParameters.Select(parameter => SanitizeSymbolPart(parameter.Name)));
         return SanitizeSymbolPart(name);
     }
@@ -505,7 +563,7 @@ sealed class Methods(Translator translator) : TranslationComponent(translator)
         if (method.DeclaringType is ArrayType array && array.Rank > 1 &&
             method.Name is ".ctor" or "Get" or "Set" or "Address")
             return;
-        if (method.DeclaringType.Resolve()?.IsInterface == true)
+        if (method.DeclaringType.Resolve()?.IsInterface == true && method.Resolve()?.HasBody != true)
             return;
         if (IsDelegateType(method.DeclaringType) && (method.Name is ".ctor" or "Invoke"))
             return;
@@ -520,21 +578,77 @@ sealed class Methods(Translator translator) : TranslationComponent(translator)
                     moduleMethods[friendlyName] = new(existing.Item1, existing.Item2, existing.Item3, instructions);
                 return;
             }
-            throw new InvalidOperationException($"LLVM method symbol collision: {existing.Item3.FullName} and {method.FullName}.");
+            var returnType = GetFriendlyParameterTypeName(SubstituteGenericParameter(method.ReturnType, method));
+            friendlyName = $"{friendlyName}_Returns_{returnType}";
+            if (moduleMethods.TryGetValue(friendlyName, out existing))
+            {
+                if (!SameMethodInstantiation(existing.Item3, method))
+                    throw new InvalidOperationException($"LLVM method symbol collision: {existing.Item3.FullName} and {method.FullName}.");
+                if (existing.Item4 is null && instructions is not null)
+                    moduleMethods[friendlyName] = new(existing.Item1, existing.Item2, existing.Item3, instructions);
+                return;
+            }
         }
 
+        var pinvoke = method.Resolve()?.PInvokeInfo;
+        var nativeSymbolName = pinvoke is null ? null : GetPInvokeNativeSymbolName(method, friendlyName, pinvoke);
+        var runtimeExportName = GetRuntimeExportName(method);
+        var directExport = runtimeExportName is not null;
+        var isEntryPoint = entryPoint is not null && SameMethodDefinition(method, entryPoint);
         var funcType = CreateLLVMFunction(module, method);
-        var importedName = method.Resolve()?.PInvokeInfo?.EntryPoint;
-        var nativeSymbolName = !string.IsNullOrEmpty(importedName) && importedName != method.Name
-            ? importedName
-            : null;
-        var exportedName = entryPoint is not null && SameMethodDefinition(method, entryPoint)
+        var exportedName = isEntryPoint
             ? "managed_Main"
-            : symbolName ?? nativeSymbolName ?? friendlyName;
-        var funcValue = module.AddFunction(exportedName, funcType);
-        if (method.Resolve()?.HasBody == true && (entryPoint is null || !SameMethodDefinition(method, entryPoint)))
-            funcValue.Linkage = LLVMLinkage.LLVMInternalLinkage;
+            : runtimeExportName ?? symbolName ?? nativeSymbolName ?? friendlyName;
+        var reusableNativeSymbol = pinvoke is not null || directExport || isEntryPoint;
+        var funcValue = reusableNativeSymbol ? module.GetNamedFunction(exportedName) : default;
+        if (funcValue == default)
+        {
+            funcValue = module.AddFunction(exportedName, funcType);
+        }
+        else if (!GetFunctionType(funcValue).Equals(funcType))
+        {
+            throw new InvalidOperationException($"Native symbol '{exportedName}' has incompatible signatures.");
+        }
+        var hasDiscardableBody = method.Resolve()?.HasBody == true && !directExport && !isEntryPoint;
+        if (hasDiscardableBody)
+        {
+            funcValue.Linkage = LLVMLinkage.LLVMLinkOnceODRLinkage;
+            var comdat = module.GetOrInsertComdat(friendlyName);
+            comdat.SelectionKind = LLVMComdatSelectionKind.LLVMAnyComdatSelectionKind;
+            funcValue.Comdat = comdat;
+        }
+        if (method.Resolve()?.HasBody == true)
+            funcValue.Section = $".text${GetStableSymbolSuffix(friendlyName)}";
         moduleMethods.Add(friendlyName, new(funcValue, funcType, method, instructions));
+    }
+
+    private string GetPInvokeNativeSymbolName(MethodReference method, string friendlyName, PInvokeInfo pinvoke)
+    {
+        if (!string.IsNullOrEmpty(pinvoke.EntryPoint) && pinvoke.EntryPoint != method.Name)
+            return pinvoke.EntryPoint;
+
+        var definition = method.Resolve();
+        var hasPInvokeOverloads = definition?.DeclaringType.Methods.Count(candidate =>
+            candidate.Name == method.Name && candidate.PInvokeInfo is not null) > 1;
+        return pinvoke.Module?.Name == "*" && hasPInvokeOverloads
+            ? friendlyName
+            : method.Name;
+    }
+
+    private string? GetRuntimeExportName(MethodReference method)
+    {
+        var definition = method.Resolve();
+        if (definition is not { HasBody: true, IsStatic: true } || definition.IsSpecialName)
+            return null;
+
+        var export = definition.CustomAttributes.FirstOrDefault(attribute =>
+            coreLib.IsRuntimeExportAttribute(attribute.AttributeType));
+        if (export is null)
+            return null;
+        if (export.ConstructorArguments.Count != 1 ||
+            export.ConstructorArguments[0].Value is not string name || string.IsNullOrEmpty(name))
+            throw new InvalidOperationException($"RuntimeExport on '{method.FullName}' must specify a non-empty export name.");
+        return name;
     }
 
     internal new LLVMValueRef AddInternalGlobal(LLVMTypeRef type, string name)

@@ -130,10 +130,10 @@ sealed class Compilation : TranslationComponent
                 coreLib.Void);
             var exceptionThrowMethod = GetRequiredMethod(exceptionRuntimeType, "Throw", false,
                 coreLib.Void, coreLib.Exception);
-            RegisterMethodFunction(module, exceptionPushMethod, exceptionPushMethod.Body.Instructions);
-            RegisterMethodFunction(module, exceptionPopMethod, exceptionPopMethod.Body.Instructions);
+            RegisterMethodFunction(module, exceptionPushMethod, null);
+            RegisterMethodFunction(module, exceptionPopMethod, null);
             RegisterMethodFunction(module, exceptionBufferMethod, exceptionBufferMethod.Body.Instructions);
-            RegisterMethodFunction(module, exceptionTopMethod, exceptionTopMethod.Body.Instructions);
+            RegisterMethodFunction(module, exceptionTopMethod, null);
             RegisterMethodFunction(module, exceptionCurrentMethod, exceptionCurrentMethod.Body.Instructions);
             RegisterMethodFunction(module, setjmpMethod, null);
             RegisterMethodFunction(module, longjmpMethod, null);
@@ -152,8 +152,8 @@ sealed class Compilation : TranslationComponent
                 gcFramePointerType, gcRootPointerType, coreLib.Int32);
             var gcPopMethod = GetRequiredMethod(gcHeapType, "Pop", false, coreLib.Void, gcFramePointerType);
             RegisterMethodFunction(module, gcAllocateMethod, gcAllocateMethod.Body.Instructions);
-            RegisterMethodFunction(module, gcPushMethod, gcPushMethod.Body.Instructions);
-            RegisterMethodFunction(module, gcPopMethod, gcPopMethod.Body.Instructions);
+            RegisterMethodFunction(module, gcPushMethod, null);
+            RegisterMethodFunction(module, gcPopMethod, null);
             var registeredGCAllocate = GetRegisteredMethod(gcAllocateMethod)!;
             gcAllocateFunction = registeredGCAllocate.Item1;
             gcAllocateType = registeredGCAllocate.Item2;
@@ -378,7 +378,9 @@ sealed class Compilation : TranslationComponent
                     entryBuilder = context.CreateBuilder();
                     entryBuilder.PositionAtEnd(allocaBlock);
                     builder.PositionAtEnd(entry);
-                    var cctorGuard = method.Value.Item3.Resolve() is not { IsConstructor: true } && !method.Value.Item3.HasThis
+                    var methodDefinition = FindLocalMethod(method.Value.Item3, localMethods) ?? method.Value.Item3.Resolve();
+                    var cctorGuard = methodDefinition is not { IsConstructor: true } &&
+                        !method.Value.Item3.HasThis && methodDefinition?.DeclaringType.IsBeforeFieldInit != true
                         ? GetCctorGuard(method.Value.Item3.DeclaringType)
                         : null;
                     {
@@ -399,7 +401,6 @@ sealed class Compilation : TranslationComponent
                         SortedDictionary<int, LLVMBasicBlockRef> label = new();
                         int nextFinallyContinuation = 1;
                         uint unalignedAlignment = 0;
-                        var methodDefinition = FindLocalMethod(method.Value.Item3, localMethods) ?? method.Value.Item3.Resolve();
                         if (methodDefinition?.Body.ExceptionHandlers.Any() == true)
                         {
                             ReadOnlySpan<byte> framePointerName = "frame-pointer"u8;
@@ -507,6 +508,17 @@ sealed class Compilation : TranslationComponent
                             LLVMTypeRef targetFunctionType, LLVMValueRef targetFunction, List<(TypeReference RuntimeType, MethodReference Implementation)> implementations,
                             bool allowArraySpecial = true, LLVMValueRef returnBuffer = default)
                         {
+                            LLVMValueRef[] ConvertCallArguments(LLVMValueRef function, LLVMValueRef[] arguments)
+                            {
+                                var parameterTypes = GetFunctionType(function).GetParamTypes();
+                                if (parameterTypes.Length != arguments.Length)
+                                    return arguments;
+                                var converted = (LLVMValueRef[])arguments.Clone();
+                                for (int index = 0; index < converted.Length; index++)
+                                    converted[index] = ConvertValue(builder, converted[index], parameterTypes[index]);
+                                return converted;
+                            }
+
                             LLVMValueRef[] GetImplementationArgs(TypeReference runtimeType, MethodReference implementation)
                             {
                                 var implementationArgs = targetArgs;
@@ -548,6 +560,11 @@ sealed class Compilation : TranslationComponent
                                 builder.PositionAtEnd(fallbackBlock);
                                 var arrayFallback = BuildVirtualDispatch(targetMethod, targetArgs, targetFunctionType, targetFunction, implementations, false, returnBuffer);
                                 var arrayFallbackSource = builder.InsertBlock;
+                                if (terminatedBlocks.Contains(arrayFallbackSource))
+                                {
+                                    builder.PositionAtEnd(arrayContinuation);
+                                    return enumerator;
+                                }
                                 builder.BuildBr(arrayContinuation);
                                 builder.PositionAtEnd(arrayContinuation);
                                 var result = builder.BuildPhi(LLVMTypeRef.CreatePointer(int8Type, 0), "array.enum.result");
@@ -569,13 +586,16 @@ sealed class Compilation : TranslationComponent
                                 {
                                     var implementation = registeredImplementations[0];
                                     var result = builder.BuildCall2(implementation.Method!.Item2, implementation.Method.Item1,
-                                        GetImplementationArgs(implementation.RuntimeType, implementation.Method.Item3));
+                                        ConvertCallArguments(implementation.Method.Item1,
+                                            GetImplementationArgs(implementation.RuntimeType, implementation.Method.Item3)));
                                     return returnBuffer == default ? result : returnBuffer;
                                 }
                                 if (targetFunction != default)
                                 {
                                     var functionArgs = returnBuffer == default ? targetArgs : [returnBuffer, .. targetArgs];
-                                    var result = builder.BuildCall2(targetFunctionType, targetFunction, functionArgs);
+                                    var functionType = GetFunctionType(targetFunction);
+                                    var result = builder.BuildCall2(functionType, targetFunction,
+                                        ConvertCallArguments(targetFunction, functionArgs));
                                     return returnBuffer == default ? result : returnBuffer;
                                 }
                                 var abort = GetRegisteredMethod(exceptionAbortMethod) ??
@@ -616,8 +636,10 @@ sealed class Compilation : TranslationComponent
                                 }
 
                                 builder.PositionAtEnd(callBlock);
-                                var implementationArgs = GetImplementationArgs(candidate.RuntimeType, implementationMethod.Item3);
-                                var result = builder.BuildCall2(implementationMethod.Item2, implementationMethod.Item1, implementationArgs);
+                                var implementationArgs = ConvertCallArguments(implementationMethod.Item1,
+                                    GetImplementationArgs(candidate.RuntimeType, implementationMethod.Item3));
+                                var result = builder.BuildCall2(GetFunctionType(implementationMethod.Item1),
+                                    implementationMethod.Item1, implementationArgs);
                                 if (!IsVoidType(targetMethod.ReturnType) && returnBuffer == default)
                                 {
                                     incomingValues.Add(ConvertValue(builder, result, GetLLVMTypeRef(SubstituteGenericParameter(targetMethod.ReturnType, targetMethod))));
@@ -629,7 +651,8 @@ sealed class Compilation : TranslationComponent
 
                             if (!IsVoidType(targetMethod.ReturnType) && targetFunction != default && returnBuffer == default)
                             {
-                                var fallback = ConvertValue(builder, builder.BuildCall2(targetFunctionType, targetFunction, targetArgs),
+                                var fallback = ConvertValue(builder, builder.BuildCall2(GetFunctionType(targetFunction), targetFunction,
+                                    ConvertCallArguments(targetFunction, targetArgs)),
                                     GetLLVMTypeRef(SubstituteGenericParameter(targetMethod.ReturnType, targetMethod)));
                                 incomingValues.Add(fallback);
                                 incomingBlocks.Add(builder.InsertBlock);
@@ -638,7 +661,8 @@ sealed class Compilation : TranslationComponent
                             else if (targetFunction != default)
                             {
                                 var functionArgs = returnBuffer == default ? targetArgs : [returnBuffer, .. targetArgs];
-                                builder.BuildCall2(targetFunctionType, targetFunction, functionArgs);
+                                builder.BuildCall2(GetFunctionType(targetFunction), targetFunction,
+                                    ConvertCallArguments(targetFunction, functionArgs));
                                 builder.BuildBr(continuation);
                             }
                             else
@@ -926,6 +950,7 @@ sealed class Compilation : TranslationComponent
                             builder.PositionAtEnd(dispatch);
                             builder.BuildCall2(exceptionPopType, exceptionPopFunction, [region.Frame]);
                             var exception = builder.BuildCall2(exceptionCurrentType, exceptionCurrentFunction, []);
+                            builder.BuildStore(exception, region.Exception);
                             var chain = dispatch;
                             for (int index = 0; index < region.Handlers.Count; index++)
                             {
@@ -969,7 +994,7 @@ sealed class Compilation : TranslationComponent
                                     terminatedBlocks.Add(chain);
                                     builder.PositionAtEnd(rethrow);
                                     builder.BuildCall2(exceptionThrowType, exceptionThrowFunction,
-                                        [builder.BuildCall2(exceptionCurrentType, exceptionCurrentFunction, [])]);
+                                        [builder.BuildLoad2(exceptionPointerType, region.Exception)]);
                                     builder.BuildUnreachable();
                                     terminatedBlocks.Add(rethrow);
                                     chain = next;
@@ -979,7 +1004,7 @@ sealed class Compilation : TranslationComponent
                             }
                             builder.PositionAtEnd(chain);
                             builder.BuildCall2(exceptionThrowType, exceptionThrowFunction,
-                                [builder.BuildCall2(exceptionCurrentType, exceptionCurrentFunction, [])]);
+                                [builder.BuildLoad2(exceptionPointerType, region.Exception)]);
                             builder.BuildUnreachable();
                             terminatedBlocks.Add(chain);
                             builder.PositionAtEnd(normal);
@@ -1006,6 +1031,7 @@ sealed class Compilation : TranslationComponent
                                     SubstituteGenericParameter(variable.Value, method.Value.Item3));
 
                         var usesValueReturnBuffer = UsesValueReturnBuffer(method.Value.Item3);
+                        var usesUnmanagedSignature = UsesUnmanagedSignature(method.Value.Item3);
                         var valueReturnBuffer = usesValueReturnBuffer
                             ? method.Value.Item1.GetParam(0)
                             : default;
@@ -1018,9 +1044,23 @@ sealed class Compilation : TranslationComponent
                         for (int i = 0; i < GetMethodParameterCount(method.Value.Item3); i++)
                         {
                             var argument = GetMethodParameter(i);
-                            local[-1 - i] = new(BuildEntryAlloca(argument.TypeOf), argument.TypeOf);
-                            entryBuilder.PositionAtEnd(allocaBlock);
-                            entryBuilder.BuildStore(argument, local[-1 - i].Item1);
+                            var parameterType = method.Value.Item3.HasThis && i == 0
+                                ? method.Value.Item3.DeclaringType
+                                : SubstituteGenericParameter(method.Value.Item3.Parameters[i - (method.Value.Item3.HasThis ? 1 : 0)].ParameterType,
+                                    method.Value.Item3);
+                            if (usesUnmanagedSignature && IsValueType(parameterType) && !IsByReferenceValue(parameterType))
+                            {
+                                var storage = CreateLocalStorage(entryBuilder, parameterType);
+                                var address = entryBuilder.BuildLoad2(storage.Item2, storage.Item1);
+                                entryBuilder.BuildStore(argument, address);
+                                local[-1 - i] = storage;
+                            }
+                            else
+                            {
+                                local[-1 - i] = new(BuildEntryAlloca(argument.TypeOf), argument.TypeOf);
+                                entryBuilder.PositionAtEnd(allocaBlock);
+                                entryBuilder.BuildStore(argument, local[-1 - i].Item1);
+                            }
                         }
                         label.Add(method.Value.Item4.First().Offset, entry);
 
@@ -1107,7 +1147,8 @@ sealed class Compilation : TranslationComponent
                                     End = regionGroup.Key.Item2,
                                     Handlers = regionGroup.ToList(),
                                     Frame = frame,
-                                    Buffer = buffer
+                                    Buffer = buffer,
+                                    Exception = BuildEntryAlloca(exceptionPointerType)
                                 };
                                 exceptionRegions.Add(region);
                                 foreach (var handler in region.Handlers.Where(handler =>
@@ -1171,8 +1212,9 @@ sealed class Compilation : TranslationComponent
                         }
                         foreach (var handler in caughtExceptions)
                             AddRoot(new Tuple<LLVMValueRef, LLVMTypeRef>(handler.Value, exceptionPointerType), coreLib.Exception, true);
+                        foreach (var region in exceptionRegions)
+                            AddRoot(new Tuple<LLVMValueRef, LLVMTypeRef>(region.Exception, exceptionPointerType), coreLib.Exception, true);
 
-                        var tracksGCFrames = !SameTypeDefinition(method.Value.Item3.DeclaringType, gcHeapType);
                         var maxStack = Math.Max(1, methodDefinition?.Body.MaxStackSize ?? 1);
                         var stackRootCapacity = maxStack + 2;
                         const int temporaryRootCount = 4;
@@ -1264,16 +1306,12 @@ sealed class Compilation : TranslationComponent
 
                         void PopGCFrame()
                         {
-                            if (tracksGCFrames)
-                                builder.BuildCall2(gcPopType, gcPopFunction, [rootFrame]);
+                            builder.BuildCall2(gcPopType, gcPopFunction, [rootFrame]);
                         }
 
                         var rootEntriesPointer = GetRootEntryAddress(0);
-                        if (tracksGCFrames)
-                        {
-                            builder.BuildCall2(gcPushType, gcPushFunction,
-                                [rootFrame, rootEntriesPointer, LLVMValueRef.CreateConstInt(int32Type, (ulong)rootEntryCount, false)]);
-                        }
+                        builder.BuildCall2(gcPushType, gcPushFunction,
+                            [rootFrame, rootEntriesPointer, LLVMValueRef.CreateConstInt(int32Type, (ulong)rootEntryCount, false)]);
 
                         if (cctorGuard is not null)
                             builder.BuildCall2(LLVMTypeRef.CreateFunction(voidType, []), cctorGuard.Value.Function, []);
@@ -1384,7 +1422,9 @@ sealed class Compilation : TranslationComponent
                             else if (IsVoidType(returnType))
                                 builder.BuildRetVoid();
                             else
-                                builder.BuildRet(LLVMValueRef.CreateConstNull(GetLLVMTypeRef(returnType)));
+                                builder.BuildRet(LLVMValueRef.CreateConstNull(usesUnmanagedSignature
+                                    ? GetUnmanagedCallType(returnType)
+                                    : GetLLVMTypeRef(returnType)));
                             terminatedBlocks.Add(block);
                         }
                         if (!terminatedBlocks.Contains(entry))
@@ -1404,7 +1444,9 @@ sealed class Compilation : TranslationComponent
                             else if (IsVoidType(returnType))
                                 builder.BuildRetVoid();
                             else
-                                builder.BuildRet(LLVMValueRef.CreateConstNull(GetLLVMTypeRef(returnType)));
+                                builder.BuildRet(LLVMValueRef.CreateConstNull(usesUnmanagedSignature
+                                    ? GetUnmanagedCallType(returnType)
+                                    : GetLLVMTypeRef(returnType)));
                         }
                     }
                 }
@@ -1433,6 +1475,16 @@ sealed class Compilation : TranslationComponent
             var staticRootHead = GetStaticField(coreLib.GCStaticRootsField);
             var staticRootHeadStorage = staticRootHead.Item1;
             staticRootHeadStorage.Initializer = LLVMValueRef.CreateConstPointerCast(nextStaticRoot, staticRootHead.Item2);
+
+            var passOptions = LLVMPassBuilderOptionsRef.Create();
+            try
+            {
+                module.RunPasses("globaldce", machine, passOptions);
+            }
+            finally
+            {
+                passOptions.Dispose();
+            }
 
             if (!module.TryVerify(LLVMVerifierFailureAction.LLVMReturnStatusAction, out var verificationError))
                 throw new InvalidOperationException(verificationError);

@@ -5,4 +5,5 @@ sealed class ExceptionRegion
     public required List<ExceptionHandler> Handlers;
     public required LLVMValueRef Frame;
     public required LLVMValueRef Buffer;
+    public required LLVMValueRef Exception;
 }

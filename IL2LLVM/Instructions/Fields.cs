@@ -89,7 +89,7 @@ sealed class Fields(Translator translator) : TranslationComponent(translator)
     {
         if (method.Name == ".cctor")
             return;
-        var guard = GetCctorGuard(type);
+        var guard = GetCctorGuard(ResolveGenericType(type, method));
         if (guard is not null)
             builder.BuildCall2(LLVMTypeRef.CreateFunction(voidType, []), guard.Value.Function, []);
     }

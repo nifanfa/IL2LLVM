@@ -9,6 +9,9 @@ sealed class TypeSystem(Translator translator) : TranslationComponent(translator
                      .Where(candidate => candidate.Resolve()?.IsInterface == false && !ContainsGenericParameter(candidate))
                      .OrderByDescending(GetTypeDepth))
         {
+            if (contractType.Resolve()?.IsInterface == true &&
+                !GetImplementedInterfaces(runtimeType).Any(@interface => SameType(@interface, contractType)))
+                continue;
             var implementation = FindMethodImplementation(runtimeType, targetMethod);
             if (implementation is null || FindLocalMethod(implementation, localMethods)?.HasBody != true ||
                 !seen.Add(GetRuntimeTypeKey(runtimeType)))
@@ -81,6 +84,8 @@ sealed class TypeSystem(Translator translator) : TranslationComponent(translator
             return GetLLVMTypeRef(optionalModifier.ElementType);
         if (type is PinnedType pinned)
             return GetLLVMTypeRef(pinned.ElementType);
+        if (coreLib.IsNativeInteger(type))
+            return sizeType;
         var enumUnderlyingType = GetEnumUnderlyingType(type);
         if (enumUnderlyingType is not null)
             return GetLLVMTypeRef(enumUnderlyingType);
@@ -97,6 +102,54 @@ sealed class TypeSystem(Translator translator) : TranslationComponent(translator
         return GetLLVMTypeRefFromMetadataType(type.MetadataType);
     }
 
+    internal new LLVMTypeRef GetUnmanagedCallType(TypeReference type)
+    {
+        if (type is RequiredModifierType requiredModifier)
+            return GetUnmanagedCallType(requiredModifier.ElementType);
+        if (type is OptionalModifierType optionalModifier)
+            return GetUnmanagedCallType(optionalModifier.ElementType);
+        if (type is PinnedType pinned)
+            return GetUnmanagedCallType(pinned.ElementType);
+        var enumUnderlyingType = GetEnumUnderlyingType(type);
+        if (enumUnderlyingType is not null)
+            return GetUnmanagedCallType(enumUnderlyingType);
+        if (!IsValueType(type) || IsByReferenceValue(type))
+            return GetLLVMTypeRef(type);
+
+        var definition = type.Resolve() ?? throw new NotSupportedException(
+            $"Unmanaged value type is not defined in the input module: {type.FullName}");
+        var fields = definition.Fields.Where(field => !field.IsStatic)
+            .Select(field =>
+            {
+                var fieldType = type is GenericInstanceType genericType
+                    ? SubstituteGenericTypeArguments(field.FieldType, genericType)
+                    : field.FieldType;
+                return (Field: field, Type: fieldType, Offset: GetFieldOffsetForType(field, type));
+            })
+            .OrderBy(field => field.Offset)
+            .ToArray();
+        var elements = new List<LLVMTypeRef>();
+        var offset = 0;
+        foreach (var field in fields)
+        {
+            if (field.Offset < offset)
+            {
+                var bytes = LLVMTypeRef.CreateArray(int8Type, (uint)Math.Max(1, GetTypeSize(type)));
+                return context.GetStructType([bytes], true);
+            }
+            if (field.Offset > offset)
+                elements.Add(LLVMTypeRef.CreateArray(int8Type, (uint)(field.Offset - offset)));
+            elements.Add(GetUnmanagedCallType(field.Type));
+            offset = field.Offset + GetTypeSize(field.Type);
+        }
+        var size = Math.Max(1, GetTypeSize(type));
+        if (offset < size)
+            elements.Add(LLVMTypeRef.CreateArray(int8Type, (uint)(size - offset)));
+        if (elements.Count == 0)
+            elements.Add(LLVMTypeRef.CreateArray(int8Type, (uint)size));
+        return context.GetStructType(elements.ToArray(), true);
+    }
+
     internal new bool IsVoidType(TypeReference type)
     {
         if (type is RequiredModifierType requiredModifier)
@@ -108,7 +161,15 @@ sealed class TypeSystem(Translator translator) : TranslationComponent(translator
 
     internal new TypeReference? GetEnumUnderlyingType(TypeReference type)
     {
-        var resolved = type.Resolve();
+        TypeDefinition? resolved;
+        try
+        {
+            resolved = type.Resolve();
+        }
+        catch (AssemblyResolutionException)
+        {
+            return null;
+        }
         return resolved is { IsEnum: true } definition
             ? definition.Fields.FirstOrDefault(field => field.Name == "value__")?.FieldType
             : null;
@@ -349,21 +410,27 @@ sealed class TypeSystem(Translator translator) : TranslationComponent(translator
     {
         var definition = declaringType.Resolve() ?? field.DeclaringType;
         var baseType = GetClosedBaseType(declaringType);
-        var offset = IsValueType(definition) || baseType is null
+        var offset = definition.IsValueType || baseType is null
             ? 0
             : GetObjectSize(baseType);
+        if (definition.IsExplicitLayout)
+        {
+            if (field.Offset < 0)
+                throw new InvalidOperationException($"Explicit-layout field has no offset: {field.FullName}.");
+            return offset + field.Offset;
+        }
         foreach (var candidate in definition.Fields.TakeWhile(candidate => candidate.Name != field.Name).Where(candidate => !candidate.IsStatic))
         {
             var candidateType = declaringType is GenericInstanceType genericType
                 ? SubstituteGenericTypeArguments(candidate.FieldType, genericType)
                 : candidate.FieldType;
-            offset = AlignUp(offset, GetTypeAlignment(candidateType));
+            offset = AlignUp(offset, GetFieldAlignment(definition, candidateType));
             offset += GetTypeSize(candidateType);
         }
         var fieldType = declaringType is GenericInstanceType genericDeclaringType
             ? SubstituteGenericTypeArguments(field.FieldType, genericDeclaringType)
             : field.FieldType;
-        return AlignUp(offset, GetTypeAlignment(fieldType));
+        return AlignUp(offset, GetFieldAlignment(definition, fieldType));
     }
 
     internal new int GetBaseTypeSize(TypeReference? type)
@@ -387,14 +454,29 @@ sealed class TypeSystem(Translator translator) : TranslationComponent(translator
         var baseType = GetClosedBaseType(type);
         var offset = baseType is null ? 0 : GetObjectSize(baseType);
         var alignment = baseType is null ? 1 : GetTypeAlignment(baseType);
+        if (definition.IsExplicitLayout)
+        {
+            foreach (var field in definition.Fields.Where(field => !field.IsStatic))
+            {
+                if (field.Offset < 0)
+                    throw new InvalidOperationException($"Explicit-layout field has no offset: {field.FullName}.");
+                var fieldType = type is GenericInstanceType genericType
+                    ? SubstituteGenericTypeArguments(field.FieldType, genericType)
+                    : field.FieldType;
+                offset = Math.Max(offset, (baseType is null ? 0 : GetObjectSize(baseType)) +
+                    field.Offset + GetTypeSize(fieldType));
+                alignment = Math.Max(alignment, GetFieldAlignment(definition, fieldType));
+            }
+            return Math.Max(AlignUp(offset, alignment), definition.ClassSize);
+        }
         foreach (var field in definition.Fields.Where(field => !field.IsStatic))
         {
             var fieldType = type is GenericInstanceType genericType
                 ? SubstituteGenericTypeArguments(field.FieldType, genericType)
                 : field.FieldType;
-            offset = AlignUp(offset, GetTypeAlignment(fieldType));
+            offset = AlignUp(offset, GetFieldAlignment(definition, fieldType));
             offset += GetTypeSize(fieldType);
-            alignment = Math.Max(alignment, GetTypeAlignment(fieldType));
+            alignment = Math.Max(alignment, GetFieldAlignment(definition, fieldType));
         }
         if (SameTypeDefinition(definition, GetObjectTypeField().DeclaringType))
             offset = Math.Max(offset, GetObjectHeaderSize());
@@ -409,6 +491,8 @@ sealed class TypeSystem(Translator translator) : TranslationComponent(translator
             return GetTypeSize(optionalModifier.ElementType);
         if (type is PinnedType pinned)
             return GetTypeSize(pinned.ElementType);
+        if (coreLib.IsNativeInteger(type))
+            return pointerSize;
         if (IsByReferenceValue(type))
             return pointerSize;
         if (type is GenericInstanceType genericInstance && localTypes.TryGetValue(genericInstance.ElementType.FullName, out var genericDefinition))
@@ -447,9 +531,20 @@ sealed class TypeSystem(Translator translator) : TranslationComponent(translator
     {
         var offset = IsValueType(type) || type.BaseType is null ? 0 : GetBaseTypeSize(type.BaseType);
         var alignment = GetTypeDefinitionAlignment(type);
+        if (type.IsExplicitLayout)
+        {
+            var baseOffset = offset;
+            foreach (var field in type.Fields.Where(field => !field.IsStatic))
+            {
+                if (field.Offset < 0)
+                    throw new InvalidOperationException($"Explicit-layout field has no offset: {field.FullName}.");
+                offset = Math.Max(offset, baseOffset + field.Offset + GetTypeSize(field.FieldType));
+            }
+            return Math.Max(AlignUp(offset, alignment), type.ClassSize);
+        }
         foreach (var field in type.Fields.Where(field => !field.IsStatic))
         {
-            var fieldAlignment = GetTypeAlignment(field.FieldType);
+            var fieldAlignment = GetFieldAlignment(type, field.FieldType);
             offset = AlignUp(offset, fieldAlignment);
             offset += GetTypeSize(field.FieldType);
             alignment = Math.Max(alignment, fieldAlignment);
@@ -463,30 +558,51 @@ sealed class TypeSystem(Translator translator) : TranslationComponent(translator
     {
         var alignment = IsValueType(type) || type.BaseType is null ? 1 : GetTypeAlignment(type.BaseType);
         foreach (var field in type.Fields.Where(field => !field.IsStatic))
-            alignment = Math.Max(alignment, GetTypeAlignment(field.FieldType));
+            alignment = Math.Max(alignment, GetFieldAlignment(type, field.FieldType));
         return alignment;
+    }
+
+    private int GetFieldAlignment(TypeDefinition declaringType, TypeReference fieldType)
+    {
+        var alignment = GetTypeAlignment(fieldType);
+        return declaringType.PackingSize > 0
+            ? Math.Min(alignment, declaringType.PackingSize)
+            : alignment;
     }
 
     internal new bool IsValueType(TypeReference type)
     {
         if (coreLib.IsValueType(type) || coreLib.IsEnum(type))
             return false;
-        if (type.Resolve()?.IsEnum == true)
+        if (coreLib.IsNativeInteger(type))
             return false;
         if (type.MetadataType is MetadataType.Void or MetadataType.Boolean or MetadataType.Char or
             MetadataType.SByte or MetadataType.Byte or MetadataType.Int16 or MetadataType.UInt16 or
             MetadataType.Int32 or MetadataType.UInt32 or MetadataType.Int64 or MetadataType.UInt64 or
             MetadataType.Single or MetadataType.Double or MetadataType.IntPtr or MetadataType.UIntPtr)
             return false;
+        if (localTypes.TryGetValue(type.FullName, out var localDefinition) && localDefinition.IsEnum)
+            return false;
         if (type is GenericInstanceType generic)
-            return generic.ElementType.Resolve()?.IsValueType == true;
+            return localTypes.TryGetValue(generic.ElementType.FullName, out var genericDefinition) &&
+                genericDefinition.IsValueType;
         return type.MetadataType == MetadataType.ValueType ||
             localTypes.TryGetValue(type.FullName, out var definition) && definition.IsValueType;
     }
 
     internal new bool IsByReferenceValue(TypeReference type)
     {
-        var definition = type.Resolve();
+        TypeDefinition? definition;
+        try
+        {
+            definition = type.Resolve();
+        }
+        catch (AssemblyResolutionException)
+        {
+            definition = localTypes.TryGetValue(type.FullName, out var localDefinition)
+                ? localDefinition
+                : null;
+        }
         if (definition?.IsValueType != true)
             return false;
         return definition.Fields.Any(field => !field.IsStatic && field.FieldType is ByReferenceType);
@@ -507,7 +623,7 @@ sealed class TypeSystem(Translator translator) : TranslationComponent(translator
         if (type is ByReferenceType or PointerType || type.MetadataType is MetadataType.IntPtr or MetadataType.UIntPtr ||
             GetEnumUnderlyingType(type) is not null)
             return false;
-        return type.Resolve() is { IsValueType: false };
+        return localTypes.TryGetValue(type.FullName, out var localDefinition) && !localDefinition.IsValueType;
     }
 
     internal new int GetTypeAlignment(TypeReference type)
@@ -518,6 +634,8 @@ sealed class TypeSystem(Translator translator) : TranslationComponent(translator
             return GetTypeAlignment(optionalModifier.ElementType);
         if (type is PinnedType pinned)
             return GetTypeAlignment(pinned.ElementType);
+        if (coreLib.IsNativeInteger(type))
+            return pointerSize;
         if (IsByReferenceValue(type))
             return pointerSize;
         var enumUnderlyingType = GetEnumUnderlyingType(type);

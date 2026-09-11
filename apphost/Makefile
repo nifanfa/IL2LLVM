@@ -1,6 +1,6 @@
 PROGRAM := ConsoleAppExample
 MANAGED_OBJECT := ../ConsoleAppExample/bin/Debug/net10.0/ConsoleAppExample.obj
-SOURCES := apphost.c CoreLib.linux.c
+SOURCES := apphost.c Runtime.c
 
 CFLAGS ?= -O2 -Wall -Wextra -fno-pie
 LDFLAGS ?= -no-pie
