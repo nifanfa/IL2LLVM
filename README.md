@@ -4,6 +4,36 @@
 
 IL2LLVM translates a managed assembly built with this repository's CoreLib into a native object file through LLVM. It is not a .NET runtime, NativeAOT frontend, or a general-purpose replacement for the .NET SDK.
 
+## Project purpose
+
+The purpose of this project is to support any processor architecture for which LLVM can emit an object file. IL2LLVM does not contain x86, ARM, Windows, Linux, or kernel-specific translation logic. The project supplies the LLVM target triple and the native host supplies the ABI-dependent entry point, exception transfer, and linker configuration.
+
+The managed runtime is deliberately small. A user-mode host only needs a small ISO C library surface:
+
+- `calloc`
+- `free`
+- `memcpy`
+- `memset`
+- `abort`
+- `printf` or an equivalent text output function
+- `wprintf` or an equivalent UTF-16 output function when character output is used
+
+The following symbols are the runtime boundary implemented by the host. They are not platform APIs and can be implemented for the target processor and environment:
+
+- `PushGCFrame`
+- `PopGCFrame`
+- `GetTopGCFrame`
+- `UnwindGCFrames`
+- `PushExceptionFrame`
+- `PopExceptionFrame`
+- `GetTopExceptionFrame`
+- `setjmp`
+- `longjmp`
+- `Enter`
+- `Exit`
+
+The current `setjmp` entry has an additional stack-pointer argument so the generated exception machinery can restore the managed stack state. It therefore requires a target-specific implementation even though `setjmp` and `longjmp` have standard C counterparts. Console output symbols such as `System_Console_WriteLine_Int32` are optional host conveniences, not requirements of the translator.
+
 Projects below the repository root build without the framework class library. `Directory.Build.targets` imports `CoreLib/CoreLib.cs` as a shared source file, so the compiled input assembly contains the runtime types used by the translator.
 
 ```
