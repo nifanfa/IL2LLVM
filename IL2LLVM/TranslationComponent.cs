@@ -1,7 +1,6 @@
 abstract class TranslationComponent(Translator translator)
 {
     protected Translator Translator { get; } = translator;
-
     protected LLVMContextRef context { get => Translator.context; set => Translator.context = value; }
     protected LLVMModuleRef module { get => Translator.module; set => Translator.module = value; }
     protected LLVMTargetMachineRef machine { get => Translator.machine; set => Translator.machine = value; }
@@ -15,6 +14,17 @@ abstract class TranslationComponent(Translator translator)
     protected LLVMTypeRef doubleType { get => Translator.doubleType; set => Translator.doubleType = value; }
     protected LLVMTypeRef voidType { get => Translator.voidType; set => Translator.voidType = value; }
     protected LLVMTypeRef sizeType { get => Translator.sizeType; set => Translator.sizeType = value; }
+    protected Dictionary<string, LLVMTypeRef> llvmTypeCache { get => Translator.llvmTypeCache; set => Translator.llvmTypeCache = value; }
+    protected Dictionary<string, int> typeSizeCache { get => Translator.typeSizeCache; set => Translator.typeSizeCache = value; }
+    protected Dictionary<string, int> typeAlignmentCache { get => Translator.typeAlignmentCache; set => Translator.typeAlignmentCache = value; }
+    protected Dictionary<string, int> objectSizeCache { get => Translator.objectSizeCache; set => Translator.objectSizeCache = value; }
+    protected Dictionary<string, int> typeDefinitionSizeCache { get => Translator.typeDefinitionSizeCache; set => Translator.typeDefinitionSizeCache = value; }
+    protected Dictionary<string, int> typeDefinitionAlignmentCache { get => Translator.typeDefinitionAlignmentCache; set => Translator.typeDefinitionAlignmentCache = value; }
+    protected Dictionary<string, TypeReference?> enumUnderlyingTypeCache { get => Translator.enumUnderlyingTypeCache; set => Translator.enumUnderlyingTypeCache = value; }
+    protected Dictionary<string, bool> valueTypeCache { get => Translator.valueTypeCache; set => Translator.valueTypeCache = value; }
+    protected Dictionary<string, bool> byReferenceValueCache { get => Translator.byReferenceValueCache; set => Translator.byReferenceValueCache = value; }
+    protected Dictionary<string, bool> managedReferenceTypeCache { get => Translator.managedReferenceTypeCache; set => Translator.managedReferenceTypeCache = value; }
+    protected Dictionary<string, MethodDefinition?> methodDefinitionCache { get => Translator.methodDefinitionCache; set => Translator.methodDefinitionCache = value; }
     protected Dictionary<string, Tuple<LLVMValueRef, LLVMTypeRef, MethodReference, Collection<Instruction>?>> moduleMethods { get => Translator.moduleMethods; set => Translator.moduleMethods = value; }
     protected Dictionary<string, Tuple<LLVMValueRef, LLVMTypeRef>> staticFields { get => Translator.staticFields; set => Translator.staticFields = value; }
     protected Dictionary<string, TypeReference> staticFieldTypes { get => Translator.staticFieldTypes; set => Translator.staticFieldTypes = value; }
@@ -32,6 +42,8 @@ abstract class TranslationComponent(Translator translator)
     protected Dictionary<string, LLVMValueRef> runtimeFieldData { get => Translator.runtimeFieldData; set => Translator.runtimeFieldData = value; }
     protected Dictionary<string, LLVMValueRef> missingVirtualFunctionPointers { get => Translator.missingVirtualFunctionPointers; set => Translator.missingVirtualFunctionPointers = value; }
     protected Dictionary<string, LLVMValueRef> delegateThunks { get => Translator.delegateThunks; set => Translator.delegateThunks = value; }
+    protected Queue<string> pendingMethodTranslations { get => Translator.pendingMethodTranslations; set => Translator.pendingMethodTranslations = value; }
+    protected HashSet<string> queuedMethodTranslations { get => Translator.queuedMethodTranslations; set => Translator.queuedMethodTranslations = value; }
     protected List<TypeDefinition> arrayEnumeratorTypes { get => Translator.arrayEnumeratorTypes; set => Translator.arrayEnumeratorTypes = value; }
     protected MethodDefinition? entryPoint { get => Translator.entryPoint; set => Translator.entryPoint = value; }
     protected MethodDefinition stringConstructor { get => Translator.stringConstructor; set => Translator.stringConstructor = value; }

@@ -15,6 +15,17 @@ sealed class Translator
     internal LLVMTypeRef doubleType;
     internal LLVMTypeRef voidType;
     internal LLVMTypeRef sizeType;
+    internal Dictionary<string, LLVMTypeRef> llvmTypeCache = new(StringComparer.Ordinal);
+    internal Dictionary<string, int> typeSizeCache = new(StringComparer.Ordinal);
+    internal Dictionary<string, int> typeAlignmentCache = new(StringComparer.Ordinal);
+    internal Dictionary<string, int> objectSizeCache = new(StringComparer.Ordinal);
+    internal Dictionary<string, int> typeDefinitionSizeCache = new(StringComparer.Ordinal);
+    internal Dictionary<string, int> typeDefinitionAlignmentCache = new(StringComparer.Ordinal);
+    internal Dictionary<string, TypeReference?> enumUnderlyingTypeCache = new(StringComparer.Ordinal);
+    internal Dictionary<string, bool> valueTypeCache = new(StringComparer.Ordinal);
+    internal Dictionary<string, bool> byReferenceValueCache = new(StringComparer.Ordinal);
+    internal Dictionary<string, bool> managedReferenceTypeCache = new(StringComparer.Ordinal);
+    internal Dictionary<string, MethodDefinition?> methodDefinitionCache = new(StringComparer.Ordinal);
     internal Dictionary<string, Tuple<LLVMValueRef, LLVMTypeRef, MethodReference, Collection<Instruction>?>> moduleMethods = new();
     internal Dictionary<string, Tuple<LLVMValueRef, LLVMTypeRef>> staticFields = new();
     internal Dictionary<string, TypeReference> staticFieldTypes = new(StringComparer.Ordinal);
@@ -32,6 +43,8 @@ sealed class Translator
     internal Dictionary<string, LLVMValueRef> runtimeFieldData = new(StringComparer.Ordinal);
     internal Dictionary<string, LLVMValueRef> missingVirtualFunctionPointers = new(StringComparer.Ordinal);
     internal Dictionary<string, LLVMValueRef> delegateThunks = new(StringComparer.Ordinal);
+    internal Queue<string> pendingMethodTranslations = new();
+    internal HashSet<string> queuedMethodTranslations = new(StringComparer.Ordinal);
     internal List<TypeDefinition> arrayEnumeratorTypes = [];
     internal MethodDefinition? entryPoint;
     internal MethodDefinition stringConstructor = null!;

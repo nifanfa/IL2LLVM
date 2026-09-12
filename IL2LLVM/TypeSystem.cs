@@ -78,28 +78,33 @@ sealed class TypeSystem(Translator translator) : TranslationComponent(translator
 
     internal new LLVMTypeRef GetLLVMTypeRef(TypeReference type)
     {
+        var key = type.FullName;
+        if (llvmTypeCache.TryGetValue(key, out var cached))
+            return cached;
+
+        LLVMTypeRef result;
         if (type is RequiredModifierType requiredModifier)
-            return GetLLVMTypeRef(requiredModifier.ElementType);
-        if (type is OptionalModifierType optionalModifier)
-            return GetLLVMTypeRef(optionalModifier.ElementType);
-        if (type is PinnedType pinned)
-            return GetLLVMTypeRef(pinned.ElementType);
-        if (coreLib.IsNativeInteger(type))
-            return sizeType;
-        var enumUnderlyingType = GetEnumUnderlyingType(type);
-        if (enumUnderlyingType is not null)
-            return GetLLVMTypeRef(enumUnderlyingType);
-        if (IsByReferenceValue(type))
-            return LLVMTypeRef.CreatePointer(int8Type, 0);
-        if (type is ByReferenceType byReference)
-            return LLVMTypeRef.CreatePointer(GetLLVMTypeRef(byReference.ElementType), 0);
-        if (type is PointerType)
-            return LLVMTypeRef.CreatePointer(int8Type, 0);
-        if (type is ArrayType)
-            return LLVMTypeRef.CreatePointer(int8Type, 0);
-        if (type is GenericParameter)
-            return sizeType;
-        return GetLLVMTypeRefFromMetadataType(type.MetadataType);
+            result = GetLLVMTypeRef(requiredModifier.ElementType);
+        else if (type is OptionalModifierType optionalModifier)
+            result = GetLLVMTypeRef(optionalModifier.ElementType);
+        else if (type is PinnedType pinned)
+            result = GetLLVMTypeRef(pinned.ElementType);
+        else if (coreLib.IsNativeInteger(type))
+            result = sizeType;
+        else if (GetEnumUnderlyingType(type) is { } enumUnderlyingType)
+            result = GetLLVMTypeRef(enumUnderlyingType);
+        else if (IsByReferenceValue(type))
+            result = LLVMTypeRef.CreatePointer(int8Type, 0);
+        else if (type is ByReferenceType byReference)
+            result = LLVMTypeRef.CreatePointer(GetLLVMTypeRef(byReference.ElementType), 0);
+        else if (type is PointerType or ArrayType)
+            result = LLVMTypeRef.CreatePointer(int8Type, 0);
+        else if (type is GenericParameter)
+            result = sizeType;
+        else
+            result = GetLLVMTypeRefFromMetadataType(type.MetadataType);
+        llvmTypeCache[key] = result;
+        return result;
     }
 
     internal new LLVMTypeRef GetUnmanagedCallType(TypeReference type)
@@ -160,6 +165,16 @@ sealed class TypeSystem(Translator translator) : TranslationComponent(translator
     }
 
     internal new TypeReference? GetEnumUnderlyingType(TypeReference type)
+    {
+        var key = type.FullName;
+        if (enumUnderlyingTypeCache.TryGetValue(key, out var cached))
+            return cached;
+        var result = GetEnumUnderlyingTypeCore(type);
+        enumUnderlyingTypeCache[key] = result;
+        return result;
+    }
+
+    private TypeReference? GetEnumUnderlyingTypeCore(TypeReference type)
     {
         TypeDefinition? resolved;
         try
@@ -447,6 +462,16 @@ sealed class TypeSystem(Translator translator) : TranslationComponent(translator
 
     internal new int GetObjectSize(TypeReference type)
     {
+        var key = type.FullName;
+        if (objectSizeCache.TryGetValue(key, out var cached))
+            return cached;
+        var result = GetObjectSizeCore(type);
+        objectSizeCache[key] = result;
+        return result;
+    }
+
+    private int GetObjectSizeCore(TypeReference type)
+    {
         var definition = type.Resolve();
         if (definition is null || definition.IsInterface || IsValueType(type))
             return GetTypeSize(type);
@@ -484,6 +509,16 @@ sealed class TypeSystem(Translator translator) : TranslationComponent(translator
     }
 
     internal new int GetTypeSize(TypeReference type)
+    {
+        var key = type.FullName;
+        if (typeSizeCache.TryGetValue(key, out var cached))
+            return cached;
+        var result = GetTypeSizeCore(type);
+        typeSizeCache[key] = result;
+        return result;
+    }
+
+    private int GetTypeSizeCore(TypeReference type)
     {
         if (type is RequiredModifierType requiredModifier)
             return GetTypeSize(requiredModifier.ElementType);
@@ -529,6 +564,16 @@ sealed class TypeSystem(Translator translator) : TranslationComponent(translator
 
     internal new int GetTypeDefinitionSize(TypeDefinition type)
     {
+        var key = type.FullName;
+        if (typeDefinitionSizeCache.TryGetValue(key, out var cached))
+            return cached;
+        var result = GetTypeDefinitionSizeCore(type);
+        typeDefinitionSizeCache[key] = result;
+        return result;
+    }
+
+    private int GetTypeDefinitionSizeCore(TypeDefinition type)
+    {
         var offset = IsValueType(type) || type.BaseType is null ? 0 : GetBaseTypeSize(type.BaseType);
         var alignment = GetTypeDefinitionAlignment(type);
         if (type.IsExplicitLayout)
@@ -556,6 +601,16 @@ sealed class TypeSystem(Translator translator) : TranslationComponent(translator
 
     internal new int GetTypeDefinitionAlignment(TypeDefinition type)
     {
+        var key = type.FullName;
+        if (typeDefinitionAlignmentCache.TryGetValue(key, out var cached))
+            return cached;
+        var result = GetTypeDefinitionAlignmentCore(type);
+        typeDefinitionAlignmentCache[key] = result;
+        return result;
+    }
+
+    private int GetTypeDefinitionAlignmentCore(TypeDefinition type)
+    {
         var alignment = IsValueType(type) || type.BaseType is null ? 1 : GetTypeAlignment(type.BaseType);
         foreach (var field in type.Fields.Where(field => !field.IsStatic))
             alignment = Math.Max(alignment, GetFieldAlignment(type, field.FieldType));
@@ -571,6 +626,16 @@ sealed class TypeSystem(Translator translator) : TranslationComponent(translator
     }
 
     internal new bool IsValueType(TypeReference type)
+    {
+        var key = type.FullName;
+        if (valueTypeCache.TryGetValue(key, out var cached))
+            return cached;
+        var result = IsValueTypeCore(type);
+        valueTypeCache[key] = result;
+        return result;
+    }
+
+    private bool IsValueTypeCore(TypeReference type)
     {
         if (coreLib.IsValueType(type) || coreLib.IsEnum(type))
             return false;
@@ -592,6 +657,16 @@ sealed class TypeSystem(Translator translator) : TranslationComponent(translator
 
     internal new bool IsByReferenceValue(TypeReference type)
     {
+        var key = type.FullName;
+        if (byReferenceValueCache.TryGetValue(key, out var cached))
+            return cached;
+        var result = IsByReferenceValueCore(type);
+        byReferenceValueCache[key] = result;
+        return result;
+    }
+
+    private bool IsByReferenceValueCore(TypeReference type)
+    {
         TypeDefinition? definition;
         try
         {
@@ -610,6 +685,16 @@ sealed class TypeSystem(Translator translator) : TranslationComponent(translator
 
     internal new bool IsManagedReferenceType(TypeReference type)
     {
+        var key = type.FullName;
+        if (managedReferenceTypeCache.TryGetValue(key, out var cached))
+            return cached;
+        var result = IsManagedReferenceTypeCore(type);
+        managedReferenceTypeCache[key] = result;
+        return result;
+    }
+
+    private bool IsManagedReferenceTypeCore(TypeReference type)
+    {
         if (type is RequiredModifierType requiredModifier)
             return IsManagedReferenceType(requiredModifier.ElementType);
         if (type is OptionalModifierType optionalModifier)
@@ -627,6 +712,16 @@ sealed class TypeSystem(Translator translator) : TranslationComponent(translator
     }
 
     internal new int GetTypeAlignment(TypeReference type)
+    {
+        var key = type.FullName;
+        if (typeAlignmentCache.TryGetValue(key, out var cached))
+            return cached;
+        var result = GetTypeAlignmentCore(type);
+        typeAlignmentCache[key] = result;
+        return result;
+    }
+
+    private int GetTypeAlignmentCore(TypeReference type)
     {
         if (type is RequiredModifierType requiredModifier)
             return GetTypeAlignment(requiredModifier.ElementType);

@@ -357,8 +357,8 @@ sealed class Runtime(Translator translator) : TranslationComponent(translator)
                 "EnumValues" => underlyingType is null
                     ? LLVMValueRef.CreateConstNull(pointerType)
                     : LLVMValueRef.CreateConstPointerCast(GetStaticUInt64Array(enumValues), pointerType),
-                "IsFlagsEnum" => LLVMValueRef.CreateConstInt(int1Type, isFlags ? 1ul : 0ul, false),
-                "IsSignedEnum" => LLVMValueRef.CreateConstInt(int1Type, isSigned ? 1ul : 0ul, false),
+                "IsFlagsEnum" => LLVMValueRef.CreateConstInt(GetLLVMTypeRef(field.FieldType), isFlags ? 1ul : 0ul, false),
+                "IsSignedEnum" => LLVMValueRef.CreateConstInt(GetLLVMTypeRef(field.FieldType), isSigned ? 1ul : 0ul, false),
                 _ => LLVMValueRef.CreateConstNull(GetLLVMTypeRef(field.FieldType))
             });
         }

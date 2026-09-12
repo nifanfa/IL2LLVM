@@ -203,13 +203,22 @@ sealed class Methods(Translator translator) : TranslationComponent(translator)
 
     internal new MethodDefinition? FindMethodDefinition(MethodReference method)
     {
+        var key = $"{method.DeclaringType.Scope?.Name}|{method.FullName}";
+        if (methodDefinitionCache.TryGetValue(key, out var cached))
+            return cached;
         var resolved = method.Resolve();
         if (resolved is not null)
+        {
+            methodDefinitionCache[key] = resolved;
             return resolved;
+        }
         var declaringType = method.DeclaringType.Resolve();
         if (declaringType is null)
+        {
+            methodDefinitionCache[key] = null;
             return null;
-        return declaringType.Methods.FirstOrDefault(candidate =>
+        }
+        var result = declaringType.Methods.FirstOrDefault(candidate =>
         {
             if (candidate.Name != method.Name || candidate.HasThis != method.HasThis ||
                 candidate.Parameters.Count != method.Parameters.Count ||
@@ -217,6 +226,8 @@ sealed class Methods(Translator translator) : TranslationComponent(translator)
                 return false;
             return SameMethodSignature(BindMethodToDeclaringType(candidate, method.DeclaringType, method), method);
         });
+        methodDefinitionCache[key] = result;
+        return result;
     }
 
     internal new bool SameMethodDeclarationSignature(MethodReference left, MethodReference right)
@@ -246,6 +257,10 @@ sealed class Methods(Translator translator) : TranslationComponent(translator)
 
     internal new bool SameMethodInstantiation(MethodReference left, MethodReference right)
     {
+        if (ReferenceEquals(left, right) ||
+            left.DeclaringType.Scope?.Name == right.DeclaringType.Scope?.Name &&
+            left.FullName == right.FullName)
+            return true;
         if (!SameMethodDefinition(left, right) && !SameMethodSignature(left, right))
             return false;
         if (!SameType(left.DeclaringType, right.DeclaringType))
@@ -262,6 +277,17 @@ sealed class Methods(Translator translator) : TranslationComponent(translator)
 
     internal new Tuple<LLVMValueRef, LLVMTypeRef, MethodReference, Collection<Instruction>?>? GetRegisteredMethod(MethodReference method)
     {
+        var friendlyName = GetFriendlyMethodName(method);
+        if (moduleMethods.TryGetValue(friendlyName, out var candidate) &&
+            SameMethodInstantiation(candidate.Item3, method))
+            return candidate;
+
+        var returnName = GetFriendlyParameterTypeName(SubstituteGenericParameter(method.ReturnType, method));
+        var collisionName = $"{friendlyName}_Returns_{returnName}";
+        if (moduleMethods.TryGetValue(collisionName, out candidate) &&
+            SameMethodInstantiation(candidate.Item3, method))
+            return candidate;
+
         return moduleMethods.Values.FirstOrDefault(candidate => SameMethodInstantiation(candidate.Item3, method));
     }
 
@@ -575,7 +601,11 @@ sealed class Methods(Translator translator) : TranslationComponent(translator)
             if (SameMethodInstantiation(existing.Item3, method))
             {
                 if (existing.Item4 is null && instructions is not null)
+                {
                     moduleMethods[friendlyName] = new(existing.Item1, existing.Item2, existing.Item3, instructions);
+                    if (instructions.Count != 0 && queuedMethodTranslations.Add(friendlyName))
+                        pendingMethodTranslations.Enqueue(friendlyName);
+                }
                 return;
             }
             var returnType = GetFriendlyParameterTypeName(SubstituteGenericParameter(method.ReturnType, method));
@@ -585,7 +615,11 @@ sealed class Methods(Translator translator) : TranslationComponent(translator)
                 if (!SameMethodInstantiation(existing.Item3, method))
                     throw new InvalidOperationException($"LLVM method symbol collision: {existing.Item3.FullName} and {method.FullName}.");
                 if (existing.Item4 is null && instructions is not null)
+                {
                     moduleMethods[friendlyName] = new(existing.Item1, existing.Item2, existing.Item3, instructions);
+                    if (instructions.Count != 0 && queuedMethodTranslations.Add(friendlyName))
+                        pendingMethodTranslations.Enqueue(friendlyName);
+                }
                 return;
             }
         }
@@ -620,6 +654,8 @@ sealed class Methods(Translator translator) : TranslationComponent(translator)
         if (method.Resolve()?.HasBody == true)
             funcValue.Section = $".text${GetStableSymbolSuffix(friendlyName)}";
         moduleMethods.Add(friendlyName, new(funcValue, funcType, method, instructions));
+        if (instructions?.Count > 0 && queuedMethodTranslations.Add(friendlyName))
+            pendingMethodTranslations.Enqueue(friendlyName);
     }
 
     private string GetPInvokeNativeSymbolName(MethodReference method, string friendlyName, PInvokeInfo pinvoke)

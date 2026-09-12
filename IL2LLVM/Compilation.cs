@@ -38,6 +38,9 @@ sealed class Compilation : TranslationComponent
         if (args.Length != 3)
             throw new ArgumentException("Expected an input file, output file, and target triple.");
 
+        var compilationStopwatch = System.Diagnostics.Stopwatch.StartNew();
+        void Progress(string message) => Console.WriteLine($"[{compilationStopwatch.Elapsed:hh\\:mm\\:ss\\.fff}] {message}");
+
         string fileName = Path.GetFullPath(args[0]);
         string outputFileName = Path.GetFullPath(args[1]);
         var (targetTriple, codeModel) = Target.ParseTargetSpecification(args[2]);
@@ -61,6 +64,8 @@ sealed class Compilation : TranslationComponent
         pointerSize = (int)targetData.ABISizeOfType(LLVMTypeRef.CreatePointer(int8Type, 0));
         sizeType = context.GetIntPtrType(targetData);
 
+        Progress("[1/7] Loading assembly and runtime metadata...");
+
         moduleMethods = new();
         staticFields = new();
         staticFieldTypes = new(StringComparer.Ordinal);
@@ -76,6 +81,18 @@ sealed class Compilation : TranslationComponent
         runtimeFieldData = new(StringComparer.Ordinal);
         missingVirtualFunctionPointers = new(StringComparer.Ordinal);
         delegateThunks = new(StringComparer.Ordinal);
+        pendingMethodTranslations = new();
+        queuedMethodTranslations = new(StringComparer.Ordinal);
+        typeSizeCache = new(StringComparer.Ordinal);
+        typeAlignmentCache = new(StringComparer.Ordinal);
+        objectSizeCache = new(StringComparer.Ordinal);
+        typeDefinitionSizeCache = new(StringComparer.Ordinal);
+        typeDefinitionAlignmentCache = new(StringComparer.Ordinal);
+        enumUnderlyingTypeCache = new(StringComparer.Ordinal);
+        valueTypeCache = new(StringComparer.Ordinal);
+        byReferenceValueCache = new(StringComparer.Ordinal);
+        managedReferenceTypeCache = new(StringComparer.Ordinal);
+        methodDefinitionCache = new(StringComparer.Ordinal);
         nextRuntimeTypeId = 1;
         nextVirtualDispatchId = 0;
         LLVMTypeRef exceptionPushType = default;
@@ -252,6 +269,8 @@ sealed class Compilation : TranslationComponent
                 }
             }
 
+            Progress($"[2/7] Registered {moduleMethods.Count} methods and {localTypes.Count} types.");
+
             Queue<MethodReference> pendingReferences = new(moduleMethods.Values
                 .SelectMany(method => (method.Item4 ?? [])
                     .Where(instruction => instruction.OpCode.Code is Code.Call or Code.Callvirt or Code.Newobj or Code.Ldftn or Code.Ldvirtftn)
@@ -293,6 +312,8 @@ sealed class Compilation : TranslationComponent
                     }
                 }
             }
+
+            Progress($"[3/7] Resolved method graph: {moduleMethods.Count} methods.");
 
             foreach (var arrayEnumeratorType in arrayEnumeratorTypes)
                 foreach (var method in arrayEnumeratorType.Methods.Where(method => method.HasBody))
@@ -361,15 +382,18 @@ sealed class Compilation : TranslationComponent
                     !runtimeTypeObjects.ContainsKey(GetRuntimeTypeKey(type))).ToArray())
                     GetRuntimeTypeObject(type);
 
+            Progress($"[4/7] Built runtime type metadata: {runtimeTypes.Count} types.");
+
             LLVMBuilderRef entryBuilder = default;
             HashSet<LLVMValueRef> translatedMethods = new();
-            while (true)
+            Progress("[5/7] Translating IL to LLVM...");
+            while (pendingMethodTranslations.Count != 0)
             {
-                var method = moduleMethods.FirstOrDefault(candidate => candidate.Value.Item4?.Any() == true &&
-                    !translatedMethods.Contains(candidate.Value.Item1));
-                if (method.Value is null)
-                    break;
-                translatedMethods.Add(method.Value.Item1);
+                var methodName = pendingMethodTranslations.Dequeue();
+                if (!moduleMethods.TryGetValue(methodName, out var methodValue) ||
+                    methodValue.Item4?.Any() != true || !translatedMethods.Add(methodValue.Item1))
+                    continue;
+                var method = new { Key = methodName, Value = methodValue };
                 if (method.Value.Item4?.Any() == true)
                 {
                     var allocaBlock = context.AppendBasicBlock(method.Value.Item1, "alloca");
@@ -703,7 +727,6 @@ sealed class Compilation : TranslationComponent
                                     var missingBuilder = context.CreateBuilder();
                                     missingBuilder.PositionAtEnd(block);
                                     missingBuilder.BuildCall2(abortMethod.Item2, abortMethod.Item1, []);
-                                    missingBuilder.BuildUnreachable();
                                     missingVirtualFunctionPointers.Add(key, missingFunction);
                                 }
                                 return missingFunction;
@@ -1452,6 +1475,8 @@ sealed class Compilation : TranslationComponent
                 }
             }
 
+            Progress($"[6/7] Translated {translatedMethods.Count} methods. Running LLVM cleanup and verification...");
+
             var pointerType = LLVMTypeRef.CreatePointer(int8Type, 0);
             var staticRoots = new List<(LLVMValueRef Address, LLVMValueRef Descriptor)>();
             foreach (var (name, storage) in staticFields)
@@ -1490,6 +1515,7 @@ sealed class Compilation : TranslationComponent
                 throw new InvalidOperationException(verificationError);
 
             machine.EmitToFile(module, outputFileName, LLVMCodeGenFileType.LLVMObjectFile);
+            Progress($"[7/7] Wrote object file: {outputFileName} (total {compilationStopwatch.Elapsed.TotalSeconds:F3}s)");
         }
     }
 
