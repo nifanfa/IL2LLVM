@@ -344,10 +344,16 @@ sealed class Compilation : TranslationComponent
                     switch (instruction.OpCode.Code)
                     {
                         case Code.Newarr:
-                            GetRuntimeTypeId(new ArrayType(SubstituteGenericParameter((TypeReference)instruction.Operand, method.Item3)));
+                            GetRuntimeTypeId(
+                                new ArrayType(SubstituteGenericParameter((TypeReference)instruction.Operand, method.Item3)),
+                                coreLib.Array);
                             break;
                         case Code.Newobj:
-                            GetRuntimeTypeId(SpecializeMethodReference((MethodReference)instruction.Operand, method.Item3).DeclaringType);
+                            var constructor = SpecializeMethodReference((MethodReference)instruction.Operand, method.Item3);
+                            GetRuntimeTypeId(constructor.DeclaringType,
+                                GetArrayIntrinsicKind(constructor) == ArrayIntrinsicKind.Constructor
+                                    ? coreLib.Array
+                                    : null);
                             break;
                         case Code.Box:
                         case Code.Ldtoken when instruction.Operand is TypeReference:
@@ -356,10 +362,12 @@ sealed class Compilation : TranslationComponent
                     }
                 }
             }
-            GetRuntimeTypeId(new ArrayType(coreLib.Char));
-            while (runtimeTypes.Values.Any(type => type.Resolve()?.IsInterface != true && !IsVoidType(type) &&
+            GetRuntimeTypeId(new ArrayType(coreLib.Char), coreLib.Array);
+            GetRuntimeTypeId(new ArrayType(coreLib.String), coreLib.Array);
+            GetRuntimeTypeId(new ArrayType(coreLib.UInt64), coreLib.Array);
+            while (runtimeTypes.Values.Any(type => GetRuntimeTypeDefinition(type)?.IsInterface != true && !IsVoidType(type) &&
                 !runtimeTypeObjects.ContainsKey(GetRuntimeTypeKey(type))))
-                foreach (var type in runtimeTypes.Values.Where(type => type.Resolve()?.IsInterface != true && !IsVoidType(type) &&
+                foreach (var type in runtimeTypes.Values.Where(type => GetRuntimeTypeDefinition(type)?.IsInterface != true && !IsVoidType(type) &&
                     !runtimeTypeObjects.ContainsKey(GetRuntimeTypeKey(type))).ToArray())
                     GetRuntimeTypeObject(type);
 
@@ -477,7 +485,9 @@ sealed class Compilation : TranslationComponent
                             var typeId = GetObjectRuntimeTypeId(builder, value);
                             var matches = new List<LLVMValueRef>();
                             var seen = new HashSet<int>();
-                            foreach (var candidate in runtimeTypes.Values.Where(candidate => candidate.Resolve()?.IsInterface != true && !IsVoidType(candidate)).ToArray())
+                            foreach (var candidate in runtimeTypes.Values.Where(candidate =>
+                                         GetRuntimeTypeDefinition(candidate)?.IsInterface != true &&
+                                         !IsVoidType(candidate)).ToArray())
                             {
                                 if (!IsRuntimeTypeCompatible(candidate, targetType))
                                     continue;
@@ -846,7 +856,8 @@ sealed class Compilation : TranslationComponent
                             if (targetType is null)
                                 return LLVMValueRef.CreateConstInt(int1Type, 1, false);
                             var matches = new List<LLVMValueRef>();
-                            foreach (var candidate in runtimeTypes.Values.Where(candidate => candidate.Resolve() is { IsInterface: false, IsValueType: false }).ToArray())
+                            foreach (var candidate in runtimeTypes.Values.Where(candidate =>
+                                         GetRuntimeTypeDefinition(candidate) is { IsInterface: false, IsValueType: false }).ToArray())
                             {
                                 if (!IsRuntimeTypeCompatible(candidate, targetType))
                                     continue;

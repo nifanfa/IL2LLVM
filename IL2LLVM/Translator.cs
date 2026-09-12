@@ -35,11 +35,13 @@ sealed class Translator
     internal CoreLibMetadata coreLib = null!;
     internal Dictionary<string, int> runtimeTypeIds = new(StringComparer.Ordinal);
     internal Dictionary<string, TypeReference> runtimeTypes = new(StringComparer.Ordinal);
+    internal Dictionary<string, TypeReference> runtimeBaseTypes = new(StringComparer.Ordinal);
     internal Dictionary<string, LLVMValueRef> runtimeTypeObjects = new(StringComparer.Ordinal);
     internal Dictionary<string, LLVMValueRef> staticStrings = new(StringComparer.Ordinal);
     internal Dictionary<string, LLVMValueRef> staticStringArrays = new(StringComparer.Ordinal);
     internal Dictionary<string, LLVMValueRef> staticUInt64Arrays = new(StringComparer.Ordinal);
     internal Dictionary<string, LLVMValueRef> gcDescriptors = new(StringComparer.Ordinal);
+    internal Dictionary<string, LLVMValueRef> gcReferenceLists = new(StringComparer.Ordinal);
     internal Dictionary<string, LLVMValueRef> runtimeFieldData = new(StringComparer.Ordinal);
     internal Dictionary<string, LLVMValueRef> missingVirtualFunctionPointers = new(StringComparer.Ordinal);
     internal Dictionary<string, LLVMValueRef> delegateThunks = new(StringComparer.Ordinal);

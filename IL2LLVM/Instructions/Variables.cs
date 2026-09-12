@@ -41,7 +41,11 @@ sealed class Variables(Translator translator) : TranslationComponent(translator)
                         locals.TryAdd(index, storage);
                     }
                     if (trackedTypes.TryGetValue(value, out var runtimeType))
-                        localRuntimeTypes[index] = runtimeType;
+                        localRuntimeTypes[index] = variableType is PointerType
+                            ? variableType
+                            : runtimeType;
+                    else if (variableType is PointerType)
+                        localRuntimeTypes[index] = variableType;
                     return true;
                 }
             case Code.Ldloc_0:

@@ -34,11 +34,13 @@ abstract class TranslationComponent(Translator translator)
     protected CoreLibMetadata coreLib { get => Translator.coreLib; set => Translator.coreLib = value; }
     protected Dictionary<string, int> runtimeTypeIds { get => Translator.runtimeTypeIds; set => Translator.runtimeTypeIds = value; }
     protected Dictionary<string, TypeReference> runtimeTypes { get => Translator.runtimeTypes; set => Translator.runtimeTypes = value; }
+    protected Dictionary<string, TypeReference> runtimeBaseTypes { get => Translator.runtimeBaseTypes; set => Translator.runtimeBaseTypes = value; }
     protected Dictionary<string, LLVMValueRef> runtimeTypeObjects { get => Translator.runtimeTypeObjects; set => Translator.runtimeTypeObjects = value; }
     protected Dictionary<string, LLVMValueRef> staticStrings { get => Translator.staticStrings; set => Translator.staticStrings = value; }
     protected Dictionary<string, LLVMValueRef> staticStringArrays { get => Translator.staticStringArrays; set => Translator.staticStringArrays = value; }
     protected Dictionary<string, LLVMValueRef> staticUInt64Arrays { get => Translator.staticUInt64Arrays; set => Translator.staticUInt64Arrays = value; }
     protected Dictionary<string, LLVMValueRef> gcDescriptors { get => Translator.gcDescriptors; set => Translator.gcDescriptors = value; }
+    protected Dictionary<string, LLVMValueRef> gcReferenceLists { get => Translator.gcReferenceLists; set => Translator.gcReferenceLists = value; }
     protected Dictionary<string, LLVMValueRef> runtimeFieldData { get => Translator.runtimeFieldData; set => Translator.runtimeFieldData = value; }
     protected Dictionary<string, LLVMValueRef> missingVirtualFunctionPointers { get => Translator.missingVirtualFunctionPointers; set => Translator.missingVirtualFunctionPointers = value; }
     protected Dictionary<string, LLVMValueRef> delegateThunks { get => Translator.delegateThunks; set => Translator.delegateThunks = value; }
@@ -156,7 +158,10 @@ abstract class TranslationComponent(Translator translator)
     protected void StoreField(LLVMBuilderRef builder, LLVMValueRef obj, FieldDefinition field, LLVMValueRef value) => Translator.Runtime.StoreField(builder, obj, field, value);
     protected FieldDefinition GetArrayLengthField() => Translator.Runtime.GetArrayLengthField();
     protected string GetRuntimeTypeKey(TypeReference type) => Translator.Runtime.GetRuntimeTypeKey(type);
-    protected int GetRuntimeTypeId(TypeReference type) => Translator.Runtime.GetRuntimeTypeId(type);
+    protected int GetRuntimeTypeId(TypeReference type, TypeReference? baseType = null) =>
+        Translator.Runtime.GetRuntimeTypeId(type, baseType);
+    protected TypeDefinition? GetRuntimeTypeDefinition(TypeReference type) =>
+        Translator.Runtime.GetRuntimeTypeDefinition(type);
     protected void InitializeRuntimeType(LLVMBuilderRef builder, LLVMValueRef obj, TypeReference type) => Translator.Runtime.InitializeRuntimeType(builder, obj, type);
     protected int GetBoxedObjectHeaderSize() => Translator.Runtime.GetBoxedObjectHeaderSize();
     protected LLVMValueRef GetBoxedValueAddress(LLVMBuilderRef builder, LLVMValueRef box, TypeReference? valueType = null) => Translator.Runtime.GetBoxedValueAddress(builder, box, valueType);

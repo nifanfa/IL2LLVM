@@ -16,6 +16,7 @@ public static class LanguageFeatureValidation
     private static volatile int s_expectedSum;
     private static volatile int s_runtimeBias = 1;
     private static int s_instructionStatic;
+    private static object s_objectPointerValue = new object();
     private static readonly bool s_boolean = true;
     private static readonly char s_character = 'L';
     private static readonly sbyte s_sbyte = -1;
@@ -194,6 +195,16 @@ public static class LanguageFeatureValidation
         public override int Evaluate() => base.Evaluate() + 1;
 
         public void RaiseChanged() => Changed?.Invoke();
+    }
+
+    private sealed class ObjectPointerHolder
+    {
+        public object Value;
+
+        public ObjectPointerHolder(object value)
+        {
+            Value = value;
+        }
     }
 
     private sealed class HiddenFeature : FeatureBase
@@ -1548,6 +1559,8 @@ public static class LanguageFeatureValidation
         if (ReadObjectReference(ref objectReference) != replacement)
             Fail("indirect reference load");
 
+        VerifyObjectPointers();
+
         int* stackValues = stackalloc int[2];
         stackValues[0] = RuntimeValue(6);
         stackValues[1] = RuntimeValue(7);
@@ -1961,6 +1974,130 @@ public static class LanguageFeatureValidation
     private static unsafe int ReadPointer(int* pointer) => *pointer;
 
     private static unsafe int* ReturnPointer(int* pointer) => pointer;
+
+    private static unsafe void VerifyObjectPointers()
+    {
+        object original = new FeatureObject(RuntimeValue(31));
+        object replacement = new FeatureObject(RuntimeValue(32));
+        object third = new FeatureObject(RuntimeValue(33));
+
+        System.Object* slot = &original;
+        if (*slot != original)
+            Fail("object pointer load");
+
+        WriteObjectPointer(slot, replacement);
+        if (original != replacement || ReadObjectPointer(slot) != replacement)
+            Fail("object pointer store or parameter");
+
+        System.Object* returned = ReturnObjectPointer(slot);
+        if (returned != slot || *returned != replacement)
+            Fail("object pointer return or equality");
+
+        System.Object* nullPointer = null;
+        if (nullPointer != null)
+            Fail("object pointer null comparison");
+
+        System.Object** pointerPointer = &slot;
+        if (*pointerPointer != slot || **pointerPointer != replacement)
+            Fail("object pointer to pointer");
+
+        System.Object*** pointer3 = &pointerPointer;
+        System.Object**** pointer4 = &pointer3;
+        System.Object***** pointer5 = &pointer4;
+        System.Object****** pointer6 = &pointer5;
+        System.Object******* pointer7 = &pointer6;
+        System.Object******** pointer8 = &pointer7;
+        if (********pointer8 != replacement)
+            Fail("object eight-level pointer dereference");
+
+        void* erased = slot;
+        System.Object* restored = (System.Object*)erased;
+        nint signedAddress = (nint)slot;
+        nuint unsignedAddress = (nuint)slot;
+        if (restored != slot || *restored != replacement ||
+            (System.Object*)signedAddress != slot || (System.Object*)unsignedAddress != slot)
+            Fail("object pointer address conversions");
+
+        System.Object* alias = slot;
+        System.Object* thirdSlot = &third;
+        ReplaceObjectPointer(ref alias, thirdSlot);
+        if (alias != thirdSlot || *alias != third)
+            Fail("object pointer ref parameter");
+
+        object[] values = new object[] { original, replacement, third };
+        fixed (System.Object* first = values)
+        {
+            System.Object* second = first + 1;
+            if (*first != original || second[0] != replacement || *(second + 1) != third ||
+                second - first != 1 || first >= second || second <= first)
+                Fail("object pointer indexing, arithmetic, or ordering");
+            second[0] = third;
+            if (values[1] != third)
+                Fail("object pointer array element store");
+        }
+
+        System.Array arrayReference = values;
+        object erasedArrayReference = values;
+        if (erasedArrayReference is not System.Array || (System.Array)erasedArrayReference != arrayReference)
+            Fail("object to array type compatibility");
+        IFeatureValue[] interfaceValues = new IFeatureValue[] { new FeatureObject(RuntimeValue(34)) };
+        object erasedInterfaceArray = interfaceValues;
+        if (erasedInterfaceArray is not System.Array ||
+            ((System.Array)erasedInterfaceArray).Length != RuntimeValue(1))
+            Fail("interface element array type compatibility");
+        System.Array* arraySlot = &arrayReference;
+        System.Array replacementArray = new object[] { third, replacement };
+        if (*arraySlot != arrayReference || arraySlot->Length != RuntimeValue(3))
+            Fail("array reference pointer load");
+        *arraySlot = replacementArray;
+        if (arrayReference != replacementArray || arraySlot->Length != RuntimeValue(2))
+            Fail("array reference pointer store");
+
+        delegate* managed<System.Object*, object> read = &ReadObjectPointer;
+        delegate* managed<System.Object*, object, void> write = &WriteObjectPointer;
+        delegate* managed<System.Object*, System.Object*> returnPointer = &ReturnObjectPointer;
+        delegate* unmanaged<System.Object*, System.Object*, System.Object*> select = &SelectObjectPointerUnmanaged;
+        void* functionAddress = (void*)read;
+        delegate* managed<System.Object*, object> restoredRead =
+            (delegate* managed<System.Object*, object>)functionAddress;
+        write(slot, original);
+        if (read(slot) != original || restoredRead(slot) != original || returnPointer(slot) != slot ||
+            select(slot, thirdSlot) != slot || select(slot, null) != null)
+            Fail("object pointer managed or unmanaged function pointers");
+
+        s_objectPointerValue = original;
+        fixed (System.Object* staticSlot = &s_objectPointerValue)
+        {
+            if (*staticSlot != original)
+                Fail("static object field pointer load");
+            *staticSlot = replacement;
+            if (s_objectPointerValue != replacement)
+                Fail("static object field pointer store");
+        }
+
+        ObjectPointerHolder holder = new ObjectPointerHolder(original);
+        fixed (System.Object* field = &holder.Value)
+        {
+            if (*field != original)
+                Fail("object field pointer load");
+            *field = replacement;
+            if (holder.Value != replacement)
+                Fail("object field pointer store");
+        }
+    }
+
+    private static unsafe void WriteObjectPointer(System.Object* pointer, object value) => *pointer = value;
+
+    private static unsafe object ReadObjectPointer(System.Object* pointer) => *pointer;
+
+    private static unsafe System.Object* ReturnObjectPointer(System.Object* pointer) => pointer;
+
+    private static unsafe void ReplaceObjectPointer(ref System.Object* pointer, System.Object* replacement)
+        => pointer = replacement;
+
+    [UnmanagedCallersOnly]
+    private static unsafe System.Object* SelectObjectPointerUnmanaged(
+        System.Object* source, System.Object* destination) => destination == null ? null : source;
 
     private static unsafe int SumPointerValues(int* values, int length)
     {
