@@ -125,7 +125,7 @@ make
 ./ConsoleAppExample
 ```
 
-The Makefile links the existing object with `CoreLib.linux.c`. It does not build the managed project or run IL2LLVM.
+The Makefile links the existing object with `Runtime.c`. It does not build the managed project or run IL2LLVM.
 
 ## Linux kernel module
 
