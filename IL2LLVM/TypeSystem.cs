@@ -708,6 +708,13 @@ sealed class TypeSystem(Translator translator) : TranslationComponent(translator
         if (type is ByReferenceType or PointerType || type.MetadataType is MetadataType.IntPtr or MetadataType.UIntPtr ||
             GetEnumUnderlyingType(type) is not null)
             return false;
+        // A closed generic class (for example Queue<ConsoleKeyEvent>) is still
+        // a managed reference. The local type table contains the generic
+        // definition, not the constructed TypeReference, so checking only the
+        // constructed FullName incorrectly leaves generic static fields out of
+        // the GC root set.
+        if (type is GenericInstanceType genericInstance)
+            return IsManagedReferenceType(genericInstance.ElementType);
         return localTypes.TryGetValue(type.FullName, out var localDefinition) && !localDefinition.IsValueType;
     }
 
