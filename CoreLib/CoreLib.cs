@@ -1213,6 +1213,9 @@ namespace System.Runtime
     {
         public RuntimeExportAttribute(string entry) { }
     }
+
+    [AttributeUsage(AttributeTargets.Method)]
+    public sealed class RuntimeNoGCFrameAttribute : Attribute { }
 }
 
 namespace System.Runtime.CompilerServices
@@ -1402,6 +1405,7 @@ namespace System.Runtime
     internal static unsafe class GCHeap
     {
         private static GCAllocation* s_allocations;
+        private static GCFrame* s_frames;
         private static GCStaticRoot* s_staticRoots;
         private static int s_allocatedBytes;
         private static int s_collectionThreshold = int.MaxValue;
@@ -1427,17 +1431,26 @@ namespace System.Runtime
             return (Object*)((byte*)allocation + sizeof(GCAllocation));
         }
 
-        [DllImport("*", EntryPoint = "PushGCFrame")]
-        public static extern void Push(GCFrame* frame, GCRoot* roots, int rootCount);
+        [RuntimeNoGCFrame]
+        public static void Push(GCFrame* frame, GCRoot* roots, int rootCount)
+        {
+            frame->Previous = s_frames;
+            frame->Roots = roots;
+            frame->RootCount = rootCount;
+            s_frames = frame;
+        }
 
-        [DllImport("*", EntryPoint = "PopGCFrame")]
-        public static extern void Pop(GCFrame* frame);
+        [RuntimeNoGCFrame]
+        public static void Pop(GCFrame* frame)
+        {
+            s_frames = frame->Previous;
+        }
 
-        [DllImport("*", EntryPoint = "GetTopGCFrame")]
-        public static extern GCFrame* GetTopFrame();
+        [RuntimeNoGCFrame]
+        public static GCFrame* GetTopFrame() => s_frames;
 
-        [DllImport("*", EntryPoint = "UnwindGCFrames")]
-        public static extern void UnwindTo(GCFrame* frame);
+        [RuntimeNoGCFrame]
+        public static void UnwindTo(GCFrame* frame) => s_frames = frame;
 
         public static int Collect()
         {
@@ -1554,18 +1567,29 @@ namespace System.Runtime
 
     internal static unsafe class ExceptionRuntime
     {
+        private static ExceptionFrame* _top;
         private static Exception _current;
 
-        [DllImport("*", EntryPoint = "PushExceptionFrame")]
-        public static extern void Push(ExceptionFrame* frame, JumpBuffer* buffer);
+        [RuntimeNoGCFrame]
+        public static void Push(ExceptionFrame* frame, JumpBuffer* buffer)
+        {
+            frame->Previous = _top;
+            frame->Buffer = buffer;
+            frame->GCFrame = GCHeap.GetTopFrame();
+            _top = frame;
+        }
 
-        [DllImport("*", EntryPoint = "PopExceptionFrame")]
-        public static extern void Pop(ExceptionFrame* frame);
+        [RuntimeNoGCFrame]
+        public static void Pop(ExceptionFrame* frame)
+        {
+            if (_top == frame)
+                _top = frame->Previous;
+        }
 
         public static JumpBuffer* GetBuffer(ExceptionFrame* frame) => frame->Buffer;
 
-        [DllImport("*", EntryPoint = "GetTopExceptionFrame")]
-        public static extern ExceptionFrame* GetTop();
+        [RuntimeNoGCFrame]
+        public static ExceptionFrame* GetTop() => _top;
 
         public static Exception GetCurrent() => _current;
 

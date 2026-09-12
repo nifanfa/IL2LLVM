@@ -1,7 +1,7 @@
 sealed class Arrays(Translator translator) : TranslationComponent(translator)
 {
     internal bool TryTranslateArrayInstruction(LLVMBuilderRef builder, LLVMBuilderRef entryBuilder, Instruction instruction,
-        MethodReference method, System.Collections.Generic.Stack<LLVMValueRef> stack, Dictionary<LLVMValueRef, TypeReference> trackedTypes,
+        MethodReference method, Stack<LLVMValueRef> stack, Dictionary<LLVMValueRef, TypeReference> trackedTypes,
         Action<LLVMValueRef, TypeReference> trackType,
         Func<Code, LLVMValueRef, LLVMValueRef, LLVMValueRef> buildCheckedIntegerArithmetic,
         Action<LLVMValueRef, TypeReference> emitConditionalException, Action synchronizeEvaluationStackRoots)

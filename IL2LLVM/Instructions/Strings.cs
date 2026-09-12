@@ -1,6 +1,6 @@
 sealed class Strings(Translator translator) : TranslationComponent(translator)
 {
-    internal bool TryTranslateStringInstruction(LLVMBuilderRef builder, Instruction instruction, System.Collections.Generic.Stack<LLVMValueRef> stack,
+    internal bool TryTranslateStringInstruction(LLVMBuilderRef builder, Instruction instruction, Stack<LLVMValueRef> stack,
         Action synchronizeEvaluationStackRoots, Action<int, LLVMValueRef, TypeReference> storeTemporaryRoot,
         Action<LLVMValueRef, TypeReference> trackType)
     {

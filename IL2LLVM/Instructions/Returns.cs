@@ -1,7 +1,7 @@
 sealed class Returns(Translator translator) : TranslationComponent(translator)
 {
     internal bool TryTranslateReturnInstruction(LLVMBuilderRef builder, Instruction instruction, MethodReference method,
-        System.Collections.Generic.Stack<LLVMValueRef> stack, bool usesValueReturnBuffer, LLVMValueRef valueReturnBuffer,
+        Stack<LLVMValueRef> stack, bool usesValueReturnBuffer, LLVMValueRef valueReturnBuffer,
         Action popGCFrame, HashSet<LLVMBasicBlockRef> terminatedBlocks)
     {
         if (instruction.OpCode.Code != Code.Ret)

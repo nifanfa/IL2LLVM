@@ -1994,7 +1994,7 @@ public static class LanguageFeatureValidation
     {
         throw new Exception("Language feature validation failed: " + feature);
     }
-private static readonly object s_extendedLock = new object();
+    private static readonly object s_extendedLock = new object();
     private static volatile int s_extendedVolatile;
     private static int s_partialMethodValue;
 
@@ -2639,7 +2639,8 @@ private static readonly object s_extendedLock = new object();
             """;
         string interpolated = $"value:{RuntimeValue(3)}:{true}";
         if (missing != "assigned" || nullableValue != RuntimeValue(5) ||
-            unsignedShift != 0x7ffffffc || raw != "raw\nstring" ||
+            unsignedShift != 0x7ffffffc ||
+            (raw != "raw\nstring" && raw != "raw\r\nstring") ||
             interpolated != "value:3:True")
             Fail("null operators, unsigned shift, or raw string literal");
     }

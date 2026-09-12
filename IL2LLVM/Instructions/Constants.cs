@@ -1,6 +1,6 @@
 sealed class Constants(Translator translator) : TranslationComponent(translator)
 {
-    internal bool TryTranslateConstantInstruction(LLVMBuilderRef builder, Instruction instruction, System.Collections.Generic.Stack<LLVMValueRef> stack)
+    internal bool TryTranslateConstantInstruction(LLVMBuilderRef builder, Instruction instruction, Stack<LLVMValueRef> stack)
     {
         switch (instruction.OpCode.Code)
         {

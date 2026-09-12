@@ -1,6 +1,6 @@
 sealed class Numeric(Translator translator) : TranslationComponent(translator)
 {
-    internal bool TryTranslateNumericInstruction(LLVMBuilderRef builder, Instruction instruction, System.Collections.Generic.Stack<LLVMValueRef> stack,
+    internal bool TryTranslateNumericInstruction(LLVMBuilderRef builder, Instruction instruction, Stack<LLVMValueRef> stack,
         Func<Code, LLVMValueRef, LLVMValueRef, LLVMValueRef> buildCheckedIntegerArithmetic,
         Action<LLVMValueRef, TypeReference> emitConditionalException)
     {

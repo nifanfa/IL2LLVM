@@ -1,7 +1,7 @@
 sealed class Fields(Translator translator) : TranslationComponent(translator)
 {
     internal bool TryTranslateFieldInstruction(LLVMBuilderRef builder, Instruction instruction, MethodReference method,
-        System.Collections.Generic.Stack<LLVMValueRef> stack, Action<LLVMValueRef, TypeReference> trackType)
+        Stack<LLVMValueRef> stack, Action<LLVMValueRef, TypeReference> trackType)
     {
         switch (instruction.OpCode.Code)
         {

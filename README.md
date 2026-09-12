@@ -20,13 +20,6 @@ The managed runtime is deliberately small. A user-mode host only needs a small I
 
 The following symbols are the runtime boundary implemented by the host. They are not platform APIs and can be implemented for the target processor and environment:
 
-- `PushGCFrame`
-- `PopGCFrame`
-- `GetTopGCFrame`
-- `UnwindGCFrames`
-- `PushExceptionFrame`
-- `PopExceptionFrame`
-- `GetTopExceptionFrame`
 - `setjmp`
 - `longjmp`
 - `Enter`
@@ -108,7 +101,7 @@ The Visual Studio launch profiles in `IL2LLVM/Properties/launchSettings.json` pr
 
 `CoreLib` is source compiled into each managed program. It provides the managed definitions used by generated code, including object layout, arrays, strings, exceptions, collections, delegates, tasks, and GC metadata.
 
-It intentionally does not provide platform implementations. Methods marked with `[DllImport("*")]` are external native symbols. The final host must provide every imported symbol that the managed program reaches. Examples include allocation, deallocation, exception transfer, abort, console output, and synchronization.
+Platform-specific operations remain external. Methods marked with `[DllImport("*")]` are native symbols. The final host must provide every imported symbol that the managed program reaches. Examples include allocation, deallocation, non-local exception transfer, abort, console output, and synchronization. GC and exception frame tracking are implemented in `CoreLib`.
 
 The built-in collector uses GC descriptors emitted by IL2LLVM and registers static fields as roots. It is not a replacement for the host allocator: the current runtime imports `calloc` and `free`.
 

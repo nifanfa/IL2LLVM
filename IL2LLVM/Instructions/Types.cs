@@ -1,7 +1,7 @@
 sealed class Types(Translator translator) : TranslationComponent(translator)
 {
     internal bool TryTranslateTypeInstruction(LLVMBuilderRef builder, LLVMBuilderRef entryBuilder, LLVMValueRef function,
-        Instruction instruction, MethodReference method, System.Collections.Generic.Stack<LLVMValueRef> stack,
+        Instruction instruction, MethodReference method, Stack<LLVMValueRef> stack,
         HashSet<LLVMBasicBlockRef> terminatedBlocks, Func<LLVMValueRef, TypeReference, LLVMValueRef> buildRuntimeTypeMatch,
         Action<LLVMValueRef, TypeReference> trackType, Action<int, LLVMValueRef, TypeReference> storeTemporaryRoot,
         Action synchronizeEvaluationStackRoots, LLVMTypeRef exceptionThrowType, LLVMValueRef exceptionThrowFunction)

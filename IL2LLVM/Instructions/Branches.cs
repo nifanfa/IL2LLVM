@@ -1,6 +1,6 @@
 sealed class Branches(Translator translator) : TranslationComponent(translator)
 {
-    internal bool TryTranslateBranchInstruction(LLVMBuilderRef builder, Instruction instruction, System.Collections.Generic.Stack<LLVMValueRef> stack,
+    internal bool TryTranslateBranchInstruction(LLVMBuilderRef builder, Instruction instruction, Stack<LLVMValueRef> stack,
         SortedDictionary<int, LLVMBasicBlockRef> labels, HashSet<LLVMBasicBlockRef> terminatedBlocks,
         Action<LLVMBasicBlockRef> saveStack, Action<LLVMBasicBlockRef> restoreStack)
     {

@@ -8,68 +8,6 @@ extern void* memset(void* destination, int value, size_t count);
 extern int setjmp(void* buffer, void* stack_pointer);
 extern void longjmp(void* buffer, int value);
 
-typedef struct GCFrame GCFrame;
-typedef struct ExceptionFrame ExceptionFrame;
-
-struct GCFrame
-{
-    GCFrame* Previous;
-    void* Roots;
-    int RootCount;
-};
-
-struct ExceptionFrame
-{
-    ExceptionFrame* Previous;
-    void* Buffer;
-    GCFrame* GCFrame;
-};
-
-static GCFrame* topGCFrame;
-static ExceptionFrame* topExceptionFrame;
-
-void PushGCFrame(GCFrame* frame, void* roots, int rootCount)
-{
-    frame->Previous = topGCFrame;
-    frame->Roots = roots;
-    frame->RootCount = rootCount;
-    topGCFrame = frame;
-}
-
-void PopGCFrame(GCFrame* frame)
-{
-    topGCFrame = frame->Previous;
-}
-
-GCFrame* GetTopGCFrame(void)
-{
-    return topGCFrame;
-}
-
-void UnwindGCFrames(GCFrame* frame)
-{
-    topGCFrame = frame;
-}
-
-void PushExceptionFrame(ExceptionFrame* frame, void* buffer)
-{
-    frame->Previous = topExceptionFrame;
-    frame->Buffer = buffer;
-    frame->GCFrame = topGCFrame;
-    topExceptionFrame = frame;
-}
-
-void PopExceptionFrame(ExceptionFrame* frame)
-{
-    if (topExceptionFrame == frame)
-        topExceptionFrame = frame->Previous;
-}
-
-ExceptionFrame* GetTopExceptionFrame(void)
-{
-    return topExceptionFrame;
-}
-
 static void write_utf16(const unsigned short* value)
 {
     char buffer[256];

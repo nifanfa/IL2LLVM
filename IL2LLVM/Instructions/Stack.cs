@@ -1,6 +1,6 @@
 sealed class Stack(Translator translator) : TranslationComponent(translator)
 {
-    internal bool TryTranslateStackInstruction(Instruction instruction, System.Collections.Generic.Stack<LLVMValueRef> stack)
+    internal bool TryTranslateStackInstruction(Instruction instruction, Stack<LLVMValueRef> stack)
     {
         switch (instruction.OpCode.Code)
         {

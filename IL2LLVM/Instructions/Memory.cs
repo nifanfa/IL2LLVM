@@ -1,7 +1,7 @@
 sealed class Memory(Translator translator) : TranslationComponent(translator)
 {
     internal bool TryTranslateMemoryInstruction(LLVMBuilderRef builder, LLVMBuilderRef entryBuilder, Instruction instruction,
-        MethodReference method, System.Collections.Generic.Stack<LLVMValueRef> stack, Func<LLVMValueRef, TypeReference?> getIndirectType,
+        MethodReference method, Stack<LLVMValueRef> stack, Func<LLVMValueRef, TypeReference?> getIndirectType,
         Action<LLVMValueRef, TypeReference> trackType, ref uint unalignedAlignment)
     {
         var pointerType = LLVMTypeRef.CreatePointer(int8Type, 0);

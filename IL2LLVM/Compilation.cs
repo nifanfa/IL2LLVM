@@ -147,10 +147,10 @@ sealed class Compilation : TranslationComponent
                 coreLib.Void);
             var exceptionThrowMethod = GetRequiredMethod(exceptionRuntimeType, "Throw", false,
                 coreLib.Void, coreLib.Exception);
-            RegisterMethodFunction(module, exceptionPushMethod, null);
-            RegisterMethodFunction(module, exceptionPopMethod, null);
+            RegisterMethodFunction(module, exceptionPushMethod, exceptionPushMethod.Body.Instructions);
+            RegisterMethodFunction(module, exceptionPopMethod, exceptionPopMethod.Body.Instructions);
             RegisterMethodFunction(module, exceptionBufferMethod, exceptionBufferMethod.Body.Instructions);
-            RegisterMethodFunction(module, exceptionTopMethod, null);
+            RegisterMethodFunction(module, exceptionTopMethod, exceptionTopMethod.Body.Instructions);
             RegisterMethodFunction(module, exceptionCurrentMethod, exceptionCurrentMethod.Body.Instructions);
             RegisterMethodFunction(module, setjmpMethod, null);
             RegisterMethodFunction(module, longjmpMethod, null);
@@ -169,8 +169,8 @@ sealed class Compilation : TranslationComponent
                 gcFramePointerType, gcRootPointerType, coreLib.Int32);
             var gcPopMethod = GetRequiredMethod(gcHeapType, "Pop", false, coreLib.Void, gcFramePointerType);
             RegisterMethodFunction(module, gcAllocateMethod, gcAllocateMethod.Body.Instructions);
-            RegisterMethodFunction(module, gcPushMethod, null);
-            RegisterMethodFunction(module, gcPopMethod, null);
+            RegisterMethodFunction(module, gcPushMethod, gcPushMethod.Body.Instructions);
+            RegisterMethodFunction(module, gcPopMethod, gcPopMethod.Body.Instructions);
             var registeredGCAllocate = GetRegisteredMethod(gcAllocateMethod)!;
             gcAllocateFunction = registeredGCAllocate.Item1;
             gcAllocateType = registeredGCAllocate.Item2;
@@ -408,7 +408,7 @@ sealed class Compilation : TranslationComponent
                         ? GetCctorGuard(method.Value.Item3.DeclaringType)
                         : null;
                     {
-                        System.Collections.Generic.Stack<LLVMValueRef> stack = new();
+                        Stack<LLVMValueRef> stack = new();
                         Dictionary<LLVMBasicBlockRef, List<(LLVMBasicBlockRef Source, List<LLVMValueRef> Values)>> incomingStacks = new();
                         Dictionary<LLVMBasicBlockRef, List<List<TypeReference?>>> incomingStackTypes = new();
                         Dictionary<LLVMBasicBlockRef, Dictionary<int, Tuple<LLVMValueRef, LLVMTypeRef>>> spillSlots = new();
@@ -1238,6 +1238,8 @@ sealed class Compilation : TranslationComponent
                         foreach (var region in exceptionRegions)
                             AddRoot(new Tuple<LLVMValueRef, LLVMTypeRef>(region.Exception, exceptionPointerType), coreLib.Exception, true);
 
+                        var tracksGCFrames = method.Value.Item3.Resolve()?.CustomAttributes.Any(attribute =>
+                            coreLib.IsRuntimeNoGCFrameAttribute(attribute.AttributeType)) != true;
                         var maxStack = Math.Max(1, methodDefinition?.Body.MaxStackSize ?? 1);
                         var stackRootCapacity = maxStack + 2;
                         const int temporaryRootCount = 4;
@@ -1329,12 +1331,16 @@ sealed class Compilation : TranslationComponent
 
                         void PopGCFrame()
                         {
-                            builder.BuildCall2(gcPopType, gcPopFunction, [rootFrame]);
+                            if (tracksGCFrames)
+                                builder.BuildCall2(gcPopType, gcPopFunction, [rootFrame]);
                         }
 
                         var rootEntriesPointer = GetRootEntryAddress(0);
-                        builder.BuildCall2(gcPushType, gcPushFunction,
-                            [rootFrame, rootEntriesPointer, LLVMValueRef.CreateConstInt(int32Type, (ulong)rootEntryCount, false)]);
+                        if (tracksGCFrames)
+                        {
+                            builder.BuildCall2(gcPushType, gcPushFunction,
+                                [rootFrame, rootEntriesPointer, LLVMValueRef.CreateConstInt(int32Type, (ulong)rootEntryCount, false)]);
+                        }
 
                         if (cctorGuard is not null)
                             builder.BuildCall2(LLVMTypeRef.CreateFunction(voidType, []), cctorGuard.Value.Function, []);

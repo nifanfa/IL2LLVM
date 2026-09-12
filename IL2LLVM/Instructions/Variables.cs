@@ -1,7 +1,7 @@
 sealed class Variables(Translator translator) : TranslationComponent(translator)
 {
     internal bool TryTranslateVariableInstruction(LLVMBuilderRef builder, LLVMBuilderRef entryBuilder, Instruction instruction,
-        MethodReference method, System.Collections.Generic.Stack<LLVMValueRef> stack,
+        MethodReference method, Stack<LLVMValueRef> stack,
         Dictionary<int, Tuple<LLVMValueRef, LLVMTypeRef>> locals,
         Dictionary<LLVMValueRef, TypeReference> trackedTypes, Dictionary<int, TypeReference> localRuntimeTypes,
         Func<int, LLVMValueRef> getMethodParameter, Action<LLVMValueRef, TypeReference> trackType)

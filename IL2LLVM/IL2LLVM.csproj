@@ -11,6 +11,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <AssemblyMetadata Include="BuildTimestamp" Value="$([System.DateTime]::Now.ToString())" />
     <PackageReference Include="libLLVM" Version="21.1.8" />
     <PackageReference Include="libLLVM.runtime.win-x64" Version="21.1.8" />
     <PackageReference Include="LLVMSharp" Version="21.1.8.1" />

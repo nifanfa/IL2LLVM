@@ -34,6 +34,7 @@ sealed class CoreLibMetadata
     public TypeDefinition GCDesc => GetType("System.GCDesc");
     public TypeDefinition FlagsAttribute => GetType("System.FlagsAttribute");
     public TypeDefinition RuntimeExportAttribute => GetType("System.Runtime.RuntimeExportAttribute");
+    public TypeDefinition RuntimeNoGCFrameAttribute => GetType("System.Runtime.RuntimeNoGCFrameAttribute");
     public TypeDefinition UnmanagedCallersOnlyAttribute => GetType("System.Runtime.InteropServices.UnmanagedCallersOnlyAttribute");
     public TypeDefinition ExceptionRuntime => GetType("System.Runtime.ExceptionRuntime");
     public TypeDefinition ExceptionFrame => GetType("System.Runtime.ExceptionFrame");
@@ -66,6 +67,7 @@ sealed class CoreLibMetadata
     public bool IsNativeInteger(TypeReference type) => IsType(type, IntPtr) || IsType(type, UIntPtr);
     public bool IsFlagsAttribute(TypeReference type) => IsType(type, FlagsAttribute);
     public bool IsRuntimeExportAttribute(TypeReference type) => IsType(type, RuntimeExportAttribute);
+    public bool IsRuntimeNoGCFrameAttribute(TypeReference type) => IsType(type, RuntimeNoGCFrameAttribute);
     public bool IsUnmanagedCallersOnlyAttribute(TypeReference type) => IsType(type, UnmanagedCallersOnlyAttribute);
 
     public FieldDefinition GetNullableHasValueField(TypeReference type) => GetInstanceField(Resolve(type), "_hasValue");

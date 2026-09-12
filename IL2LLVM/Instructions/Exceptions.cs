@@ -1,7 +1,7 @@
 sealed class Exceptions(Translator translator) : TranslationComponent(translator)
 {
     internal bool TryTranslateExceptionInstruction(LLVMBuilderRef builder, LLVMValueRef function, Instruction instruction,
-        MethodDefinition? method, System.Collections.Generic.Stack<LLVMValueRef> stack, HashSet<LLVMBasicBlockRef> terminatedBlocks,
+        MethodDefinition? method, Stack<LLVMValueRef> stack, HashSet<LLVMBasicBlockRef> terminatedBlocks,
         Dictionary<ExceptionHandler, LLVMValueRef> caughtExceptions,
         Dictionary<ExceptionHandler, (LLVMValueRef Slot, Dictionary<int, LLVMBasicBlockRef> Targets)> finallyStates,
         Dictionary<int, (LLVMBasicBlockRef Handler, LLVMBasicBlockRef Next)> filterStates,
