@@ -17,6 +17,7 @@ sealed class CoreLibMetadata
     public TypeDefinition MulticastDelegate => GetType("System.MulticastDelegate");
     public TypeDefinition Nullable => GetType("System.Nullable`1");
     public TypeDefinition Activator => GetType("System.Activator");
+    public TypeDefinition ArrayEnumerator => GetType("System.ArrayEnumerator`1");
     public TypeDefinition IntPtr => GetType("System.IntPtr");
     public TypeDefinition Exception => GetType("System.Exception");
     public TypeDefinition InvalidCastException => GetType("System.InvalidCastException");
@@ -43,21 +44,70 @@ sealed class CoreLibMetadata
     public TypeDefinition GCHeap => GetType("System.Runtime.GCHeap");
     public TypeDefinition GCFrame => GetType("System.Runtime.GCFrame");
     public TypeDefinition GCRoot => GetType("System.Runtime.GCRoot");
+    public TypeDefinition GCStaticRoot => GetType("System.Runtime.GCStaticRoot");
 
     public FieldDefinition ObjectTypeField => GetInstanceField(Object, "m_pType");
+    public FieldDefinition StringLengthField => GetInstanceField(String, "Length");
+    public FieldDefinition StringCharsField => GetInstanceField(String, "_chars");
+    public FieldDefinition DelegateFunctionField => GetInstanceField(Delegate, "_function");
+    public FieldDefinition DelegateTargetField => GetInstanceField(Delegate, "_target");
+    public FieldDefinition DelegateNextField => GetInstanceField(Delegate, "_next");
+    public FieldDefinition TypeNameField => GetInstanceField(Type, "Name");
+    public FieldDefinition TypeNamespaceField => GetInstanceField(Type, "Namespace");
+    public FieldDefinition TypeFullNameField => GetInstanceField(Type, "FullName");
     public FieldDefinition TypeRuntimeTypeIdField => GetInstanceField(Type, "RuntimeTypeId");
     public FieldDefinition TypeGCDescriptorField => GetInstanceField(Type, "GCDescriptor");
+    public FieldDefinition TypeEnumNamesField => GetInstanceField(Type, "EnumNames");
+    public FieldDefinition TypeEnumValuesField => GetInstanceField(Type, "EnumValues");
+    public FieldDefinition TypeIsFlagsEnumField => GetInstanceField(Type, "IsFlagsEnum");
+    public FieldDefinition TypeIsSignedEnumField => GetInstanceField(Type, "IsSignedEnum");
     public FieldDefinition EnumValueField => GetInstanceField(Enum, "m_value");
     public FieldDefinition ArrayLengthField => GetInstanceField(Array, "Length");
     public FieldDefinition ArrayLengthsField => GetInstanceField(Array, "_lengths");
     public FieldDefinition ArrayDataField => GetInstanceField(Array, "m_pData");
+    public FieldDefinition GCDescTotalSlotCountField => GetInstanceField(GCDesc, "TotalSlotCount");
+    public FieldDefinition GCDescBaseSizeField => GetInstanceField(GCDesc, "BaseSize");
+    public FieldDefinition GCDescFixedReferenceCountField => GetInstanceField(GCDesc, "FixedReferenceCount");
+    public FieldDefinition GCDescArrayLengthOffsetField => GetInstanceField(GCDesc, "ArrayLengthOffset");
+    public FieldDefinition GCDescArrayElementSizeField => GetInstanceField(GCDesc, "ArrayElementSize");
+    public FieldDefinition GCDescArrayElementReferenceCountField => GetInstanceField(GCDesc, "ArrayElementReferenceCount");
+    public FieldDefinition GCDescReferenceOffsetsField => GetInstanceField(GCDesc, "ReferenceOffsets");
     public FieldDefinition GCStaticRootsField => GetStaticField(GCHeap, "s_staticRoots");
+    public FieldDefinition GCStaticRootNextField => GetInstanceField(GCStaticRoot, "Next");
+    public FieldDefinition GCStaticRootAddressField => GetInstanceField(GCStaticRoot, "Address");
+    public FieldDefinition GCStaticRootDescriptorField => GetInstanceField(GCStaticRoot, "Descriptor");
     public FieldDefinition RuntimeFieldDataField => GetInstanceField(RuntimeFieldHandle, "Data");
     public FieldDefinition RuntimeFieldLengthField => GetInstanceField(RuntimeFieldHandle, "Length");
 
     public MethodDefinition ActivatorCreateInstanceMethod => Activator.Methods.Single(method =>
         method.Name == "CreateInstance" && method.IsStatic && method.GenericParameters.Count == 1 &&
         method.Parameters.Count == 0);
+    public MethodDefinition StringCharArrayConstructor => GetRequiredConstructor(String, new ArrayType(Char));
+    public MethodDefinition TypeGetTypeFromHandleMethod => GetRequiredMethod(Type, "GetTypeFromHandle", false,
+        Type, RuntimeTypeHandle);
+    public MethodDefinition ExceptionPushMethod => GetRequiredMethod(ExceptionRuntime, "Push", false, Void,
+        new PointerType(ExceptionFrame), new PointerType(JumpBuffer));
+    public MethodDefinition ExceptionPopMethod => GetRequiredMethod(ExceptionRuntime, "Pop", false, Void,
+        new PointerType(ExceptionFrame));
+    public MethodDefinition ExceptionGetBufferMethod => GetRequiredMethod(ExceptionRuntime, "GetBuffer", false,
+        new PointerType(JumpBuffer), new PointerType(ExceptionFrame));
+    public MethodDefinition ExceptionGetTopMethod => GetRequiredMethod(ExceptionRuntime, "GetTop", false,
+        new PointerType(ExceptionFrame));
+    public MethodDefinition ExceptionGetCurrentMethod => GetRequiredMethod(ExceptionRuntime, "GetCurrent", false,
+        Exception);
+    public MethodDefinition ExceptionSetJumpMethod => GetRequiredMethod(ExceptionRuntime, "SetJump", false, Int32,
+        new PointerType(JumpBuffer), new PointerType(StackPointer));
+    public MethodDefinition ExceptionLongJumpMethod => GetRequiredMethod(ExceptionRuntime, "LongJump", false, Void,
+        new PointerType(JumpBuffer), Int32);
+    public MethodDefinition ExceptionAbortMethod => GetRequiredMethod(ExceptionRuntime, "Abort", false, Void);
+    public MethodDefinition ExceptionThrowMethod => GetRequiredMethod(ExceptionRuntime, "Throw", false, Void,
+        Exception);
+    public MethodDefinition GCAllocateMethod => GetRequiredMethod(GCHeap, "Allocate", false,
+        new PointerType(Object), UIntPtr);
+    public MethodDefinition GCPushMethod => GetRequiredMethod(GCHeap, "Push", false, Void,
+        new PointerType(GCFrame), new PointerType(GCRoot), Int32);
+    public MethodDefinition GCPopMethod => GetRequiredMethod(GCHeap, "Pop", false, Void,
+        new PointerType(GCFrame));
 
     public bool IsObject(TypeReference type) => IsType(type, Object);
     public bool IsValueType(TypeReference type) => IsType(type, ValueType);
@@ -101,5 +151,55 @@ sealed class CoreLibMetadata
     {
         return type.Fields.FirstOrDefault(field => field.IsStatic && field.Name == name) ??
             throw new NotSupportedException($"CoreLib field is not defined: {type.FullName}.{name}");
+    }
+
+    private static MethodDefinition GetRequiredConstructor(TypeDefinition type,
+        params TypeReference[] parameterTypes)
+    {
+        var matches = type.Methods.Where(method => method.IsConstructor && !method.IsStatic &&
+            HasSignature(method, parameterTypes)).ToList();
+        return matches.Count == 1
+            ? matches[0]
+            : throw new InvalidOperationException(
+                $"Expected one matching CoreLib constructor on {type.FullName}, found {matches.Count}.");
+    }
+
+    private static MethodDefinition GetRequiredMethod(TypeDefinition type, string name, bool hasThis,
+        TypeReference returnType, params TypeReference[] parameterTypes)
+    {
+        var matches = type.Methods.Where(method => method.Name == name && method.HasThis == hasThis &&
+            method.GenericParameters.Count == 0 && SameType(method.ReturnType, returnType) &&
+            HasSignature(method, parameterTypes)).ToList();
+        return matches.Count == 1
+            ? matches[0]
+            : throw new InvalidOperationException(
+                $"Expected one matching CoreLib method named {name} on {type.FullName}, found {matches.Count}.");
+    }
+
+    private static bool HasSignature(MethodReference method, IReadOnlyList<TypeReference> parameterTypes)
+    {
+        return method.Parameters.Count == parameterTypes.Count &&
+            method.Parameters.Select(parameter => parameter.ParameterType).Zip(parameterTypes)
+                .All(pair => SameType(pair.First, pair.Second));
+    }
+
+    private static bool SameType(TypeReference left, TypeReference right)
+    {
+        if (ReferenceEquals(left, right))
+            return true;
+        if (left.FullName == right.FullName)
+            return true;
+        if (left is ArrayType leftArray && right is ArrayType rightArray)
+            return leftArray.Rank == rightArray.Rank && SameType(leftArray.ElementType, rightArray.ElementType);
+        if (left is PointerType leftPointer && right is PointerType rightPointer)
+            return SameType(leftPointer.ElementType, rightPointer.ElementType);
+        if (left is ByReferenceType leftByReference && right is ByReferenceType rightByReference)
+            return SameType(leftByReference.ElementType, rightByReference.ElementType);
+        var leftDefinition = left.Resolve();
+        var rightDefinition = right.Resolve();
+        if (leftDefinition is not null && rightDefinition is not null)
+            return leftDefinition.MetadataToken == rightDefinition.MetadataToken &&
+                leftDefinition.Module.Mvid == rightDefinition.Module.Mvid;
+        return left.FullName == right.FullName;
     }
 }

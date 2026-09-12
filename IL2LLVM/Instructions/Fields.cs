@@ -87,7 +87,7 @@ sealed class Fields(Translator translator) : TranslationComponent(translator)
 
     void EmitStaticConstructorGuard(LLVMBuilderRef builder, MethodReference method, TypeReference type)
     {
-        if (method.Name == ".cctor")
+        if (IsTypeInitializer(method))
             return;
         var guard = GetCctorGuard(ResolveGenericType(type, method));
         if (guard is not null)

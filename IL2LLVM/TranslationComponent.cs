@@ -66,15 +66,12 @@ abstract class TranslationComponent(Translator translator)
     protected bool IsKnownRuntimeType(TypeReference type) => Translator.TypeSystem.IsKnownRuntimeType(type);
     protected int GetTypeDepth(TypeReference type) => Translator.TypeSystem.GetTypeDepth(type);
     protected bool ContainsGenericParameter(TypeReference type) => Translator.TypeSystem.ContainsGenericParameter(type);
-    protected FieldDefinition GetDelegateField(TypeReference type, string name) => Translator.TypeSystem.GetDelegateField(type, name);
     protected bool IsDelegateType(TypeReference type) => Translator.TypeSystem.IsDelegateType(type);
     protected LLVMTypeRef GetLLVMTypeRef(TypeReference type) => Translator.TypeSystem.GetLLVMTypeRef(type);
     protected LLVMTypeRef GetUnmanagedCallType(TypeReference type) => Translator.TypeSystem.GetUnmanagedCallType(type);
     protected bool IsVoidType(TypeReference type) => Translator.TypeSystem.IsVoidType(type);
     protected TypeReference? GetEnumUnderlyingType(TypeReference type) => Translator.TypeSystem.GetEnumUnderlyingType(type);
     protected bool IsNoReturnMethod(MethodReference method, Dictionary<string, MethodDefinition> methods) => Translator.TypeSystem.IsNoReturnMethod(method, methods);
-    protected MethodDefinition GetRequiredConstructor(TypeDefinition type, params TypeReference[] parameterTypes) => Translator.TypeSystem.GetRequiredConstructor(type, parameterTypes);
-    protected MethodDefinition GetRequiredMethod(TypeDefinition type, string name, bool hasThis, TypeReference returnType, params TypeReference[] parameterTypes) => Translator.TypeSystem.GetRequiredMethod(type, name, hasThis, returnType, parameterTypes);
     protected MethodDefinition? FindLocalMethod(MethodReference reference, Dictionary<string, MethodDefinition> methods) => Translator.TypeSystem.FindLocalMethod(reference, methods);
     protected MethodReference SpecializeMethodReference(MethodReference reference, MethodReference context) => Translator.TypeSystem.SpecializeMethodReference(reference, context);
     protected TypeReference SubstituteGenericParameter(TypeReference type, MethodReference method) => Translator.TypeSystem.SubstituteGenericParameter(type, method);
@@ -116,6 +113,11 @@ abstract class TranslationComponent(Translator translator)
     protected bool SameMethodDeclarationSignature(MethodReference left, MethodReference right) => Translator.Methods.SameMethodDeclarationSignature(left, right);
     protected bool SameMethodSignature(MethodReference left, MethodReference right) => Translator.Methods.SameMethodSignature(left, right);
     protected bool SameMethodInstantiation(MethodReference left, MethodReference right) => Translator.Methods.SameMethodInstantiation(left, right);
+    protected ArrayIntrinsicKind GetArrayIntrinsicKind(MethodReference method) => Translator.Methods.GetArrayIntrinsicKind(method);
+    protected bool IsDelegateConstructor(MethodReference method) => Translator.Methods.IsDelegateConstructor(method);
+    protected bool IsDelegateInvoke(MethodReference method) => Translator.Methods.IsDelegateInvoke(method);
+    protected MethodDefinition GetDelegateInvokeMethod(TypeReference type) => Translator.Methods.GetDelegateInvokeMethod(type);
+    protected bool IsTypeInitializer(MethodReference method) => Translator.Methods.IsTypeInitializer(method);
     protected Tuple<LLVMValueRef, LLVMTypeRef, MethodReference, Collection<Instruction>?>? GetRegisteredMethod(MethodReference method) => Translator.Methods.GetRegisteredMethod(method);
     protected int GetGenericMethodArity(MethodReference method) => Translator.Methods.GetGenericMethodArity(method);
     protected MethodReference BindMethodToDeclaringType(MethodDefinition method, TypeReference declaringType, MethodReference? requestedMethod = null) => Translator.Methods.BindMethodToDeclaringType(method, declaringType, requestedMethod);
@@ -136,7 +138,6 @@ abstract class TranslationComponent(Translator translator)
     protected unsafe LLVMTypeRef GetFunctionType(LLVMValueRef function) => Translator.Methods.GetFunctionType(function);
 
     protected IEnumerable<TypeDefinition> GetAllTypes(IEnumerable<TypeDefinition> types) => Translator.Runtime.GetAllTypes(types);
-    protected bool IsArrayEnumeratorDefinition(TypeDefinition type) => Translator.Runtime.IsArrayEnumeratorDefinition(type);
     protected bool TryGetArrayEnumerator(MethodReference targetMethod, out TypeReference elementType, out TypeDefinition definition, out MethodDefinition constructor) => Translator.Runtime.TryGetArrayEnumerator(targetMethod, out elementType, out definition, out constructor);
     protected LLVMValueRef GetArrayElementAddress(LLVMBuilderRef builder, LLVMValueRef array, LLVMValueRef index, LLVMTypeRef elementType, int? elementSize = null) => Translator.Runtime.GetArrayElementAddress(builder, array, index, elementType, elementSize);
     protected LLVMValueRef GetMultiArrayElementAddress(LLVMBuilderRef builder, LLVMValueRef array, LLVMValueRef[] indices, LLVMTypeRef elementType, int? elementSize = null) => Translator.Runtime.GetMultiArrayElementAddress(builder, array, indices, elementType, elementSize);

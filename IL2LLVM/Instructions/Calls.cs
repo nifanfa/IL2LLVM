@@ -143,7 +143,7 @@ sealed class Calls(Translator translator) : TranslationComponent(translator)
                         else
                             useRuntimeDispatch = true;
                     }
-                    if (instr.OpCode.Code == Code.Callvirt && targetMethod.Name == "Invoke" && IsDelegateType(targetMethod.DeclaringType))
+                    if (instr.OpCode.Code == Code.Callvirt && IsDelegateInvoke(targetMethod))
                     {
                         var invokeArguments = new List<LLVMValueRef>();
                         for (int i = 0; i < targetMethod.Parameters.Count && stack.Count != 0; i++)
@@ -152,9 +152,9 @@ sealed class Calls(Translator translator) : TranslationComponent(translator)
                         var delegateObject = stack.Count == 0
                             ? LLVMValueRef.CreateConstNull(LLVMTypeRef.CreatePointer(int8Type, 0))
                             : stack.Pop();
-                        var functionField = GetDelegateField(targetMethod.DeclaringType, "_function");
-                        var targetField = GetDelegateField(targetMethod.DeclaringType, "_target");
-                        var nextField = GetDelegateField(targetMethod.DeclaringType, "_next");
+                        var functionField = coreLib.DelegateFunctionField;
+                        var targetField = coreLib.DelegateTargetField;
+                        var nextField = coreLib.DelegateNextField;
                         var invokeReturnType = SubstituteGenericParameter(targetMethod.ReturnType, targetMethod);
                         var functionType = LLVMTypeRef.CreateFunction(GetLLVMTypeRef(invokeReturnType),
                             [LLVMTypeRef.CreatePointer(int8Type, 0), .. targetMethod.Parameters.Select(parameter => GetLLVMTypeRef(SubstituteGenericParameter(parameter.ParameterType, targetMethod)))]);
@@ -258,8 +258,9 @@ sealed class Calls(Translator translator) : TranslationComponent(translator)
                     }
                     if (targetMethod.DeclaringType is ArrayType multidimensionalArray && multidimensionalArray.Rank > 1)
                     {
+                        var arrayIntrinsicKind = GetArrayIntrinsicKind(targetMethod);
                         var elementType = GetLLVMTypeRef(multidimensionalArray.ElementType);
-                        if (instr.OpCode.Code == Code.Newobj)
+                        if (instr.OpCode.Code == Code.Newobj && arrayIntrinsicKind == ArrayIntrinsicKind.Constructor)
                         {
                             var dimensions = Enumerable.Range(0, multidimensionalArray.Rank)
                                 .Select(_ => stack.Pop()).Reverse().ToArray();
@@ -289,10 +290,10 @@ sealed class Calls(Translator translator) : TranslationComponent(translator)
                             TrackType(array, multidimensionalArray);
                             break;
                         }
-                        if (targetMethod.Name is "Get" or "Set" or "Address")
+                        if (arrayIntrinsicKind is ArrayIntrinsicKind.Get or ArrayIntrinsicKind.Set or ArrayIntrinsicKind.Address)
                         {
                             LLVMValueRef value = default;
-                            if (targetMethod.Name == "Set")
+                            if (arrayIntrinsicKind == ArrayIntrinsicKind.Set)
                                 value = stack.Pop();
                             var indices = Enumerable.Range(0, multidimensionalArray.Rank)
                                 .Select(_ => stack.Pop()).Reverse().ToArray();
@@ -300,14 +301,14 @@ sealed class Calls(Translator translator) : TranslationComponent(translator)
                             CheckMultiArrayAccess(array, indices);
                             var address = GetMultiArrayElementAddress(builder, array, indices, elementType,
                                 GetTypeSize(multidimensionalArray.ElementType));
-                            if (targetMethod.Name == "Set")
+                            if (arrayIntrinsicKind == ArrayIntrinsicKind.Set)
                             {
                                 if (IsValueType(multidimensionalArray.ElementType))
                                     CopyValue(builder, address, value, GetTypeSize(multidimensionalArray.ElementType));
                                 else
                                     builder.BuildStore(ConvertValue(builder, value, elementType), address);
                             }
-                            else if (targetMethod.Name == "Get")
+                            else if (arrayIntrinsicKind == ArrayIntrinsicKind.Get)
                                 stack.Push(builder.BuildLoad2(elementType, address));
                             else
                             {
@@ -323,7 +324,7 @@ sealed class Calls(Translator translator) : TranslationComponent(translator)
 
                     if (instr.OpCode.Code == Code.Newobj)
                     {
-                        if (IsDelegateType(targetMethod.DeclaringType))
+                        if (IsDelegateConstructor(targetMethod))
                         {
                             var functionValue = stack.Count == 0
                                 ? LLVMValueRef.CreateConstNull(LLVMTypeRef.CreatePointer(int8Type, 0))
@@ -334,13 +335,13 @@ sealed class Calls(Translator translator) : TranslationComponent(translator)
                             var delegateTarget = stack.Count == 0
                                 ? LLVMValueRef.CreateConstNull(LLVMTypeRef.CreatePointer(int8Type, 0))
                                 : stack.Pop();
-                            var delegateType = targetMethod.DeclaringType.Resolve() ?? throw new NotSupportedException($"Delegate type is not defined: {targetMethod.DeclaringType.FullName}");
                             SynchronizeEvaluationStackRoots();
                             ptr = BuildAllocation(builder, GetObjectSize(targetMethod.DeclaringType));
                             InitializeRuntimeType(builder, ptr, targetMethod.DeclaringType);
                             StoreTemporaryRoot(0, ptr, targetMethod.DeclaringType);
-                            builder.BuildStore(delegateFunction, GetFieldAddress(builder, ptr, GetDelegateField(targetMethod.DeclaringType, "_function")));
-                            StoreField(builder, ptr, GetDelegateField(targetMethod.DeclaringType, "_target"), delegateTarget);
+                            builder.BuildStore(delegateFunction,
+                                GetFieldAddress(builder, ptr, coreLib.DelegateFunctionField));
+                            StoreField(builder, ptr, coreLib.DelegateTargetField, delegateTarget);
                             stack.Push(ptr);
                             TrackType(ptr, targetMethod.DeclaringType);
                             break;

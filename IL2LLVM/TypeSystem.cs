@@ -50,19 +50,6 @@ sealed class TypeSystem(Translator translator) : TranslationComponent(translator
         };
     }
 
-    internal new FieldDefinition GetDelegateField(TypeReference type, string name)
-    {
-        var current = type.Resolve();
-        while (current is not null)
-        {
-            var field = current.Fields.FirstOrDefault(candidate => candidate.Name == name && !candidate.IsStatic);
-            if (field is not null)
-                return field;
-            current = current.BaseType?.Resolve();
-        }
-        throw new NotSupportedException($"Delegate field is not defined: {type.FullName}.{name}");
-    }
-
     internal new bool IsDelegateType(TypeReference type)
     {
         for (var current = type.Resolve(); current is not null;)
@@ -197,29 +184,6 @@ sealed class TypeSystem(Translator translator) : TranslationComponent(translator
             return false;
         var last = definition.Body.Instructions.LastOrDefault(instruction => instruction.OpCode.Code is not Code.Nop);
         return last?.OpCode.Code is Code.Throw or Code.Rethrow;
-    }
-
-    internal new MethodDefinition GetRequiredConstructor(TypeDefinition type, params TypeReference[] parameterTypes)
-    {
-        var matches = type.Methods.Where(method => method.IsConstructor && !method.IsStatic &&
-            method.Parameters.Count == parameterTypes.Length &&
-            method.Parameters.Select(parameter => parameter.ParameterType).Zip(parameterTypes)
-                .All(pair => SameType(pair.First, pair.Second))).ToList();
-        return matches.Count == 1
-            ? matches[0]
-            : throw new InvalidOperationException($"Expected one matching constructor on {type.FullName}, found {matches.Count}.");
-    }
-
-    internal new MethodDefinition GetRequiredMethod(TypeDefinition type, string name, bool hasThis,
-        TypeReference returnType, params TypeReference[] parameterTypes)
-    {
-        var matches = type.Methods.Where(method => method.Name == name && method.HasThis == hasThis &&
-            SameType(method.ReturnType, returnType) && method.Parameters.Count == parameterTypes.Length &&
-            method.Parameters.Select(parameter => parameter.ParameterType).Zip(parameterTypes)
-                .All(pair => SameType(pair.First, pair.Second))).ToList();
-        return matches.Count == 1
-            ? matches[0]
-            : throw new InvalidOperationException($"Expected one matching method named {name} on {type.FullName}, found {matches.Count}.");
     }
 
     internal new MethodDefinition? FindLocalMethod(MethodReference reference, Dictionary<string, MethodDefinition> methods)
@@ -434,7 +398,8 @@ sealed class TypeSystem(Translator translator) : TranslationComponent(translator
                 throw new InvalidOperationException($"Explicit-layout field has no offset: {field.FullName}.");
             return offset + field.Offset;
         }
-        foreach (var candidate in definition.Fields.TakeWhile(candidate => candidate.Name != field.Name).Where(candidate => !candidate.IsStatic))
+        foreach (var candidate in definition.Fields.TakeWhile(candidate => !ReferenceEquals(candidate, field))
+                     .Where(candidate => !candidate.IsStatic))
         {
             var candidateType = declaringType is GenericInstanceType genericType
                 ? SubstituteGenericTypeArguments(candidate.FieldType, genericType)

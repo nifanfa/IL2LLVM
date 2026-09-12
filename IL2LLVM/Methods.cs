@@ -1,5 +1,73 @@
+enum ArrayIntrinsicKind
+{
+    None,
+    Constructor,
+    Get,
+    Set,
+    Address
+}
+
 sealed class Methods(Translator translator) : TranslationComponent(translator)
 {
+    internal new ArrayIntrinsicKind GetArrayIntrinsicKind(MethodReference method)
+    {
+        if (method.DeclaringType is not ArrayType { Rank: > 1 } array || !method.HasThis)
+            return ArrayIntrinsicKind.None;
+
+        var rank = array.Rank;
+        bool HasIndexParameters(int count) => method.Parameters.Count == count &&
+            method.Parameters.Take(rank).All(parameter => parameter.ParameterType.MetadataType == MetadataType.Int32);
+
+        return method.Name switch
+        {
+            ".ctor" when HasIndexParameters(rank) && IsVoidType(method.ReturnType) =>
+                ArrayIntrinsicKind.Constructor,
+            "Get" when HasIndexParameters(rank) && SameType(method.ReturnType, array.ElementType) =>
+                ArrayIntrinsicKind.Get,
+            "Set" when HasIndexParameters(rank + 1) && IsVoidType(method.ReturnType) &&
+                SameType(method.Parameters[rank].ParameterType, array.ElementType) => ArrayIntrinsicKind.Set,
+            "Address" when HasIndexParameters(rank) && method.ReturnType is ByReferenceType byReference &&
+                SameType(byReference.ElementType, array.ElementType) => ArrayIntrinsicKind.Address,
+            _ => ArrayIntrinsicKind.None
+        };
+    }
+
+    internal new bool IsDelegateConstructor(MethodReference method)
+    {
+        return IsDelegateType(method.DeclaringType) &&
+            FindMethodDefinition(method) is { IsConstructor: true, IsStatic: false };
+    }
+
+    internal new bool IsDelegateInvoke(MethodReference method)
+    {
+        if (!IsDelegateType(method.DeclaringType))
+            return false;
+        var definition = FindMethodDefinition(method);
+        return definition is { Name: "Invoke", IsStatic: false, IsVirtual: true } &&
+            (definition.ImplAttributes & MethodImplAttributes.Runtime) != 0;
+    }
+
+    internal new MethodDefinition GetDelegateInvokeMethod(TypeReference type)
+    {
+        var definition = type.Resolve() ??
+            throw new NotSupportedException($"Delegate type is not defined: {type.FullName}");
+        var matches = definition.Methods.Where(IsDelegateInvoke).ToList();
+        return matches.Count == 1
+            ? matches[0]
+            : throw new NotSupportedException(
+                $"Expected one invocation method on delegate type {type.FullName}, found {matches.Count}.");
+    }
+
+    internal new bool IsTypeInitializer(MethodReference method)
+    {
+        return FindMethodDefinition(method) is
+        {
+            IsConstructor: true,
+            IsStatic: true,
+            HasParameters: false
+        };
+    }
+
     internal new MethodReference ResolveCallTarget(MethodReference targetMethod)
     {
         var declaringType = targetMethod.DeclaringType.Resolve();
@@ -586,12 +654,11 @@ sealed class Methods(Translator translator) : TranslationComponent(translator)
     internal new void RegisterMethodFunction(LLVMModuleRef module, MethodReference method, Collection<Instruction>? instructions,
         string? symbolName = null)
     {
-        if (method.DeclaringType is ArrayType array && array.Rank > 1 &&
-            method.Name is ".ctor" or "Get" or "Set" or "Address")
+        if (GetArrayIntrinsicKind(method) != ArrayIntrinsicKind.None)
             return;
         if (method.DeclaringType.Resolve()?.IsInterface == true && method.Resolve()?.HasBody != true)
             return;
-        if (IsDelegateType(method.DeclaringType) && (method.Name is ".ctor" or "Invoke"))
+        if (IsDelegateConstructor(method) || IsDelegateInvoke(method))
             return;
 
         TypeReference declareType = method.DeclaringType;

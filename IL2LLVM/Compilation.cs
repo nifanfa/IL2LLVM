@@ -123,30 +123,17 @@ sealed class Compilation : TranslationComponent
             localTypes = GetAllTypes(assembly.MainModule.Types)
                 .ToDictionary(t => t.FullName, StringComparer.Ordinal);
             coreLib = new CoreLibMetadata(localTypes);
-            var exceptionRuntimeType = coreLib.ExceptionRuntime;
             var objectPointerType = new PointerType(coreLib.Object);
             var objectReferenceSlotPointerType = new PointerType(objectPointerType);
-            var exceptionFramePointerType = new PointerType(coreLib.ExceptionFrame);
-            var jumpBufferPointerType = new PointerType(coreLib.JumpBuffer);
-            var stackPointerPointerType = new PointerType(coreLib.StackPointer);
-            var exceptionPushMethod = GetRequiredMethod(exceptionRuntimeType, "Push", false,
-                coreLib.Void, exceptionFramePointerType, jumpBufferPointerType);
-            var exceptionPopMethod = GetRequiredMethod(exceptionRuntimeType, "Pop", false,
-                coreLib.Void, exceptionFramePointerType);
-            var exceptionBufferMethod = GetRequiredMethod(exceptionRuntimeType, "GetBuffer", false,
-                jumpBufferPointerType, exceptionFramePointerType);
-            var exceptionTopMethod = GetRequiredMethod(exceptionRuntimeType, "GetTop", false,
-                exceptionFramePointerType);
-            var exceptionCurrentMethod = GetRequiredMethod(exceptionRuntimeType, "GetCurrent", false,
-                coreLib.Exception);
-            var setjmpMethod = GetRequiredMethod(exceptionRuntimeType, "SetJump", false,
-                coreLib.Int32, jumpBufferPointerType, stackPointerPointerType);
-            var longjmpMethod = GetRequiredMethod(exceptionRuntimeType, "LongJump", false,
-                coreLib.Void, jumpBufferPointerType, coreLib.Int32);
-            var exceptionAbortMethod = GetRequiredMethod(exceptionRuntimeType, "Abort", false,
-                coreLib.Void);
-            var exceptionThrowMethod = GetRequiredMethod(exceptionRuntimeType, "Throw", false,
-                coreLib.Void, coreLib.Exception);
+            var exceptionPushMethod = coreLib.ExceptionPushMethod;
+            var exceptionPopMethod = coreLib.ExceptionPopMethod;
+            var exceptionBufferMethod = coreLib.ExceptionGetBufferMethod;
+            var exceptionTopMethod = coreLib.ExceptionGetTopMethod;
+            var exceptionCurrentMethod = coreLib.ExceptionGetCurrentMethod;
+            var setjmpMethod = coreLib.ExceptionSetJumpMethod;
+            var longjmpMethod = coreLib.ExceptionLongJumpMethod;
+            var exceptionAbortMethod = coreLib.ExceptionAbortMethod;
+            var exceptionThrowMethod = coreLib.ExceptionThrowMethod;
             RegisterMethodFunction(module, exceptionPushMethod, exceptionPushMethod.Body.Instructions);
             RegisterMethodFunction(module, exceptionPopMethod, exceptionPopMethod.Body.Instructions);
             RegisterMethodFunction(module, exceptionBufferMethod, exceptionBufferMethod.Body.Instructions);
@@ -159,15 +146,10 @@ sealed class Compilation : TranslationComponent
             var stackSaveType = LLVMTypeRef.CreateFunction(exceptionPointerType, []);
             var stackSaveFunction = module.AddFunction("llvm.stacksave.p0", stackSaveType);
             RegisterMethodFunction(module, exceptionThrowMethod, exceptionThrowMethod.Body.Instructions);
-            var gcHeapType = coreLib.GCHeap;
-            var gcFramePointerType = new PointerType(coreLib.GCFrame);
-            var gcRootPointerType = new PointerType(coreLib.GCRoot);
             var gcDescPointerType = new PointerType(coreLib.GCDesc);
-            var gcAllocateMethod = GetRequiredMethod(gcHeapType, "Allocate", false, objectPointerType,
-                coreLib.UIntPtr);
-            var gcPushMethod = GetRequiredMethod(gcHeapType, "Push", false, coreLib.Void,
-                gcFramePointerType, gcRootPointerType, coreLib.Int32);
-            var gcPopMethod = GetRequiredMethod(gcHeapType, "Pop", false, coreLib.Void, gcFramePointerType);
+            var gcAllocateMethod = coreLib.GCAllocateMethod;
+            var gcPushMethod = coreLib.GCPushMethod;
+            var gcPopMethod = coreLib.GCPopMethod;
             RegisterMethodFunction(module, gcAllocateMethod, gcAllocateMethod.Body.Instructions);
             RegisterMethodFunction(module, gcPushMethod, gcPushMethod.Body.Instructions);
             RegisterMethodFunction(module, gcPopMethod, gcPopMethod.Body.Instructions);
@@ -208,10 +190,9 @@ sealed class Compilation : TranslationComponent
             var registeredExceptionThrow = GetRegisteredMethod(exceptionThrowMethod)!;
             exceptionThrowFunction = registeredExceptionThrow.Item1;
             exceptionThrowType = registeredExceptionThrow.Item2;
-            arrayEnumeratorTypes = localTypes.Values.Where(IsArrayEnumeratorDefinition).ToList();
-            stringConstructor = GetRequiredConstructor(coreLib.String, new ArrayType(coreLib.Char));
-            var typeGetTypeFromHandleMethod = GetRequiredMethod(coreLib.Type, "GetTypeFromHandle", false,
-                coreLib.Type, coreLib.RuntimeTypeHandle);
+            arrayEnumeratorTypes = [coreLib.ArrayEnumerator];
+            stringConstructor = coreLib.StringCharArrayConstructor;
+            var typeGetTypeFromHandleMethod = coreLib.TypeGetTypeFromHandleMethod;
             foreach (TypeDefinition type in GetAllTypes(assembly.MainModule.Types))
             {
                 var fields = type.Fields;
@@ -454,9 +435,7 @@ sealed class Compilation : TranslationComponent
                             if (targetMethod.HasThis)
                                 return targetFunction;
 
-                            var delegateDefinition = delegateType.Resolve() ??
-                                throw new NotSupportedException($"Delegate type is not defined: {delegateType.FullName}");
-                            var invokeDefinition = delegateDefinition.Methods.Single(candidate => candidate.Name == "Invoke");
+                            var invokeDefinition = GetDelegateInvokeMethod(delegateType);
                             var invokeMethod = BindMethodToDeclaringType(invokeDefinition, delegateType, targetMethod);
                             var key = $"{GetFriendlyMethodName(targetMethod)}|{GetRuntimeTypeKey(delegateType)}";
                             if (delegateThunks.TryGetValue(key, out var existing))
@@ -1494,13 +1473,29 @@ sealed class Compilation : TranslationComponent
                     staticRoots.Add((LLVMValueRef.CreateConstPointerCast(storage.Item1, pointerType),
                         LLVMValueRef.CreateConstPointerCast(GetGCDescriptor(fieldType), pointerType)));
             }
-            var staticRootType = context.GetStructType([pointerType, pointerType, pointerType], false);
+            var staticRootFields = coreLib.GCStaticRoot.Fields.Where(field => !field.IsStatic).ToArray();
+            if (staticRootFields.Length != 3 ||
+                !staticRootFields.Contains(coreLib.GCStaticRootNextField) ||
+                !staticRootFields.Contains(coreLib.GCStaticRootAddressField) ||
+                !staticRootFields.Contains(coreLib.GCStaticRootDescriptorField))
+                throw new InvalidOperationException($"Unexpected {coreLib.GCStaticRoot.FullName} layout.");
+            var staticRootType = context.GetStructType(
+                staticRootFields.Select(field => GetLLVMTypeRef(field.FieldType)).ToArray(), false);
             var nextStaticRoot = LLVMValueRef.CreateConstNull(pointerType);
             for (int index = staticRoots.Count - 1; index >= 0; index--)
             {
                 var staticRoot = AddInternalGlobal(staticRootType, $"__gc_static_root_{index}");
-                staticRoot.Initializer = LLVMValueRef.CreateConstNamedStruct(staticRootType, [nextStaticRoot,
-                    staticRoots[index].Address, staticRoots[index].Descriptor]);
+                var staticRootValues = staticRootFields.Select(field =>
+                {
+                    if (ReferenceEquals(field, coreLib.GCStaticRootNextField))
+                        return nextStaticRoot;
+                    if (ReferenceEquals(field, coreLib.GCStaticRootAddressField))
+                        return staticRoots[index].Address;
+                    if (ReferenceEquals(field, coreLib.GCStaticRootDescriptorField))
+                        return staticRoots[index].Descriptor;
+                    throw new InvalidOperationException($"Unexpected {coreLib.GCStaticRoot.FullName} field: {field.Name}.");
+                }).ToArray();
+                staticRoot.Initializer = LLVMValueRef.CreateConstNamedStruct(staticRootType, staticRootValues);
                 nextStaticRoot = LLVMValueRef.CreateConstPointerCast(staticRoot, pointerType);
             }
             var staticRootHead = GetStaticField(coreLib.GCStaticRootsField);
