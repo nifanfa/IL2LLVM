@@ -16,6 +16,7 @@ sealed class TypeSystem(Translator translator) : TranslationComponent(translator
             if (implementation is null || FindLocalMethod(implementation, localMethods)?.HasBody != true ||
                 !seen.Add(GetRuntimeTypeKey(runtimeType)))
                 continue;
+            QueueMethodTranslation(implementation);
             implementations.Add((runtimeType, implementation));
         }
         return implementations;

@@ -40,11 +40,13 @@ sealed class Translator
     internal Dictionary<string, LLVMValueRef> staticStringArrays = new(StringComparer.Ordinal);
     internal Dictionary<string, LLVMValueRef> staticUInt64Arrays = new(StringComparer.Ordinal);
     internal Dictionary<string, LLVMValueRef> gcDescriptors = new(StringComparer.Ordinal);
+    internal Dictionary<string, LLVMValueRef> gcReferenceLists = new(StringComparer.Ordinal);
     internal Dictionary<string, LLVMValueRef> runtimeFieldData = new(StringComparer.Ordinal);
     internal Dictionary<string, LLVMValueRef> missingVirtualFunctionPointers = new(StringComparer.Ordinal);
     internal Dictionary<string, LLVMValueRef> delegateThunks = new(StringComparer.Ordinal);
     internal Queue<string> pendingMethodTranslations = new();
     internal HashSet<string> queuedMethodTranslations = new(StringComparer.Ordinal);
+    internal bool queueMethodTranslations = true;
     internal List<TypeDefinition> arrayEnumeratorTypes = [];
     internal MethodDefinition? entryPoint;
     internal MethodDefinition stringConstructor = null!;

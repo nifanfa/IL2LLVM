@@ -670,9 +670,9 @@ sealed class Methods(Translator translator) : TranslationComponent(translator)
                 if (existing.Item4 is null && instructions is not null)
                 {
                     moduleMethods[friendlyName] = new(existing.Item1, existing.Item2, existing.Item3, instructions);
-                    if (instructions.Count != 0 && queuedMethodTranslations.Add(friendlyName))
-                        pendingMethodTranslations.Enqueue(friendlyName);
                 }
+                if (instructions?.Count > 0)
+                    QueueMethodTranslation(friendlyName);
                 return;
             }
             var returnType = GetFriendlyParameterTypeName(SubstituteGenericParameter(method.ReturnType, method));
@@ -684,9 +684,9 @@ sealed class Methods(Translator translator) : TranslationComponent(translator)
                 if (existing.Item4 is null && instructions is not null)
                 {
                     moduleMethods[friendlyName] = new(existing.Item1, existing.Item2, existing.Item3, instructions);
-                    if (instructions.Count != 0 && queuedMethodTranslations.Add(friendlyName))
-                        pendingMethodTranslations.Enqueue(friendlyName);
                 }
+                if (instructions?.Count > 0)
+                    QueueMethodTranslation(friendlyName);
                 return;
             }
         }
@@ -710,7 +710,11 @@ sealed class Methods(Translator translator) : TranslationComponent(translator)
         {
             throw new InvalidOperationException($"Native symbol '{exportedName}' has incompatible signatures.");
         }
-        var hasDiscardableBody = method.Resolve()?.HasBody == true && !directExport && !isEntryPoint;
+        // During the declaration pass, bodies are intentionally left external until
+        // reachability analysis queues them. An external declaration cannot carry
+        // linkonce linkage without a body in LLVM.
+        var hasDiscardableBody = queueMethodTranslations && method.Resolve()?.HasBody == true &&
+            !directExport && !isEntryPoint;
         if (hasDiscardableBody)
         {
             funcValue.Linkage = LLVMLinkage.LLVMLinkOnceODRLinkage;
@@ -721,8 +725,32 @@ sealed class Methods(Translator translator) : TranslationComponent(translator)
         if (method.Resolve()?.HasBody == true)
             funcValue.Section = $".text${GetStableSymbolSuffix(friendlyName)}";
         moduleMethods.Add(friendlyName, new(funcValue, funcType, method, instructions));
-        if (instructions?.Count > 0 && queuedMethodTranslations.Add(friendlyName))
-            pendingMethodTranslations.Enqueue(friendlyName);
+        QueueMethodTranslation(friendlyName);
+    }
+
+    internal new void QueueMethodTranslation(string friendlyName)
+    {
+        if (!queueMethodTranslations || !moduleMethods.TryGetValue(friendlyName, out var method) ||
+            method.Item4?.Count == 0 || !queuedMethodTranslations.Add(friendlyName))
+            return;
+        pendingMethodTranslations.Enqueue(friendlyName);
+    }
+
+    internal new void QueueMethodTranslation(MethodReference method)
+    {
+        var friendlyName = GetFriendlyMethodName(method, method.DeclaringType);
+        if (moduleMethods.TryGetValue(friendlyName, out var directCandidate) &&
+            SameMethodInstantiation(directCandidate.Item3, method))
+        {
+            QueueMethodTranslation(friendlyName);
+            return;
+        }
+        foreach (var candidate in moduleMethods)
+            if (SameMethodInstantiation(candidate.Value.Item3, method))
+            {
+                QueueMethodTranslation(candidate.Key);
+                return;
+            }
     }
 
     private string GetPInvokeNativeSymbolName(MethodReference method, string friendlyName, PInvokeInfo pinvoke)

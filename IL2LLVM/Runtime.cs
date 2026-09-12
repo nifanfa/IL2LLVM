@@ -529,6 +529,10 @@ sealed class Runtime(Translator translator) : TranslationComponent(translator)
         }
         if (cctor is null || cctor.Item1 == default)
             return null;
+        // A cctor may have been discovered during the declaration pass. Reusing
+        // that declaration still requires scheduling its body for translation.
+        if (cctor.Item4?.Count > 0)
+            QueueMethodTranslation(cctor.Item3);
 
         var suffix = GetStableSymbolSuffix(GetRuntimeTypeKey(type));
         var state = AddInternalGlobal(int8Type, $"__cctor_state_{suffix}");
@@ -587,51 +591,94 @@ sealed class Runtime(Translator translator) : TranslationComponent(translator)
         ValidateGCReferenceOffsets(type, elementReferences, "array element");
 
         var gcDescType = coreLib.GCDesc;
-        var headerValues = new Dictionary<FieldDefinition, ulong>
-        {
-            [coreLib.GCDescTotalSlotCountField] = 0,
-            [coreLib.GCDescBaseSizeField] = (ulong)baseSize,
-            [coreLib.GCDescFixedReferenceCountField] = (ulong)fixedReferences.Length,
-            [coreLib.GCDescArrayLengthOffsetField] = (ulong)arrayLengthOffset,
-            [coreLib.GCDescArrayElementSizeField] = (ulong)elementSize,
-            [coreLib.GCDescArrayElementReferenceCountField] = (ulong)elementReferences.Length
-        };
         var allGCDescFields = gcDescType.Fields.Where(field => !field.IsStatic).ToArray();
-        var gcDescFields = allGCDescFields.Where(headerValues.ContainsKey).ToArray();
-        headerValues[coreLib.GCDescTotalSlotCountField] =
-            (ulong)(gcDescFields.Length + fixedReferences.Length + elementReferences.Length);
-        if (gcDescFields.Length != headerValues.Count ||
-            !allGCDescFields.Contains(coreLib.GCDescReferenceOffsetsField) ||
-            allGCDescFields.Any(field => !headerValues.ContainsKey(field) &&
-                !ReferenceEquals(field, coreLib.GCDescReferenceOffsetsField)) ||
-            gcDescFields.Any(field => GetTypeSize(field.FieldType) != pointerSize))
-            throw new InvalidOperationException($"{coreLib.GCDesc.FullName} must contain exactly six pointer-sized instance fields: TotalSlotCount, BaseSize, FixedReferenceCount, ArrayLengthOffset, ArrayElementSize, ArrayElementReferenceCount.");
-        var values = new List<LLVMValueRef>();
-        var fieldTypes = new List<LLVMTypeRef>();
-        foreach (var field in gcDescFields)
+        var expectedGCDescFields = coreLib.GCDescValueFields.Concat(coreLib.GCDescReferenceFields).ToArray();
+        if (allGCDescFields.Length != expectedGCDescFields.Length ||
+            allGCDescFields.Any(field => !expectedGCDescFields.Contains(field)) ||
+            allGCDescFields.Where(coreLib.GCDescValueFields.Contains)
+                .Any(field => field.FieldType.MetadataType != MetadataType.Int32) ||
+            allGCDescFields.Where(coreLib.GCDescReferenceFields.Contains)
+                .Any(field => field.FieldType is not PointerType))
+            throw new InvalidOperationException($"{coreLib.GCDesc.FullName} has an unexpected layout. Expected four int fields followed by ObjectReferences and ArrayElementReferences pointers.");
+
+        var pointerType = LLVMTypeRef.CreatePointer(int8Type, 0);
+        var referenceNodeType = CreateGCDescReferenceNodeType();
+        var objectReferences = CreateGCDescReferenceList(referenceNodeType, fixedReferences);
+        var arrayElementReferences = CreateGCDescReferenceList(referenceNodeType, elementReferences);
+        var values = new List<LLVMValueRef>(allGCDescFields.Length);
+        var fieldTypes = new List<LLVMTypeRef>(allGCDescFields.Length);
+        foreach (var field in allGCDescFields)
         {
-            fieldTypes.Add(sizeType);
-            values.Add(LLVMValueRef.CreateConstInt(sizeType, headerValues[field], false));
-        }
-        if (fixedReferences.Length != 0)
-        {
-            var offsetType = LLVMTypeRef.CreateArray(int16Type, (uint)fixedReferences.Length);
-            fieldTypes.Add(offsetType);
-            values.Add(LLVMValueRef.CreateConstArray(int16Type,
-                fixedReferences.Select(offset => LLVMValueRef.CreateConstInt(int16Type, (ulong)offset, false)).ToArray()));
-        }
-        if (elementReferences.Length != 0)
-        {
-            var offsetType = LLVMTypeRef.CreateArray(int16Type, (uint)elementReferences.Length);
-            fieldTypes.Add(offsetType);
-            values.Add(LLVMValueRef.CreateConstArray(int16Type,
-                elementReferences.Select(offset => LLVMValueRef.CreateConstInt(int16Type, (ulong)offset, false)).ToArray()));
+            fieldTypes.Add(coreLib.GCDescReferenceFields.Contains(field) ? pointerType : int32Type);
+            if (ReferenceEquals(field, coreLib.GCDescBaseSizeField))
+                values.Add(LLVMValueRef.CreateConstInt(int32Type, (ulong)baseSize, false));
+            else if (ReferenceEquals(field, coreLib.GCDescArrayLengthOffsetField))
+                values.Add(LLVMValueRef.CreateConstInt(int32Type, (ulong)arrayLengthOffset, false));
+            else if (ReferenceEquals(field, coreLib.GCDescArrayElementSizeField))
+                values.Add(LLVMValueRef.CreateConstInt(int32Type, (ulong)elementSize, false));
+            else if (ReferenceEquals(field, coreLib.GCDescArrayElementReferenceCountField))
+                values.Add(LLVMValueRef.CreateConstInt(int32Type, (ulong)elementReferences.Length, false));
+            else if (ReferenceEquals(field, coreLib.GCDescObjectReferencesField))
+                values.Add(objectReferences);
+            else if (ReferenceEquals(field, coreLib.GCDescArrayElementReferencesField))
+                values.Add(arrayElementReferences);
+            else
+                throw new InvalidOperationException($"Unexpected field in {coreLib.GCDesc.FullName}: {field.FullName}.");
         }
         var descriptorType = context.GetStructType(fieldTypes.ToArray(), false);
         descriptor = AddInternalGlobal(descriptorType, $"__gc_desc_{GetStableSymbolSuffix(key)}");
         descriptor.Initializer = LLVMValueRef.CreateConstNamedStruct(descriptorType, values.ToArray());
         gcDescriptors.Add(key, descriptor);
         return descriptor;
+
+        LLVMTypeRef CreateGCDescReferenceNodeType()
+        {
+            var offsetFieldOffset = GetFieldOffset(coreLib.GCDescReferenceOffsetField);
+            var nodeSize = GetTypeSize(coreLib.GCDescReference);
+            var nodeFields = new List<LLVMTypeRef> { pointerType };
+            var currentOffset = pointerSize;
+            if (offsetFieldOffset > currentOffset)
+            {
+                nodeFields.Add(LLVMTypeRef.CreateArray(int8Type, (uint)(offsetFieldOffset - currentOffset)));
+                currentOffset = offsetFieldOffset;
+            }
+            nodeFields.Add(int16Type);
+            currentOffset += sizeof(ushort);
+            if (nodeSize > currentOffset)
+                nodeFields.Add(LLVMTypeRef.CreateArray(int8Type, (uint)(nodeSize - currentOffset)));
+            return context.GetStructType(nodeFields.ToArray(), false);
+        }
+
+        LLVMValueRef CreateGCDescReferenceList(LLVMTypeRef nodeType, IReadOnlyList<int> offsets)
+        {
+            var key = string.Join(",", offsets);
+            if (gcReferenceLists.TryGetValue(key, out var cachedList))
+                return cachedList;
+
+            var next = LLVMValueRef.CreateConstNull(pointerType);
+            var suffix = GetStableSymbolSuffix(key);
+            for (int index = offsets.Count - 1; index >= 0; index--)
+            {
+                var node = AddInternalGlobal(nodeType, $"__gc_ref_{suffix}_{index}");
+                var nodeValues = new List<LLVMValueRef>
+                {
+                    next,
+                    LLVMValueRef.CreateConstInt(int16Type, (ulong)offsets[index], false)
+                };
+                var offsetFieldOffset = GetFieldOffset(coreLib.GCDescReferenceOffsetField);
+                if (offsetFieldOffset > pointerSize)
+                    nodeValues.Insert(1, LLVMValueRef.CreateConstNull(
+                        LLVMTypeRef.CreateArray(int8Type, (uint)(offsetFieldOffset - pointerSize))));
+                var nodeSize = GetTypeSize(coreLib.GCDescReference);
+                var tailSize = nodeSize - offsetFieldOffset - sizeof(ushort);
+                if (tailSize > 0)
+                    nodeValues.Add(LLVMValueRef.CreateConstNull(LLVMTypeRef.CreateArray(int8Type, (uint)tailSize)));
+                node.Initializer = LLVMValueRef.CreateConstNamedStruct(nodeType, nodeValues.ToArray());
+                next = LLVMValueRef.CreateConstPointerCast(node, pointerType);
+            }
+            gcReferenceLists.Add(key, next);
+            return next;
+        }
     }
 
     internal new void ValidateGCReferenceOffsets(TypeReference type, IEnumerable<int> offsets, string region)

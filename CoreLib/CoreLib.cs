@@ -17,15 +17,20 @@ namespace System
         public Type GetType() => m_pType;
     }
 
+    public unsafe struct GCDescReference
+    {
+        public GCDescReference* Next;
+        public ushort Offset;
+    }
+
     public unsafe struct GCDesc
     {
-        public IntPtr TotalSlotCount;
-        public IntPtr BaseSize;
-        public IntPtr FixedReferenceCount;
-        public IntPtr ArrayLengthOffset;
-        public IntPtr ArrayElementSize;
-        public IntPtr ArrayElementReferenceCount;
-        public fixed ushort ReferenceOffsets[1];
+        public int BaseSize;
+        public int ArrayLengthOffset;
+        public int ArrayElementSize;
+        public int ArrayElementReferenceCount;
+        public GCDescReference* ObjectReferences;
+        public GCDescReference* ArrayElementReferences;
     }
 
     public static class GC
@@ -1538,25 +1543,29 @@ namespace System.Runtime
         private static void ScanValue(byte* value, GCDesc* descriptor)
         {
             byte* data = value;
-            ushort* offsets = descriptor->ReferenceOffsets;
-            int fixedReferenceCount = (int)descriptor->FixedReferenceCount;
-            for (int index = 0; index < fixedReferenceCount; index++)
-                MarkObject(*(Object**)(data + offsets[index]));
+            for (GCDescReference* reference = descriptor->ObjectReferences;
+                reference != null;
+                reference = reference->Next)
+            {
+                MarkObject(*(Object**)(data + reference->Offset));
+            }
 
-            int arrayElementSize = (int)descriptor->ArrayElementSize;
+            int arrayElementSize = descriptor->ArrayElementSize;
             if (arrayElementSize == 0)
                 return;
 
-            int length = *(int*)(data + (nint)descriptor->ArrayLengthOffset);
-            int arrayElementReferenceCount = (int)descriptor->ArrayElementReferenceCount;
-            ushort* elementOffsets = offsets + fixedReferenceCount;
-            byte* elements = data + (nint)descriptor->BaseSize;
+            int length = *(int*)(data + descriptor->ArrayLengthOffset);
+            int arrayElementReferenceCount = descriptor->ArrayElementReferenceCount;
+            byte* elements = data + descriptor->BaseSize;
             for (int elementIndex = 0; elementIndex < length; elementIndex++)
             {
                 byte* element = elements + (nint)elementIndex * arrayElementSize;
-                for (int referenceIndex = 0; referenceIndex < arrayElementReferenceCount; referenceIndex++)
+                GCDescReference* reference = descriptor->ArrayElementReferences;
+                for (int referenceIndex = 0;
+                    referenceIndex < arrayElementReferenceCount && reference != null;
+                    referenceIndex++, reference = reference->Next)
                 {
-                    MarkObject(*(Object**)(element + elementOffsets[referenceIndex]));
+                    MarkObject(*(Object**)(element + reference->Offset));
                 }
             }
         }

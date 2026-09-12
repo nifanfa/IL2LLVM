@@ -79,6 +79,8 @@ IL2LLVM <input-assembly> <output-object> <target>[;<code-model>]
 
 `target` is an LLVM target triple. The optional code model is one of `default`, `tiny`, `small`, `kernel`, `medium`, or `large`.
 
+The translator performs reachability-driven method translation: entry points, runtime exports, and runtime roots are seeded first; called methods and static constructors are added as needed.
+
 Examples:
 
 ```powershell

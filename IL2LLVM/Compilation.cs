@@ -83,6 +83,7 @@ sealed class Compilation : TranslationComponent
         delegateThunks = new(StringComparer.Ordinal);
         pendingMethodTranslations = new();
         queuedMethodTranslations = new(StringComparer.Ordinal);
+        queueMethodTranslations = false;
         typeSizeCache = new(StringComparer.Ordinal);
         typeAlignmentCache = new(StringComparer.Ordinal);
         objectSizeCache = new(StringComparer.Ordinal);
@@ -296,6 +297,27 @@ sealed class Compilation : TranslationComponent
 
             Progress($"[3/7] Resolved method graph: {moduleMethods.Count} methods.");
 
+            // Initial discovery registers declarations for the whole module. Translation starts
+            // from externally reachable roots and expands as calls are encountered.
+            queueMethodTranslations = true;
+            void QueueRoot(MethodReference method)
+            {
+                QueueMethodTranslation(method);
+            }
+
+            if (entryPoint is not null)
+                QueueRoot(entryPoint);
+            foreach (var method in localMethods.Values.Where(method => method.HasBody &&
+                method.CustomAttributes.Any(attribute => coreLib.IsRuntimeExportAttribute(attribute.AttributeType))))
+                QueueRoot(method);
+            foreach (var method in new[]
+            {
+                coreLib.ExceptionPushMethod, coreLib.ExceptionPopMethod, coreLib.ExceptionGetBufferMethod,
+                coreLib.ExceptionGetTopMethod, coreLib.ExceptionGetCurrentMethod, coreLib.ExceptionThrowMethod,
+                coreLib.GCAllocateMethod, coreLib.GCPushMethod, coreLib.GCPopMethod, coreLib.StringCharArrayConstructor
+            })
+                QueueRoot(method);
+
             foreach (var arrayEnumeratorType in arrayEnumeratorTypes)
                 foreach (var method in arrayEnumeratorType.Methods.Where(method => method.HasBody))
                     RegisterMethodFunction(module, method, method.Body.Instructions);
@@ -335,9 +357,11 @@ sealed class Compilation : TranslationComponent
             {
             }
 
-            foreach (var type in localTypes.Values)
-                GetRuntimeTypeId(type);
-            foreach (var method in moduleMethods.Values)
+            // Seed runtime type metadata from the reachable roots only. Registering every
+            // input type here makes every virtual implementation look reachable.
+            foreach (var method in pendingMethodTranslations
+                         .Select(name => moduleMethods[name])
+                         .ToArray())
             {
                 foreach (var instruction in method.Item4 ?? [])
                 {

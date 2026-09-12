@@ -39,11 +39,15 @@ abstract class TranslationComponent(Translator translator)
     protected Dictionary<string, LLVMValueRef> staticStringArrays { get => Translator.staticStringArrays; set => Translator.staticStringArrays = value; }
     protected Dictionary<string, LLVMValueRef> staticUInt64Arrays { get => Translator.staticUInt64Arrays; set => Translator.staticUInt64Arrays = value; }
     protected Dictionary<string, LLVMValueRef> gcDescriptors { get => Translator.gcDescriptors; set => Translator.gcDescriptors = value; }
+    protected Dictionary<string, LLVMValueRef> gcReferenceLists { get => Translator.gcReferenceLists; set => Translator.gcReferenceLists = value; }
     protected Dictionary<string, LLVMValueRef> runtimeFieldData { get => Translator.runtimeFieldData; set => Translator.runtimeFieldData = value; }
     protected Dictionary<string, LLVMValueRef> missingVirtualFunctionPointers { get => Translator.missingVirtualFunctionPointers; set => Translator.missingVirtualFunctionPointers = value; }
     protected Dictionary<string, LLVMValueRef> delegateThunks { get => Translator.delegateThunks; set => Translator.delegateThunks = value; }
     protected Queue<string> pendingMethodTranslations { get => Translator.pendingMethodTranslations; set => Translator.pendingMethodTranslations = value; }
     protected HashSet<string> queuedMethodTranslations { get => Translator.queuedMethodTranslations; set => Translator.queuedMethodTranslations = value; }
+    protected bool queueMethodTranslations { get => Translator.queueMethodTranslations; set => Translator.queueMethodTranslations = value; }
+    protected void QueueMethodTranslation(string friendlyName) => Translator.Methods.QueueMethodTranslation(friendlyName);
+    protected void QueueMethodTranslation(MethodReference method) => Translator.Methods.QueueMethodTranslation(method);
     protected List<TypeDefinition> arrayEnumeratorTypes { get => Translator.arrayEnumeratorTypes; set => Translator.arrayEnumeratorTypes = value; }
     protected MethodDefinition? entryPoint { get => Translator.entryPoint; set => Translator.entryPoint = value; }
     protected MethodDefinition stringConstructor { get => Translator.stringConstructor; set => Translator.stringConstructor = value; }

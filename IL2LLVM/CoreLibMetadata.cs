@@ -65,13 +65,20 @@ sealed class CoreLibMetadata
     public FieldDefinition ArrayLengthField => GetInstanceField(Array, "Length");
     public FieldDefinition ArrayLengthsField => GetInstanceField(Array, "_lengths");
     public FieldDefinition ArrayDataField => GetInstanceField(Array, "m_pData");
-    public FieldDefinition GCDescTotalSlotCountField => GetInstanceField(GCDesc, "TotalSlotCount");
+    public TypeDefinition GCDescReference => GetType("System.GCDescReference");
     public FieldDefinition GCDescBaseSizeField => GetInstanceField(GCDesc, "BaseSize");
-    public FieldDefinition GCDescFixedReferenceCountField => GetInstanceField(GCDesc, "FixedReferenceCount");
     public FieldDefinition GCDescArrayLengthOffsetField => GetInstanceField(GCDesc, "ArrayLengthOffset");
     public FieldDefinition GCDescArrayElementSizeField => GetInstanceField(GCDesc, "ArrayElementSize");
     public FieldDefinition GCDescArrayElementReferenceCountField => GetInstanceField(GCDesc, "ArrayElementReferenceCount");
-    public FieldDefinition GCDescReferenceOffsetsField => GetInstanceField(GCDesc, "ReferenceOffsets");
+    public FieldDefinition GCDescObjectReferencesField => GetInstanceField(GCDesc, "ObjectReferences");
+    public FieldDefinition GCDescArrayElementReferencesField => GetInstanceField(GCDesc, "ArrayElementReferences");
+    public FieldDefinition GCDescReferenceNextField => GetInstanceField(GCDescReference, "Next");
+    public FieldDefinition GCDescReferenceOffsetField => GetInstanceField(GCDescReference, "Offset");
+    public IReadOnlyList<FieldDefinition> GCDescValueFields =>
+        [GCDescBaseSizeField, GCDescArrayLengthOffsetField, GCDescArrayElementSizeField,
+            GCDescArrayElementReferenceCountField];
+    public IReadOnlyList<FieldDefinition> GCDescReferenceFields =>
+        [GCDescObjectReferencesField, GCDescArrayElementReferencesField];
     public FieldDefinition GCStaticRootsField => GetStaticField(GCHeap, "s_staticRoots");
     public FieldDefinition GCStaticRootNextField => GetInstanceField(GCStaticRoot, "Next");
     public FieldDefinition GCStaticRootAddressField => GetInstanceField(GCStaticRoot, "Address");

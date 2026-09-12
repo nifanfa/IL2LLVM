@@ -60,6 +60,11 @@ sealed class Calls(Translator translator) : TranslationComponent(translator)
                     }
                     var registeredMethod = GetRegisteredMethod(callTarget) ??
                         throw new NotSupportedException($"Method is not defined in the input module: {callTarget.FullName}");
+                    // Taking a function address is an executable reference just like a direct
+                    // call. The declaration pass registers the target, but translation must be
+                    // queued here so the linker receives the function body.
+                    if (registeredMethod.Item4?.Count > 0)
+                        QueueMethodTranslation(registeredMethod.Item3);
                     stack.Push(registeredMethod.Item1);
                     methodContext.TrackedFunctionTargets[registeredMethod.Item1] = callTarget;
                     return true;
@@ -396,6 +401,9 @@ sealed class Calls(Translator translator) : TranslationComponent(translator)
                         m = new(default, CreateLLVMFunction(module, callTarget), callTarget, null);
                     if (m is null)
                         throw new NotSupportedException($"Method is not defined in the input module: {callTarget.FullName}, called from {method.FullName} at IL_{instr.Offset:X4}.");
+
+                    if (m.Item4?.Count > 0)
+                        QueueMethodTranslation(m.Item3);
 
                     var targetFuncCreated = m.Item2;
                     var targetFunc = m.Item4?.Any() == true || !(
