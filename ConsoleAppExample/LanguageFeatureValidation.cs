@@ -636,9 +636,15 @@ public static class LanguageFeatureValidation
         unsafe
         {
             IntPtr smallPointer = new IntPtr((void*)1);
-            IntPtr widePointer = new IntPtr(unchecked((long)0x1234567887654321UL));
+            long wideInput = sizeof(void*) == sizeof(int)
+                ? 0x12345678L
+                : unchecked((long)0x1234567887654321UL);
+            IntPtr widePointer = new IntPtr(wideInput);
+            long expectedWide = sizeof(void*) == sizeof(int)
+                ? wideInput
+                : unchecked((long)0x1234567887654321UL);
             if ((int)smallPointer != 1 || (long)smallPointer != 1 ||
-                (long)widePointer != unchecked((long)0x1234567887654321UL))
+                (long)widePointer != expectedWide)
                 Fail("native pointer integer conversion");
         }
 
@@ -2229,7 +2235,13 @@ private static readonly object s_extendedLock = new object();
         IntPtr zero = default;
         IntPtr one = new IntPtr(RuntimeValue(1));
         IntPtr two = (IntPtr)RuntimeValue(2);
-        IntPtr wide = new IntPtr(unchecked((long)0x1234567887654321UL));
+        long wideInput = sizeof(void*) == sizeof(int)
+            ? 0x12345678L
+            : unchecked((long)0x1234567887654321UL);
+        IntPtr wide = new IntPtr(wideInput);
+        long expectedWide = sizeof(void*) == sizeof(int)
+            ? wideInput
+            : unchecked((long)0x1234567887654321UL);
         IntPtr copied = IdentityIntPtr(one);
         IntPtr fromIn = ReadIntPtr(in copied);
         IntPtr fromOut;
@@ -2237,7 +2249,7 @@ private static readonly object s_extendedLock = new object();
 
         if ((long)zero != 0 || (long)one != RuntimeValue(1) ||
             (long)two != RuntimeValue(2) ||
-            (long)wide != unchecked((long)0x1234567887654321UL) ||
+            (long)wide != expectedWide ||
             (long)copied != RuntimeValue(1) || (long)fromIn != RuntimeValue(1) ||
             (long)fromOut != RuntimeValue(3) || one == zero || one != copied)
             Fail("IntPtr constructors, equality, or value flow");
@@ -2284,7 +2296,7 @@ private static readonly object s_extendedLock = new object();
         pairs[1] = pairCopy;
         ref NativeHandlePair pairReference = ref pairs[1];
         pairReference.Tag = RuntimeValue(8);
-        if ((long)replacement != unchecked((long)0x1234567887654321UL) ||
+        if ((long)replacement != expectedWide ||
             (long)pairCopy.Signed != RuntimeValue(1) ||
             pairCopy.Unsigned.ToString() != "0" || pairCopy.Tag != RuntimeValue(7) ||
             (long)pairs[0].Signed != RuntimeValue(1) || pairs[1].Tag != RuntimeValue(8))
