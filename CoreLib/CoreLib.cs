@@ -65,7 +65,7 @@ namespace System
     {
         public const sbyte MinValue = -128;
         public const sbyte MaxValue = 127;
-        public override string ToString() => Number.Format((long)this);
+        public override string ToString() => Number.Format(this);
     }
     public partial struct Byte
     {
@@ -77,7 +77,7 @@ namespace System
     {
         public const short MinValue = -32768;
         public const short MaxValue = 32767;
-        public override string ToString() => Number.Format((long)this);
+        public override string ToString() => Number.Format(this);
     }
     public partial struct UInt16
     {
@@ -92,7 +92,7 @@ namespace System
         public bool Equals(int other) => this == other;
         public override bool Equals(object other) => other is int value && Equals(value);
         public override int GetHashCode() => this;
-        public override string ToString() => Number.Format((long)this);
+        public override string ToString() => Number.Format(this);
     }
     public partial struct UInt32
     {
@@ -431,7 +431,7 @@ namespace System
         public unsafe Span(void* pointer, int length)
         {
             _array = new T[length];
-            ((Array)_array).m_pData = (byte*)pointer;
+            _array.m_pData = (byte*)pointer;
             _start = 0;
             _length = length;
         }
@@ -1215,7 +1215,7 @@ namespace System.Runtime
     }
 
     [AttributeUsage(AttributeTargets.Method)]
-    public sealed class RuntimeNoGCFrameAttribute : Attribute { }
+    public sealed class NoGCFrameAttribute : Attribute { }
 }
 
 namespace System.Runtime.CompilerServices
@@ -1247,11 +1247,11 @@ namespace System.Runtime.CompilerServices
 
     public static class RuntimeFeature
     {
-        public const string ByRefFields = "ByRefFields";
-        public const string CovariantReturnsOfClasses = "CovariantReturnsOfClasses";
-        public const string DefaultImplementationsOfInterfaces = "DefaultImplementationsOfInterfaces";
-        public const string UnmanagedSignatureCallingConvention = "UnmanagedSignatureCallingConvention";
-        public const string VirtualStaticsInInterfaces = "VirtualStaticsInInterfaces";
+        public const string ByRefFields = nameof(ByRefFields);
+        public const string CovariantReturnsOfClasses = nameof(CovariantReturnsOfClasses);
+        public const string DefaultImplementationsOfInterfaces = nameof(DefaultImplementationsOfInterfaces);
+        public const string UnmanagedSignatureCallingConvention = nameof(UnmanagedSignatureCallingConvention);
+        public const string VirtualStaticsInInterfaces = nameof(VirtualStaticsInInterfaces);
     }
 
     public sealed class CallConvCdecl { }
@@ -1266,8 +1266,8 @@ namespace System.Runtime.CompilerServices
         {
             if (array == null || fieldHandle.Data == null || fieldHandle.Length == 0)
                 return;
-            byte* source = (byte*)fieldHandle.Data;
-            byte* destination = (byte*)array.m_pData;
+            byte* source = fieldHandle.Data;
+            byte* destination = array.m_pData;
             for (int index = 0; index < fieldHandle.Length; index++)
                 destination[index] = source[index];
         }
@@ -1297,11 +1297,13 @@ namespace System.Runtime.CompilerServices
     {
         public IteratorStateMachineAttribute(Type type) : base(type) { }
     }
+
     public interface IAsyncStateMachine
     {
         void MoveNext();
         void SetStateMachine(IAsyncStateMachine stateMachine);
     }
+
     public struct AsyncTaskMethodBuilder
     {
         private Threading.Tasks.Task _task;
@@ -1310,7 +1312,9 @@ namespace System.Runtime.CompilerServices
         public void SetStateMachine(IAsyncStateMachine stateMachine) { }
         public void SetResult() { _task?.SetResult(); }
         public void SetException(Exception exception) { _task?.SetException(exception); }
-        public void Start<TStateMachine>(ref TStateMachine stateMachine) where TStateMachine : IAsyncStateMachine => stateMachine.MoveNext();
+        public void Start<TStateMachine>(ref TStateMachine stateMachine)
+            where TStateMachine : IAsyncStateMachine
+            => stateMachine.MoveNext();
         public void AwaitUnsafeOnCompleted<TAwaiter, TStateMachine>(ref TAwaiter awaiter, ref TStateMachine stateMachine)
             where TAwaiter : ICriticalNotifyCompletion where TStateMachine : IAsyncStateMachine
         {
@@ -1324,15 +1328,19 @@ namespace System.Runtime.CompilerServices
             awaiter.OnCompleted(runner.MoveNext);
         }
     }
+
     public struct AsyncTaskMethodBuilder<TResult>
     {
         private Threading.Tasks.Task<TResult> _task;
-        public static AsyncTaskMethodBuilder<TResult> Create() => new AsyncTaskMethodBuilder<TResult> { _task = new Threading.Tasks.Task<TResult>() };
+        public static AsyncTaskMethodBuilder<TResult> Create()
+            => new AsyncTaskMethodBuilder<TResult> { _task = new Threading.Tasks.Task<TResult>() };
         public Threading.Tasks.Task<TResult> Task => _task;
         public void SetStateMachine(IAsyncStateMachine stateMachine) { }
         public void SetResult(TResult result) { _task?.SetResult(result); }
         public void SetException(Exception exception) { _task?.SetException(exception); }
-        public void Start<TStateMachine>(ref TStateMachine stateMachine) where TStateMachine : IAsyncStateMachine => stateMachine.MoveNext();
+        public void Start<TStateMachine>(ref TStateMachine stateMachine)
+            where TStateMachine : IAsyncStateMachine
+            => stateMachine.MoveNext();
         public void AwaitUnsafeOnCompleted<TAwaiter, TStateMachine>(ref TAwaiter awaiter, ref TStateMachine stateMachine)
             where TAwaiter : ICriticalNotifyCompletion where TStateMachine : IAsyncStateMachine
         {
@@ -1358,10 +1366,12 @@ namespace System.Runtime.CompilerServices
 
         internal void MoveNext() => _stateMachine.MoveNext();
     }
+
     public interface INotifyCompletion
     {
         void OnCompleted(Action continuation);
     }
+
     public interface ICriticalNotifyCompletion : INotifyCompletion
     {
         void UnsafeOnCompleted(Action continuation);
@@ -1390,7 +1400,7 @@ namespace System.Runtime
         public int Marked;
     }
 
-    internal unsafe struct GCObjectHeader
+    internal struct GCObjectHeader
     {
         public Type Type;
     }
@@ -1431,7 +1441,7 @@ namespace System.Runtime
             return (Object*)((byte*)allocation + sizeof(GCAllocation));
         }
 
-        [RuntimeNoGCFrame]
+        [NoGCFrame]
         public static void Push(GCFrame* frame, GCRoot* roots, int rootCount)
         {
             frame->Previous = s_frames;
@@ -1440,16 +1450,16 @@ namespace System.Runtime
             s_frames = frame;
         }
 
-        [RuntimeNoGCFrame]
+        [NoGCFrame]
         public static void Pop(GCFrame* frame)
         {
             s_frames = frame->Previous;
         }
 
-        [RuntimeNoGCFrame]
+        [NoGCFrame]
         public static GCFrame* GetTopFrame() => s_frames;
 
-        [RuntimeNoGCFrame]
+        [NoGCFrame]
         public static void UnwindTo(GCFrame* frame) => s_frames = frame;
 
         public static int Collect()
@@ -1570,7 +1580,7 @@ namespace System.Runtime
         private static ExceptionFrame* _top;
         private static Exception _current;
 
-        [RuntimeNoGCFrame]
+        [NoGCFrame]
         public static void Push(ExceptionFrame* frame, JumpBuffer* buffer)
         {
             frame->Previous = _top;
@@ -1579,7 +1589,7 @@ namespace System.Runtime
             _top = frame;
         }
 
-        [RuntimeNoGCFrame]
+        [NoGCFrame]
         public static void Pop(ExceptionFrame* frame)
         {
             if (_top == frame)
@@ -1588,7 +1598,7 @@ namespace System.Runtime
 
         public static JumpBuffer* GetBuffer(ExceptionFrame* frame) => frame->Buffer;
 
-        [RuntimeNoGCFrame]
+        [NoGCFrame]
         public static ExceptionFrame* GetTop() => _top;
 
         public static Exception GetCurrent() => _current;
@@ -2088,6 +2098,7 @@ namespace System.Collections.Generic
 
         public int Count => _count;
         public bool IsReadOnly => false;
+
         public ICollection<TKey> Keys
         {
             get
@@ -2098,6 +2109,7 @@ namespace System.Collections.Generic
                 return result;
             }
         }
+
         public ICollection<TValue> Values
         {
             get
@@ -2139,6 +2151,7 @@ namespace System.Collections.Generic
         }
 
         public void Add(KeyValuePair<TKey, TValue> item) => Add(item.Key, item.Value);
+
         public bool TryAdd(TKey key, TValue value)
         {
             if (ContainsKey(key))
@@ -2146,7 +2159,9 @@ namespace System.Collections.Generic
             Add(key, value);
             return true;
         }
+
         public bool ContainsKey(TKey key) => FindIndex(key) >= 0;
+
         public bool ContainsValue(TValue value)
         {
             for (int index = 0; index < _count; index++)
@@ -2154,6 +2169,7 @@ namespace System.Collections.Generic
                     return true;
             return false;
         }
+
         public bool TryGetValue(TKey key, out TValue value)
         {
             int index = FindIndex(key);
@@ -2165,9 +2181,12 @@ namespace System.Collections.Generic
             value = default;
             return false;
         }
+
         public bool Contains(KeyValuePair<TKey, TValue> item)
             => TryGetValue(item.Key, out TValue value) && Object.Equals(value, item.Value);
+
         public bool Remove(KeyValuePair<TKey, TValue> item) => Contains(item) && Remove(item.Key);
+
         public bool Remove(TKey key)
         {
             int index = FindIndex(key);
@@ -2179,12 +2198,14 @@ namespace System.Collections.Generic
             _items[_count] = default;
             return true;
         }
+
         public void Clear()
         {
             for (int index = 0; index < _count; index++)
                 _items[index] = default;
             _count = 0;
         }
+
         public void CopyTo(KeyValuePair<TKey, TValue>[] array, int arrayIndex)
         {
             if (array == null)
@@ -2194,19 +2215,21 @@ namespace System.Collections.Generic
             for (int index = 0; index < _count; index++)
                 array[arrayIndex + index] = _items[index];
         }
+
         public Enumerator GetEnumerator() => new Enumerator(this);
         IEnumerator<KeyValuePair<TKey, TValue>> IEnumerable<KeyValuePair<TKey, TValue>>.GetEnumerator() => GetEnumerator();
         IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
 
         private int FindIndex(TKey key)
         {
-            if ((object)key == null)
+            if (key == null)
                 throw new ArgumentNullException("The dictionary key cannot be null.");
             for (int index = 0; index < _count; index++)
                 if (_comparer.Equals(_items[index].Key, key))
                     return index;
             return -1;
         }
+
         private void EnsureCapacity(int minimum)
         {
             if (_items.Length >= minimum)
@@ -2258,21 +2281,27 @@ namespace System.Collections.Generic
     {
         private readonly List<T> _items;
         private readonly IEqualityComparer<T> _comparer;
+
         public HashSet() : this((IEqualityComparer<T>)null) { }
+
         public HashSet(IEqualityComparer<T> comparer)
         {
             _items = new List<T>();
             _comparer = comparer ?? new SetComparer<T>();
         }
+
         public HashSet(IEnumerable<T> values) : this(values, null) { }
+
         public HashSet(IEnumerable<T> values, IEqualityComparer<T> comparer) : this(comparer)
         {
             if (values == null)
                 throw new ArgumentNullException("The source collection cannot be null.");
             UnionWith(values);
         }
+
         public int Count => _items.Count;
         public bool IsReadOnly => false;
+
         public bool Add(T value)
         {
             if (Contains(value))
@@ -2280,7 +2309,9 @@ namespace System.Collections.Generic
             _items.Add(value);
             return true;
         }
+
         void ICollection<T>.Add(T value) => Add(value);
+
         public bool Contains(T value)
         {
             for (int index = 0; index < _items.Count; index++)
@@ -2288,6 +2319,7 @@ namespace System.Collections.Generic
                     return true;
             return false;
         }
+
         public bool Remove(T value)
         {
             for (int index = 0; index < _items.Count; index++)
@@ -2298,11 +2330,13 @@ namespace System.Collections.Generic
                 }
             return false;
         }
+
         public void Clear() => _items.Clear();
         public void CopyTo(T[] array, int arrayIndex) => _items.CopyTo(array, arrayIndex);
         public T[] ToArray() => _items.ToArray();
         public void UnionWith(IEnumerable<T> other) { foreach (T value in other) Add(value); }
         public void ExceptWith(IEnumerable<T> other) { foreach (T value in other) Remove(value); }
+
         public void IntersectWith(IEnumerable<T> other)
         {
             HashSet<T> set = new HashSet<T>(other, _comparer);
@@ -2310,6 +2344,7 @@ namespace System.Collections.Generic
                 if (!set.Contains(_items[index]))
                     _items.RemoveAt(index);
         }
+
         public void SymmetricExceptWith(IEnumerable<T> other)
         {
             HashSet<T> set = new HashSet<T>(other, _comparer);
@@ -2317,6 +2352,7 @@ namespace System.Collections.Generic
                 if (!Remove(value))
                     Add(value);
         }
+
         public bool IsSubsetOf(IEnumerable<T> other)
         {
             HashSet<T> set = new HashSet<T>(other, _comparer);
@@ -2325,11 +2361,13 @@ namespace System.Collections.Generic
                     return false;
             return true;
         }
+
         public bool IsProperSubsetOf(IEnumerable<T> other)
         {
             HashSet<T> set = new HashSet<T>(other, _comparer);
             return Count < set.Count && IsSubsetOf(set);
         }
+
         public bool IsSupersetOf(IEnumerable<T> other)
         {
             foreach (T value in other)
@@ -2337,11 +2375,13 @@ namespace System.Collections.Generic
                     return false;
             return true;
         }
+
         public bool IsProperSupersetOf(IEnumerable<T> other)
         {
             HashSet<T> set = new HashSet<T>(other, _comparer);
             return Count > set.Count && IsSupersetOf(set);
         }
+
         public bool Overlaps(IEnumerable<T> other)
         {
             foreach (T value in other)
@@ -2349,11 +2389,13 @@ namespace System.Collections.Generic
                     return true;
             return false;
         }
+
         public bool SetEquals(IEnumerable<T> other)
         {
             HashSet<T> set = new HashSet<T>(other, _comparer);
             return Count == set.Count && IsSubsetOf(set);
         }
+
         public IEnumerator<T> GetEnumerator() => _items.GetEnumerator();
         IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
 
@@ -2784,7 +2826,12 @@ namespace System.Threading.Tasks
             task.TrySetException(exception);
             return task;
         }
-        public static Task<TResult> FromResult<TResult>(TResult result) { Task<TResult> task = new Task<TResult>(); task.SetResult(result); return task; }
+        public static Task<TResult> FromResult<TResult>(TResult result)
+        {
+            Task<TResult> task = new Task<TResult>();
+            task.SetResult(result);
+            return task;
+        }
         public static Task<TResult> FromException<TResult>(Exception exception)
         {
             Task<TResult> task = new Task<TResult>();
@@ -2797,12 +2844,18 @@ namespace System.Threading.Tasks
     {
         private TResult _result;
         public new TaskAwaiter<TResult> GetAwaiter() => new TaskAwaiter<TResult>(this);
-        public new ConfiguredTaskAwaitable<TResult> ConfigureAwait(bool continueOnCapturedContext) => new ConfiguredTaskAwaitable<TResult>(this);
+        public new ConfiguredTaskAwaitable<TResult> ConfigureAwait(bool continueOnCapturedContext)
+            => new ConfiguredTaskAwaitable<TResult>(this);
         public TResult Result => GetResult();
         public void SetResult(TResult result) { _result = result; base.SetResult(); }
         internal bool TrySetResult(TResult result) { _result = result; return base.TrySetResult(); }
         public new TResult GetResult() { base.GetResult(); return _result; }
-        public static Task<TResult> FromResult(TResult result) { Task<TResult> task = new Task<TResult>(); task.SetResult(result); return task; }
+        public static Task<TResult> FromResult(TResult result)
+        {
+            Task<TResult> task = new Task<TResult>();
+            task.SetResult(result);
+            return task;
+        }
     }
 
     public class TaskCompletionSource

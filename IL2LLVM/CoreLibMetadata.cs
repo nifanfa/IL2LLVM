@@ -35,7 +35,7 @@ sealed class CoreLibMetadata
     public TypeDefinition GCDesc => GetType("System.GCDesc");
     public TypeDefinition FlagsAttribute => GetType("System.FlagsAttribute");
     public TypeDefinition RuntimeExportAttribute => GetType("System.Runtime.RuntimeExportAttribute");
-    public TypeDefinition RuntimeNoGCFrameAttribute => GetType("System.Runtime.RuntimeNoGCFrameAttribute");
+    public TypeDefinition RuntimeNoGCFrameAttribute => GetType("System.Runtime.NoGCFrameAttribute");
     public TypeDefinition UnmanagedCallersOnlyAttribute => GetType("System.Runtime.InteropServices.UnmanagedCallersOnlyAttribute");
     public TypeDefinition ExceptionRuntime => GetType("System.Runtime.ExceptionRuntime");
     public TypeDefinition ExceptionFrame => GetType("System.Runtime.ExceptionFrame");
