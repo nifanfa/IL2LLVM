@@ -1185,8 +1185,28 @@ sealed class Compilation : TranslationComponent
 
                         var fixedRoots = new List<(LLVMValueRef Address, TypeReference? Descriptor)>();
 
+                        bool IsPointerRoot(TypeReference type)
+                        {
+                            while (type is RequiredModifierType || type is OptionalModifierType || type is PinnedType)
+                                type = type switch
+                                {
+                                    RequiredModifierType requiredModifier => requiredModifier.ElementType,
+                                    OptionalModifierType optionalModifier => optionalModifier.ElementType,
+                                    PinnedType pinnedType => pinnedType.ElementType,
+                                    _ => type
+                                };
+                            return type is PointerType or ByReferenceType;
+                        }
+
                         void AddRoot(Tuple<LLVMValueRef, LLVMTypeRef> storage, TypeReference type, bool initialize)
                         {
+                            if (IsPointerRoot(type))
+                            {
+                                if (initialize)
+                                    builder.BuildStore(LLVMValueRef.CreateConstNull(storage.Item2), storage.Item1);
+                                fixedRoots.Add((storage.Item1, null));
+                                return;
+                            }
                             if (IsByReferenceValue(type))
                             {
                                 if (initialize)
@@ -1284,7 +1304,7 @@ sealed class Compilation : TranslationComponent
                                 }
                                 var value = values[index].Value;
                                 var type = values[index].Type!;
-                                if (IsByReferenceValue(type) || IsManagedReferenceType(type))
+                                if (IsPointerRoot(type) || IsByReferenceValue(type) || IsManagedReferenceType(type))
                                 {
                                     builder.BuildStore(ConvertValue(builder, value, exceptionPointerType), rootSpills[index]);
                                     StoreRootEntry(rootIndex, rootSpills[index], null);
@@ -1309,7 +1329,7 @@ sealed class Compilation : TranslationComponent
                         void StoreTemporaryRoot(int index, LLVMValueRef value, TypeReference type)
                         {
                             var rootIndex = fixedRoots.Count + stackRootCapacity + index;
-                            if (IsByReferenceValue(type) || IsManagedReferenceType(type))
+                            if (IsPointerRoot(type) || IsByReferenceValue(type) || IsManagedReferenceType(type))
                             {
                                 builder.BuildStore(ConvertValue(builder, value, exceptionPointerType), temporaryRootSpills[index]);
                                 StoreRootEntry(rootIndex, temporaryRootSpills[index], null);
