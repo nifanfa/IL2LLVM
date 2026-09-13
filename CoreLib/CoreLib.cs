@@ -867,6 +867,17 @@ namespace System
             Message = message;
             InnerException = innerException;
         }
+
+        public override string ToString()
+        {
+            string result = GetType().FullName;
+            if (Message != null)
+                result = string.Concat(result, ": ", Message);
+            if (InnerException != null)
+                result = string.Concat(result, "\n ---> ", InnerException.ToString(),
+                    "\n   --- End of inner exception stack trace ---");
+            return result;
+        }
     }
 
     public class NotSupportedException : Exception
@@ -1060,6 +1071,30 @@ namespace System
     }
 
     public struct RuntimeMethodHandle { }
+    public unsafe struct RuntimeArgumentHandle
+    {
+        internal void* Value;
+    }
+
+    public unsafe struct ArgIterator
+    {
+        private void* _handle;
+        public ArgIterator(RuntimeArgumentHandle handle)
+        {
+            _handle = handle.Value;
+        }
+        public int GetRemainingCount() => throw new NotSupportedException(
+            "A native variable argument list does not expose its remaining argument count.");
+        public TypedReference GetNextArg() => default;
+    }
+
+    public unsafe struct TypedReference
+    {
+        internal void* Value;
+        internal RuntimeTypeHandle Type;
+        internal int Kind;
+    }
+
     public unsafe struct RuntimeFieldHandle
     {
         internal byte* Data;
@@ -1622,14 +1657,14 @@ namespace System.Runtime
 
         public static void Throw(Exception exception)
         {
+            // The CLI specifies that throwing a null reference produces a NullReferenceException.
+            if (exception == null)
+                exception = new NullReferenceException();
             SetCurrent(exception);
             ExceptionFrame* top = GetTop();
             if (top == null)
             {
-                if (_current != null && _current.Message != null)
-                    Console.WriteLine("Unhandled exception. " + _current.ToString() + ": " + (_current.Message ?? string.Empty));
-                else
-                    Console.WriteLine("Unhandled exception.");
+                Console.WriteLine("Unhandled exception. " + _current.ToString());
                 Abort();
             }
             else

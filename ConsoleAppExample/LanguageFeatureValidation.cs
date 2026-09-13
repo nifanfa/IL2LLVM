@@ -493,6 +493,8 @@ public static class LanguageFeatureValidation
         VerifyBoxing();
         VerifyStructures();
         VerifyLatestSyntax();
+        VerifyTypedReferences();
+        VerifyArglist();
         VerifyModernLanguageFeatures(values);
         VerifySpans();
         VerifyArrays();
@@ -675,6 +677,130 @@ public static class LanguageFeatureValidation
 
         if (default(FeatureValue).Value != RuntimeValue(0) || list.Count != values.Length)
             Fail("default or collection");
+    }
+
+    private static unsafe void VerifyTypedReferences()
+    {
+        int integer = RuntimeValue(17);
+        TypedReference integerReference = __makeref(integer);
+        if (__refvalue(integerReference, int) != RuntimeValue(17) ||
+            __reftype(integerReference) != typeof(int))
+            Fail("typed reference int load or type");
+        __refvalue(integerReference, int) = RuntimeValue(23);
+        if (integer != RuntimeValue(23))
+            Fail("typed reference int aliasing");
+        bool invalidType = false;
+        try { _ = __refvalue(integerReference, long); }
+        catch (InvalidCastException) { invalidType = true; }
+        if (!invalidType)
+            Fail("typed reference type mismatch");
+
+        byte small = (byte)RuntimeValue(7);
+        TypedReference smallReference = __makeref(small);
+        if (__refvalue(smallReference, byte) != (byte)RuntimeValue(7) ||
+            __reftype(smallReference) != typeof(byte))
+            Fail("typed reference byte load or type");
+        __refvalue(smallReference, byte) = (byte)RuntimeValue(8);
+        if (small != (byte)RuntimeValue(8))
+            Fail("typed reference byte aliasing");
+
+        char character = 'A';
+        TypedReference characterReference = __makeref(character);
+        if (__refvalue(characterReference, char) != 'A' ||
+            __reftype(characterReference) != typeof(char))
+            Fail("typed reference char load or type");
+        __refvalue(characterReference, char) = 'B';
+        if (character != 'B')
+            Fail("typed reference char aliasing");
+
+        bool boolean = true;
+        TypedReference booleanReference = __makeref(boolean);
+        if (!__refvalue(booleanReference, bool) ||
+            __reftype(booleanReference) != typeof(bool))
+            Fail("typed reference bool load or type");
+        __refvalue(booleanReference, bool) = false;
+        if (boolean)
+            Fail("typed reference bool aliasing");
+
+        long wide = 0x102030405060708L;
+        TypedReference wideReference = __makeref(wide);
+        if (__refvalue(wideReference, long) != 0x102030405060708L ||
+            __reftype(wideReference) != typeof(long))
+            Fail("typed reference long load or type");
+        __refvalue(wideReference, long) = 0x807060504030201L;
+        if (wide != 0x807060504030201L)
+            Fail("typed reference long aliasing");
+
+        double real = 12.5;
+        TypedReference realReference = __makeref(real);
+        if (__refvalue(realReference, double) != 12.5 ||
+            __reftype(realReference) != typeof(double))
+            Fail("typed reference double load or type");
+        __refvalue(realReference, double) = -25.25;
+        if (real != -25.25)
+            Fail("typed reference double aliasing");
+
+        object referenceValue = new FeatureObject(RuntimeValue(31));
+        TypedReference objectReference = __makeref(referenceValue);
+        if (__refvalue(objectReference, object) != referenceValue ||
+            __reftype(objectReference) != typeof(object))
+            Fail("typed reference object load or type");
+        object replacement = new FeatureObject(RuntimeValue(32));
+        __refvalue(objectReference, object) = replacement;
+        if (referenceValue != replacement)
+            Fail("typed reference object aliasing");
+
+        Coordinate coordinate = new Coordinate(RuntimeValue(3), RuntimeValue(4));
+        TypedReference structureReference = __makeref(coordinate);
+        Coordinate recovered = __refvalue(structureReference, Coordinate);
+        if (recovered.X != RuntimeValue(3) || recovered.Y != RuntimeValue(4) ||
+            __reftype(structureReference) != typeof(Coordinate))
+            Fail("typed reference struct load or type");
+        __refvalue(structureReference, Coordinate) = new Coordinate(RuntimeValue(5), RuntimeValue(6));
+        if (coordinate.X != RuntimeValue(5) || coordinate.Y != RuntimeValue(6))
+            Fail("typed reference struct aliasing");
+
+        int[] values = [RuntimeValue(7), RuntimeValue(8), RuntimeValue(9)];
+        TypedReference elementReference = __makeref(values[RuntimeValue(1)]);
+        if (__refvalue(elementReference, int) != RuntimeValue(8) ||
+            __reftype(elementReference) != typeof(int))
+            Fail("typed reference array element load or type");
+        __refvalue(elementReference, int) = RuntimeValue(10);
+        if (values[RuntimeValue(1)] != RuntimeValue(10))
+            Fail("typed reference array element aliasing");
+
+        TypedReference fieldReference = __makeref(coordinate.X);
+        __refvalue(fieldReference, int) = RuntimeValue(11);
+        if (coordinate.X != RuntimeValue(11) || __reftype(fieldReference) != typeof(int))
+            Fail("typed reference field aliasing or type");
+    }
+
+    private static void VerifyArglist()
+    {
+        ReadArglist(__arglist(RuntimeValue(1), RuntimeValue(2)));
+        ReadPrefixedArglist("fixed", __arglist(RuntimeValue(3), RuntimeValue(4)));
+    }
+
+    private static void ReadArglist(__arglist)
+    {
+        ArgIterator iterator = new ArgIterator(__arglist);
+        TypedReference first = iterator.GetNextArg();
+        TypedReference second = iterator.GetNextArg();
+        int firstValue = __refvalue(first, int);
+        int secondValue = __refvalue(second, int);
+        if (firstValue != RuntimeValue(1) || secondValue != RuntimeValue(2))
+            Fail("arglist values");
+    }
+
+    private static void ReadPrefixedArglist(string prefix, __arglist)
+    {
+        ArgIterator iterator = new ArgIterator(__arglist);
+        TypedReference first = iterator.GetNextArg();
+        TypedReference second = iterator.GetNextArg();
+        if (prefix.Length != RuntimeValue(5) ||
+            __refvalue(first, int) != RuntimeValue(3) ||
+            __refvalue(second, int) != RuntimeValue(4))
+            Fail("arglist with fixed parameter");
     }
 
     private static void VerifyEnums()
@@ -1734,6 +1860,50 @@ public static class LanguageFeatureValidation
 
         if (nestedRethrown != expected)
             Fail("nested exception rethrow");
+
+        Exception inner = new Exception("inner exception");
+        Exception withInner = new Exception("outer exception", inner);
+        string exceptionText = withInner.ToString();
+        if (withInner.InnerException != inner ||
+            exceptionText.IndexOf("System.Exception: outer exception") != 0 ||
+            exceptionText.IndexOf("System.Exception: inner exception") < 0 ||
+            exceptionText.IndexOf("End of inner exception stack trace") < 0)
+            Fail("exception message, type, or inner exception diagnostics");
+
+        Exception nullThrown = null;
+        try
+        {
+            throw null;
+        }
+        catch (Exception exception)
+        {
+            nullThrown = exception;
+        }
+
+        if (nullThrown is not NullReferenceException ||
+            nullThrown.Message != "Object reference not set to an instance of an object.")
+            Fail("throw null");
+
+        Exception finallyThrown = new Exception("finally exception");
+        Exception finallyCaught = null;
+        try
+        {
+            try
+            {
+                throw new Exception("original exception");
+            }
+            finally
+            {
+                throw finallyThrown;
+            }
+        }
+        catch (Exception exception)
+        {
+            finallyCaught = exception;
+        }
+
+        if (finallyCaught != finallyThrown)
+            Fail("finally exception replacement");
 
         int nestedFinallyState = 0;
         if (ReturnThroughNestedFinally(ref nestedFinallyState) != RuntimeValue(7) ||

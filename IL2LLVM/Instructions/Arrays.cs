@@ -16,9 +16,9 @@ sealed class Arrays(Translator translator) : TranslationComponent(translator)
                     emitConditionalException(builder.BuildICmp(LLVMIntPredicate.LLVMIntSLT, count,
                         LLVMValueRef.CreateConstInt(sizeType, 0, false)), coreLib.OverflowException);
                     var baseSize = LLVMValueRef.CreateConstInt(sizeType, (ulong)GetTypeDefinitionSize(coreLib.Array), false);
-                    var dataSize = buildCheckedIntegerArithmetic(Code.Mul_Ovf_Un, count, elementSize);
-                    if (elementType.MetadataType == MetadataType.Char)
-                        dataSize = buildCheckedIntegerArithmetic(Code.Add_Ovf_Un, dataSize, elementSize);
+                    var allocationCount = buildCheckedIntegerArithmetic(Code.Add_Ovf_Un, count,
+                        LLVMValueRef.CreateConstInt(sizeType, 1, false));
+                    var dataSize = buildCheckedIntegerArithmetic(Code.Mul_Ovf_Un, allocationCount, elementSize);
                     synchronizeEvaluationStackRoots();
                     var array = BuildAllocationSize(builder,
                         buildCheckedIntegerArithmetic(Code.Add_Ovf_Un, baseSize, dataSize));

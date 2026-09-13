@@ -1,6 +1,7 @@
 sealed class Compilation : TranslationComponent
 {
     readonly Arrays arrays;
+    readonly Arguments arguments;
     readonly Branches branches;
     readonly Calls calls;
     readonly Constants constants;
@@ -18,6 +19,7 @@ sealed class Compilation : TranslationComponent
     public Compilation(Translator translator) : base(translator)
     {
         arrays = new(translator);
+        arguments = new(translator);
         branches = new(translator);
         calls = new(translator);
         constants = new(translator);
@@ -854,7 +856,10 @@ sealed class Compilation : TranslationComponent
                         LLVMValueRef BuildExceptionMatch(LLVMValueRef exception, TypeReference? targetType)
                         {
                             if (targetType is null)
-                                return LLVMValueRef.CreateConstInt(int1Type, 1, false);
+                                return builder.BuildICmp(LLVMIntPredicate.LLVMIntNE, exception,
+                                    LLVMValueRef.CreateConstNull(exception.TypeOf));
+                            var nonNull = builder.BuildICmp(LLVMIntPredicate.LLVMIntNE, exception,
+                                LLVMValueRef.CreateConstNull(exception.TypeOf));
                             var matches = new List<LLVMValueRef>();
                             foreach (var candidate in runtimeTypes.Values.Where(candidate =>
                                          GetRuntimeTypeDefinition(candidate) is { IsInterface: false, IsValueType: false }).ToArray())
@@ -870,7 +875,7 @@ sealed class Compilation : TranslationComponent
                             var result = matches[0];
                             for (int i = 1; i < matches.Count; i++)
                                 result = builder.BuildOr(result, matches[i]);
-                            return result;
+                            return builder.BuildAnd(nonNull, result);
                         }
 
                         void EmitConditionalException(LLVMValueRef condition, TypeReference exceptionType)
@@ -1389,33 +1394,26 @@ sealed class Compilation : TranslationComponent
                                 previousInstruction = instr;
                                 continue;
                             }
-                            switch (instr.OpCode.Code)
+                            if (constants.TryTranslateConstantInstruction(builder, instr, stack) ||
+                                arguments.TryTranslateArgumentInstruction(builder, entryBuilder, method.Value.Item3, instr, stack, TrackType) ||
+                                fields.TryTranslateFieldInstruction(builder, instr, method.Value.Item3, stack, TrackType) ||
+                                arrays.TryTranslateArrayInstruction(builder, entryBuilder, instr, method.Value.Item3, stack, trackedTypes, TrackType, BuildCheckedIntegerArithmetic, EmitConditionalException, SynchronizeEvaluationStackRoots) ||
+                                variables.TryTranslateVariableInstruction(builder, entryBuilder, instr, method.Value.Item3, stack, local, trackedTypes, localRuntimeTypes, GetMethodParameter, TrackType) ||
+                                branches.TryTranslateBranchInstruction(builder, instr, stack, label, terminatedBlocks, SaveStack, RestoreStack) ||
+                                types.TryTranslateTypeInstruction(builder, entryBuilder, method.Value.Item1, instr, method.Value.Item3, stack, terminatedBlocks, BuildRuntimeTypeMatch, TrackType, StoreTemporaryRoot, SynchronizeEvaluationStackRoots, exceptionThrowType, exceptionThrowFunction, type => BuildEntryAlloca(type)) ||
+                                exceptions.TryTranslateExceptionInstruction(builder, method.Value.Item1, instr, methodDefinition, stack, terminatedBlocks, caughtExceptions, finallyStates, filterStates, label, exceptionRegions, RegisterFinallyContinuation, SaveStack, exceptionThrowType, exceptionThrowFunction, exceptionCurrentType, exceptionCurrentFunction, exceptionPopType, exceptionPopFunction) ||
+                                calls.TryTranslateCallInstruction(methodContext, instr) ||
+                                prefixes.TryTranslatePrefixInstruction(methodContext, instr, ref unalignedAlignment) ||
+                                returns.TryTranslateReturnInstruction(builder, instr, method.Value.Item3, stack, usesValueReturnBuffer, valueReturnBuffer, PopGCFrame, terminatedBlocks) ||
+                                strings.TryTranslateStringInstruction(builder, instr, stack, SynchronizeEvaluationStackRoots, StoreTemporaryRoot, TrackType) ||
+                                calls.TryTranslateManagedCallInstruction(methodContext, instr) ||
+                                this.stack.TryTranslateStackInstruction(instr, stack) ||
+                                memory.TryTranslateMemoryInstruction(builder, entryBuilder, instr, method.Value.Item3, stack, GetIndirectType, TrackType, ref unalignedAlignment) ||
+                                numeric.TryTranslateNumericInstruction(builder, instr, stack, BuildCheckedIntegerArithmetic, EmitConditionalException))
                             {
-                                case Code.Jmp:
-                                case Code.Ckfinite:
-                                case Code.Arglist:
-                                case Code.Mkrefany:
-                                case Code.Refanyval:
-                                case Code.Refanytype:
-                                default:
-                                    if (constants.TryTranslateConstantInstruction(builder, instr, stack) ||
-                                        fields.TryTranslateFieldInstruction(builder, instr, method.Value.Item3, stack, TrackType) ||
-                                        arrays.TryTranslateArrayInstruction(builder, entryBuilder, instr, method.Value.Item3, stack, trackedTypes, TrackType, BuildCheckedIntegerArithmetic, EmitConditionalException, SynchronizeEvaluationStackRoots) ||
-                                        variables.TryTranslateVariableInstruction(builder, entryBuilder, instr, method.Value.Item3, stack, local, trackedTypes, localRuntimeTypes, GetMethodParameter, TrackType) ||
-                                        branches.TryTranslateBranchInstruction(builder, instr, stack, label, terminatedBlocks, SaveStack, RestoreStack) ||
-                                        types.TryTranslateTypeInstruction(builder, entryBuilder, method.Value.Item1, instr, method.Value.Item3, stack, terminatedBlocks, BuildRuntimeTypeMatch, TrackType, StoreTemporaryRoot, SynchronizeEvaluationStackRoots, exceptionThrowType, exceptionThrowFunction) ||
-                                        exceptions.TryTranslateExceptionInstruction(builder, method.Value.Item1, instr, methodDefinition, stack, terminatedBlocks, caughtExceptions, finallyStates, filterStates, label, exceptionRegions, RegisterFinallyContinuation, SaveStack, exceptionThrowType, exceptionThrowFunction, exceptionCurrentType, exceptionCurrentFunction, exceptionPopType, exceptionPopFunction) ||
-                                        calls.TryTranslateCallInstruction(methodContext, instr) ||
-                                        prefixes.TryTranslatePrefixInstruction(methodContext, instr, ref unalignedAlignment) ||
-                                        returns.TryTranslateReturnInstruction(builder, instr, method.Value.Item3, stack, usesValueReturnBuffer, valueReturnBuffer, PopGCFrame, terminatedBlocks) ||
-                                        strings.TryTranslateStringInstruction(builder, instr, stack, SynchronizeEvaluationStackRoots, StoreTemporaryRoot, TrackType) ||
-                                        calls.TryTranslateManagedCallInstruction(methodContext, instr) ||
-                                        this.stack.TryTranslateStackInstruction(instr, stack) ||
-                                        memory.TryTranslateMemoryInstruction(builder, entryBuilder, instr, method.Value.Item3, stack, GetIndirectType, TrackType, ref unalignedAlignment) ||
-                                        numeric.TryTranslateNumericInstruction(builder, instr, stack, BuildCheckedIntegerArithmetic, EmitConditionalException))
-                                        break;
-                                    throw new NotImplementedException("How did you reach that? This can't be happening...");
                             }
+                            else
+                                throw new NotSupportedException($"IL instruction '{instr.OpCode.Code}' in method '{method.Value.Item3.FullName}' at IL_{instr.Offset:X4} is not supported.");
                             previousInstruction = instr;
                         }
 

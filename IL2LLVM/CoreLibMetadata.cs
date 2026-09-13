@@ -31,6 +31,9 @@ sealed class CoreLibMetadata
     public TypeDefinition UIntPtr => GetType("System.UIntPtr");
     public TypeDefinition Void => GetType("System.Void");
     public TypeDefinition RuntimeTypeHandle => GetType("System.RuntimeTypeHandle");
+    public TypeDefinition RuntimeArgumentHandle => GetType("System.RuntimeArgumentHandle");
+    public TypeDefinition ArgIterator => GetType("System.ArgIterator");
+    public TypeDefinition TypedReference => GetType("System.TypedReference");
     public TypeDefinition RuntimeFieldHandle => GetType("System.RuntimeFieldHandle");
     public TypeDefinition GCDesc => GetType("System.GCDesc");
     public TypeDefinition FlagsAttribute => GetType("System.FlagsAttribute");
@@ -79,6 +82,15 @@ sealed class CoreLibMetadata
     public FieldDefinition GCStaticRootDescriptorField => GetInstanceField(GCStaticRoot, "Descriptor");
     public FieldDefinition RuntimeFieldDataField => GetInstanceField(RuntimeFieldHandle, "Data");
     public FieldDefinition RuntimeFieldLengthField => GetInstanceField(RuntimeFieldHandle, "Length");
+    public FieldDefinition RuntimeArgumentHandleValueField => GetInstanceField(RuntimeArgumentHandle, "Value");
+    public FieldDefinition ArgIteratorHandleField => GetInstanceField(ArgIterator, "_handle");
+    public FieldDefinition TypedReferenceValueField => GetInstanceField(TypedReference, "Value");
+    public FieldDefinition TypedReferenceTypeField => GetInstanceField(TypedReference, "Type");
+    public FieldDefinition TypedReferenceKindField => GetInstanceField(TypedReference, "Kind");
+    public MethodDefinition ArgIteratorGetNextArgMethod => GetRequiredMethod(ArgIterator, "GetNextArg", true,
+        TypedReference);
+    public MethodDefinition ArgIteratorConstructor => GetRequiredConstructor(ArgIterator, RuntimeArgumentHandle);
+    public FieldDefinition RuntimeTypeHandleTypeField => GetInstanceField(RuntimeTypeHandle, "Type");
 
     public MethodDefinition ActivatorCreateInstanceMethod => Activator.Methods.Single(method =>
         method.Name == "CreateInstance" && method.IsStatic && method.GenericParameters.Count == 1 &&

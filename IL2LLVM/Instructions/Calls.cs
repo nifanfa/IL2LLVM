@@ -1,5 +1,7 @@
 sealed class Calls(Translator translator) : TranslationComponent(translator)
 {
+    readonly Arguments arguments = new(translator);
+
     internal bool TryTranslateCallInstruction(MethodContext methodContext, Instruction instruction)
     {
         var builder = methodContext.Builder;
@@ -97,6 +99,10 @@ sealed class Calls(Translator translator) : TranslationComponent(translator)
             case Code.Newobj:
                 {
                     MethodReference targetMethod = SpecializeMethodReference((MethodReference)instr.Operand, method);
+                    if (arguments.TryTranslateArgIteratorConstructorCall(methodContext, targetMethod))
+                        break;
+                    if (arguments.TryTranslateArgIteratorCall(methodContext, targetMethod))
+                        break;
                     if (instr.OpCode.Code == Code.Callvirt &&
                         stack.Count != 0 && trackedTypes.TryGetValue(stack.Peek(), out var enumerableReceiver) &&
                         enumerableReceiver is ArrayType arrayReceiver &&
@@ -275,7 +281,9 @@ sealed class Calls(Translator translator) : TranslationComponent(translator)
                                 total = BuildCheckedIntegerArithmetic(Code.Mul_Ovf_Un, total,
                                     ConvertValue(builder, dimension, sizeType, false));
                             SynchronizeEvaluationStackRoots();
-                            var dataSize = BuildCheckedIntegerArithmetic(Code.Mul_Ovf_Un, total,
+                            var allocationCount = BuildCheckedIntegerArithmetic(Code.Add_Ovf_Un, total,
+                                LLVMValueRef.CreateConstInt(sizeType, 1, false));
+                            var dataSize = BuildCheckedIntegerArithmetic(Code.Mul_Ovf_Un, allocationCount,
                                 LLVMValueRef.CreateConstInt(sizeType, (ulong)GetTypeSize(multidimensionalArray.ElementType), false));
                             var allocationSize = BuildCheckedIntegerArithmetic(Code.Add_Ovf_Un,
                                 LLVMValueRef.CreateConstInt(sizeType, (ulong)GetTypeDefinitionSize(coreLib.Array), false), dataSize);

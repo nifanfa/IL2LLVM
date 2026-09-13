@@ -496,7 +496,10 @@ sealed class Methods(Translator translator) : TranslationComponent(translator)
             // "this" will be a parameter
             paramTypes.Add(LLVMTypeRef.CreatePointer(int8Type, 0));
         }
-        foreach (var p in method.Parameters)
+        var parameters = method.CallingConvention == MethodCallingConvention.VarArg
+            ? method.Resolve()?.Parameters ?? method.Parameters
+            : method.Parameters;
+        foreach (var p in parameters)
         {
             var parameterType = SubstituteGenericParameter(p.ParameterType, method);
             paramTypes.Add(usesUnmanagedSignature
@@ -508,7 +511,8 @@ sealed class Methods(Translator translator) : TranslationComponent(translator)
             : usesUnmanagedSignature
                 ? GetUnmanagedCallType(SubstituteGenericParameter(method.ReturnType, method))
                 : GetLLVMTypeRef(SubstituteGenericParameter(method.ReturnType, method));
-        var func = LLVMTypeRef.CreateFunction(returnType, paramTypes.ToArray());
+        var func = LLVMTypeRef.CreateFunction(returnType, paramTypes.ToArray(),
+            method.CallingConvention == MethodCallingConvention.VarArg);
         return func;
     }
 
@@ -654,6 +658,10 @@ sealed class Methods(Translator translator) : TranslationComponent(translator)
     internal new void RegisterMethodFunction(LLVMModuleRef module, MethodReference method, Collection<Instruction>? instructions,
         string? symbolName = null)
     {
+        if (method.CallingConvention == MethodCallingConvention.VarArg &&
+            method.Resolve() is { } varargDefinition &&
+            method.Parameters.Count != varargDefinition.Parameters.Count)
+            method = BindMethodToDeclaringType(varargDefinition, method.DeclaringType, method);
         if (GetArrayIntrinsicKind(method) != ArrayIntrinsicKind.None)
             return;
         if (method.DeclaringType.Resolve()?.IsInterface == true && method.Resolve()?.HasBody != true)

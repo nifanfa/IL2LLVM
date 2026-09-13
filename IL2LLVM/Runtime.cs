@@ -157,7 +157,7 @@ sealed class Runtime(Translator translator) : TranslationComponent(translator)
         var arrayType = new ArrayType(elementType);
         var array = BuildAllocationSize(builder, builder.BuildAdd(
             LLVMValueRef.CreateConstInt(sizeType, (ulong)GetTypeDefinitionSize(coreLib.Array), false),
-            LLVMValueRef.CreateConstInt(sizeType, (ulong)(dimensions.Length * GetTypeSize(elementType)), false)));
+            LLVMValueRef.CreateConstInt(sizeType, (ulong)((dimensions.Length + 1) * GetTypeSize(elementType)), false)));
         StoreField(builder, array, GetArrayLengthField(), LLVMValueRef.CreateConstInt(int32Type, (ulong)dimensions.Length, false));
         InitializeRuntimeType(builder, array, arrayType);
         for (int index = 0; index < dimensions.Length; index++)
@@ -433,9 +433,8 @@ sealed class Runtime(Translator translator) : TranslationComponent(translator)
         if (staticStringArrays.TryGetValue(key, out var result))
             return result;
         var pointerType = LLVMTypeRef.CreatePointer(int8Type, 0);
-        var elementValues = values.Select(value => LLVMValueRef.CreateConstPointerCast(GetStaticString(value), pointerType)).ToArray();
-        if (elementValues.Length == 0)
-            elementValues = [LLVMValueRef.CreateConstNull(pointerType)];
+        var elementValues = values.Select(value => LLVMValueRef.CreateConstPointerCast(GetStaticString(value), pointerType))
+            .Append(LLVMValueRef.CreateConstNull(pointerType)).ToArray();
         var dataType = LLVMTypeRef.CreateArray(pointerType, (uint)elementValues.Length);
         var arrayFields = GetObjectLayoutFields(coreLib.Array);
         var storageType = context.GetStructType(
@@ -457,9 +456,8 @@ sealed class Runtime(Translator translator) : TranslationComponent(translator)
         if (staticUInt64Arrays.TryGetValue(key, out var result))
             return result;
         var pointerType = LLVMTypeRef.CreatePointer(int8Type, 0);
-        var elementValues = values.Select(value => LLVMValueRef.CreateConstInt(int64Type, value, false)).ToArray();
-        if (elementValues.Length == 0)
-            elementValues = [LLVMValueRef.CreateConstNull(int64Type)];
+        var elementValues = values.Select(value => LLVMValueRef.CreateConstInt(int64Type, value, false))
+            .Append(LLVMValueRef.CreateConstNull(int64Type)).ToArray();
         var dataType = LLVMTypeRef.CreateArray(int64Type, (uint)elementValues.Length);
         var arrayFields = GetObjectLayoutFields(coreLib.Array);
         var storageType = context.GetStructType(

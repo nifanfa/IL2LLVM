@@ -4,7 +4,8 @@ sealed class Types(Translator translator) : TranslationComponent(translator)
         Instruction instruction, MethodReference method, Stack<LLVMValueRef> stack,
         HashSet<LLVMBasicBlockRef> terminatedBlocks, Func<LLVMValueRef, TypeReference, LLVMValueRef> buildRuntimeTypeMatch,
         Action<LLVMValueRef, TypeReference> trackType, Action<int, LLVMValueRef, TypeReference> storeTemporaryRoot,
-        Action synchronizeEvaluationStackRoots, LLVMTypeRef exceptionThrowType, LLVMValueRef exceptionThrowFunction)
+        Action synchronizeEvaluationStackRoots, LLVMTypeRef exceptionThrowType, LLVMValueRef exceptionThrowFunction,
+        Func<LLVMTypeRef, LLVMValueRef> buildEntryAlloca)
     {
         var pointerType = LLVMTypeRef.CreatePointer(int8Type, 0);
         switch (instruction.OpCode.Code)
@@ -148,6 +149,126 @@ sealed class Types(Translator translator) : TranslationComponent(translator)
                         result = boxedValue;
                     stack.Push(result);
                     trackType(result, valueType);
+                    return true;
+                }
+            case Code.Mkrefany:
+                {
+                    var valueType = SubstituteGenericParameter((TypeReference)instruction.Operand, method);
+                    var valueAddress = ConvertValue(builder, stack.Pop(), pointerType);
+
+                    // TypedReference is a regular value type in CoreLib.  Keep the
+                    // referenced address and runtime type handle in its fields so
+                    // the following refanyval/refanytype instructions can recover
+                    // the same information without a special LLVM type.
+                    var typedReferenceStorage = buildEntryAlloca(LLVMTypeRef.CreateArray(
+                        int8Type, (uint)Math.Max(1, GetTypeSize(coreLib.TypedReference))));
+                    var typedReference = builder.BuildBitCast(typedReferenceStorage, pointerType);
+                    StoreField(builder, typedReference, coreLib.TypedReferenceValueField, valueAddress);
+
+                    var typeHandleStorage = buildEntryAlloca(LLVMTypeRef.CreateArray(
+                        int8Type, (uint)Math.Max(1, GetTypeSize(coreLib.RuntimeTypeHandle))));
+                    var typeHandle = builder.BuildBitCast(typeHandleStorage, pointerType);
+                    StoreField(builder, typeHandle, coreLib.RuntimeTypeHandleTypeField,
+                        GetRuntimeTypeObject(valueType));
+                    StoreField(builder, typedReference, coreLib.TypedReferenceTypeField, typeHandle);
+                    StoreField(builder, typedReference, coreLib.TypedReferenceKindField,
+                        LLVMValueRef.CreateConstInt(int32Type, 0, false));
+
+                    stack.Push(typedReference);
+                    trackType(typedReference, coreLib.TypedReference);
+                    return true;
+                }
+            case Code.Refanyval:
+                {
+                    var typedReference = stack.Pop();
+                    var valueType = SubstituteGenericParameter((TypeReference)instruction.Operand, method);
+                    if (method.CallingConvention != MethodCallingConvention.VarArg)
+                    {
+                        var typeHandleAddress = GetFieldAddress(builder, typedReference,
+                            coreLib.TypedReferenceTypeField);
+                        var actualType = builder.BuildLoad2(pointerType, typeHandleAddress);
+                        var expectedType = ConvertValue(builder, GetRuntimeTypeObject(valueType), pointerType);
+                        var sourceBlock = builder.InsertBlock;
+                        var matchBlock = context.AppendBasicBlock(function, $"refanyval.match.{nextVirtualDispatchId++}");
+                        var failBlock = context.AppendBasicBlock(function, $"refanyval.fail.{nextVirtualDispatchId++}");
+                        builder.BuildCondBr(builder.BuildICmp(LLVMIntPredicate.LLVMIntEQ, actualType, expectedType),
+                            matchBlock, failBlock);
+                        terminatedBlocks.Add(sourceBlock);
+
+                        builder.PositionAtEnd(failBlock);
+                        var exception = BuildAllocation(builder, GetObjectSize(coreLib.InvalidCastException));
+                        InitializeRuntimeType(builder, exception, coreLib.InvalidCastException);
+                        builder.BuildCall2(exceptionThrowType, exceptionThrowFunction, [exception]);
+                        builder.BuildUnreachable();
+                        terminatedBlocks.Add(failBlock);
+
+                        builder.PositionAtEnd(matchBlock);
+                        var directAddress = ConvertValue(builder,
+                            builder.BuildLoad2(GetLLVMTypeRef(coreLib.TypedReferenceValueField.FieldType),
+                                GetFieldAddress(builder, typedReference, coreLib.TypedReferenceValueField)), pointerType);
+                        stack.Push(directAddress);
+                        trackType(directAddress, new ByReferenceType(valueType));
+                        return true;
+                    }
+                    var kind = builder.BuildLoad2(int32Type,
+                        GetFieldAddress(builder, typedReference, coreLib.TypedReferenceKindField));
+                    var varargSourceBlock = builder.InsertBlock;
+                    var regularBlock = context.AppendBasicBlock(function, $"refanyval.regular.{nextVirtualDispatchId++}");
+                    var varargBlock = context.AppendBasicBlock(function, $"refanyval.vararg.{nextVirtualDispatchId++}");
+                    var continuation = context.AppendBasicBlock(function, $"refanyval.cont.{nextVirtualDispatchId++}");
+                    builder.BuildCondBr(builder.BuildICmp(LLVMIntPredicate.LLVMIntEQ, kind,
+                        LLVMValueRef.CreateConstInt(int32Type, 1, false)), varargBlock, regularBlock);
+                    terminatedBlocks.Add(varargSourceBlock);
+
+                    builder.PositionAtEnd(regularBlock);
+                    var regularAddress = ConvertValue(builder,
+                        builder.BuildLoad2(GetLLVMTypeRef(coreLib.TypedReferenceValueField.FieldType),
+                            GetFieldAddress(builder, typedReference, coreLib.TypedReferenceValueField)), pointerType);
+                    builder.BuildBr(continuation);
+                    terminatedBlocks.Add(regularBlock);
+
+                    builder.PositionAtEnd(varargBlock);
+                    var vaList = builder.BuildLoad2(GetLLVMTypeRef(coreLib.TypedReferenceValueField.FieldType),
+                        GetFieldAddress(builder, typedReference, coreLib.TypedReferenceValueField));
+                    var vaArgType = GetUnmanagedCallType(valueType);
+                    if (GetTypeSize(valueType) < pointerSize &&
+                        vaArgType.Kind == LLVMTypeKind.LLVMIntegerTypeKind)
+                        vaArgType = sizeType;
+                    LLVMValueRef varargValue;
+                    unsafe
+                    {
+                        ReadOnlySpan<byte> name = "arg.value\0"u8;
+                        fixed (byte* namePointer = name)
+                            varargValue = LLVM.BuildVAArg(builder, vaList, vaArgType, (sbyte*)namePointer);
+                    }
+                    var varargStorage = buildEntryAlloca(LLVMTypeRef.CreateArray(
+                        int8Type, (uint)Math.Max(pointerSize, GetTypeSize(valueType))));
+                    var varargStorageAddress = builder.BuildBitCast(varargStorage, pointerType);
+                    if (varargValue.TypeOf.Kind != LLVMTypeKind.LLVMStructTypeKind)
+                    {
+                        var destinationType = LLVMTypeRef.CreatePointer(varargValue.TypeOf, 0);
+                        builder.BuildStore(varargValue, builder.BuildBitCast(varargStorageAddress, destinationType));
+                    }
+                    else
+                        CopyValue(builder, varargStorageAddress, varargValue, GetTypeSize(valueType));
+                    varargStorageAddress = ConvertValue(builder, varargStorageAddress, pointerType);
+                    builder.BuildBr(continuation);
+                    terminatedBlocks.Add(varargBlock);
+
+                    builder.PositionAtEnd(continuation);
+                    var valueAddress = builder.BuildPhi(pointerType, "refanyval.address");
+                    valueAddress.AddIncoming([regularAddress, varargStorageAddress], [regularBlock, varargBlock], 2);
+                    stack.Push(valueAddress);
+                    trackType(valueAddress, new ByReferenceType(valueType));
+                    return true;
+                }
+            case Code.Refanytype:
+                {
+                    var typedReference = stack.Pop();
+                    var typeHandle = builder.BuildLoad2(GetLLVMTypeRef(coreLib.TypedReferenceTypeField.FieldType),
+                        GetFieldAddress(builder, typedReference, coreLib.TypedReferenceTypeField));
+                    stack.Push(typeHandle);
+                    trackType(typeHandle, coreLib.RuntimeTypeHandle);
                     return true;
                 }
             default:
