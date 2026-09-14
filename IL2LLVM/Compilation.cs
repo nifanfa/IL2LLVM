@@ -1050,9 +1050,22 @@ sealed class Compilation : TranslationComponent
                             var isThis = method.Value.Item3.HasThis && i == 0;
                             if (!isThis && IsValueType(parameterType) && !IsByReferenceValue(parameterType))
                             {
-                                var storage = CreateLocalStorage(entryBuilder, parameterType);
-                                var address = entryBuilder.BuildLoad2(storage.Item2, storage.Item1);
-                                entryBuilder.BuildStore(argument, address);
+                                // Primitive value parameters are passed as scalar LLVM values. Keep
+                                // their argument storage scalar as well; using the byte-pointer
+                                // representation here makes optimized IL's starg/ldarg arithmetic
+                                // operate on addresses instead of the parameter value.
+                                var callType = GetCallType(parameterType);
+                                var storage = callType.Kind is LLVMTypeKind.LLVMIntegerTypeKind or
+                                    LLVMTypeKind.LLVMFloatTypeKind or LLVMTypeKind.LLVMDoubleTypeKind
+                                    ? new Tuple<LLVMValueRef, LLVMTypeRef>(entryBuilder.BuildAlloca(callType), callType)
+                                    : CreateLocalStorage(entryBuilder, parameterType);
+                                if (storage.Item2.Kind == LLVMTypeKind.LLVMPointerTypeKind)
+                                {
+                                    var address = entryBuilder.BuildLoad2(storage.Item2, storage.Item1);
+                                    entryBuilder.BuildStore(argument, address);
+                                }
+                                else
+                                    entryBuilder.BuildStore(argument, storage.Item1);
                                 local[-1 - i] = storage;
                             }
                             else

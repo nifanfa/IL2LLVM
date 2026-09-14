@@ -182,6 +182,11 @@ sealed class TypeSystem(Translator translator) : TranslationComponent(translator
         var definition = FindLocalMethod(method, methods);
         if (definition is null || !definition.HasBody || definition.Body.Instructions.Count == 0)
             return false;
+        // A method may have normal return paths followed by a throwing fallback
+        // (Release control-flow layout commonly puts that throw last). Only treat
+        // it as noreturn when the body contains no reachable return instruction.
+        if (definition.Body.Instructions.Any(instruction => instruction.OpCode.Code == Code.Ret))
+            return false;
         var last = definition.Body.Instructions.LastOrDefault(instruction => instruction.OpCode.Code is not Code.Nop);
         return last?.OpCode.Code is Code.Throw or Code.Rethrow;
     }

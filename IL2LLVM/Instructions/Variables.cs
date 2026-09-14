@@ -123,7 +123,14 @@ sealed class Variables(Translator translator) : TranslationComponent(translator)
                         ? existing
                         : new Tuple<LLVMValueRef, LLVMTypeRef>(entryBuilder.BuildAlloca(llvmType), llvmType);
                     locals[-1 - index] = storage;
-                    builder.BuildStore(ConvertValue(builder, value, llvmType), storage.Item1);
+                    if (IsValueType(parameterType) && !IsByReferenceValue(parameterType) &&
+                        storage.Item2.Kind == LLVMTypeKind.LLVMPointerTypeKind)
+                    {
+                        var destination = builder.BuildLoad2(storage.Item2, storage.Item1);
+                        CopyValue(builder, destination, value, GetTypeSize(parameterType));
+                    }
+                    else
+                        builder.BuildStore(ConvertValue(builder, value, llvmType), storage.Item1);
                     return true;
                 }
             case Code.Ldarga:
@@ -140,7 +147,8 @@ sealed class Variables(Translator translator) : TranslationComponent(translator)
                     var parameterType = method.HasThis && index == 0
                         ? method.DeclaringType
                         : SubstituteGenericParameter(method.Parameters[index - (method.HasThis ? 1 : 0)].ParameterType, method);
-                    var address = IsValueType(parameterType) && !IsByReferenceValue(parameterType)
+                    var address = IsValueType(parameterType) && !IsByReferenceValue(parameterType) &&
+                        storage.Item2.Kind == LLVMTypeKind.LLVMPointerTypeKind
                         ? builder.BuildLoad2(storage.Item2, storage.Item1)
                         : storage.Item1;
                     stack.Push(address);
