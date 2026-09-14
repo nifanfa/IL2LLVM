@@ -348,6 +348,39 @@ sealed class Calls(Translator translator) : TranslationComponent(translator)
                         callArgs[0] = GetBoxedValueAddress(builder, targetArgs[0], virtualContractType);
                     }
 
+                    // A managed method may return the address of one of its value
+                    // parameters (for example an unsafe address-of operator).  The
+                    // callee's parameter storage ceases to exist when it returns,
+                    // so do not use that pointer as the caller's result.  Preserve
+                    // the value in caller-owned storage before making the call.
+                    var returnsParameterAddress = TryGetReturnedParameterAddress(targetMethod,
+                        out var returnedParameterIndex);
+                    LLVMValueRef returnedParameterStorage = default;
+                    TypeReference? returnedParameterType = null;
+                    if (returnsParameterAddress && returnedParameterIndex >= 0 &&
+                        returnedParameterIndex < targetMethod.Parameters.Count)
+                    {
+                        returnedParameterType = SubstituteGenericParameter(
+                            targetMethod.Parameters[returnedParameterIndex].ParameterType, targetMethod);
+                        var argumentIndex = targetMethod.HasThis ? returnedParameterIndex + 1 : returnedParameterIndex;
+                        if (argumentIndex < callTargetArgs.Length)
+                        {
+                            var storage = CreateLocalStorage(entryBuilder, returnedParameterType);
+                            if (IsValueType(returnedParameterType) && !IsByReferenceValue(returnedParameterType))
+                            {
+                                returnedParameterStorage = builder.BuildLoad2(storage.Item2, storage.Item1);
+                                CopyValue(builder, returnedParameterStorage, callTargetArgs[argumentIndex],
+                                    GetTypeSize(returnedParameterType));
+                            }
+                            else
+                            {
+                                builder.BuildStore(ConvertValue(builder, callTargetArgs[argumentIndex], storage.Item2),
+                                    storage.Item1);
+                                returnedParameterStorage = storage.Item1;
+                            }
+                        }
+                    }
+
                     var useVirtualDispatch = instr.OpCode.Code == Code.Callvirt && targetMethod.HasThis &&
                         (useRuntimeDispatch || targetFunc == default);
                     var result = useVirtualDispatch
@@ -355,15 +388,20 @@ sealed class Calls(Translator translator) : TranslationComponent(translator)
                             GetVirtualImplementations(targetMethod, virtualContractType ?? targetMethod.DeclaringType),
                             true)
                         : builder.BuildCall2(targetFuncCreated, targetFunc, callArgs);
-                    if (result != default && TryGetReturnedParameterAddress(targetMethod, out var returnedParameterIndex) &&
+                    if (result != default && returnsParameterAddress &&
                         returnedParameterIndex >= 0 && returnedParameterIndex < targetMethod.Parameters.Count)
                     {
-                        var returnedType = SubstituteGenericParameter(targetMethod.Parameters[returnedParameterIndex].ParameterType,
-                            targetMethod);
-                        var storage = CreateLocalStorage(entryBuilder, returnedType);
-                        var destination = builder.BuildLoad2(storage.Item2, storage.Item1);
-                        CopyValue(builder, destination, result, GetTypeSize(returnedType));
-                        result = destination;
+                        if (returnedParameterStorage != default)
+                            result = returnedParameterStorage;
+                        else
+                        {
+                            var returnedType = returnedParameterType ?? SubstituteGenericParameter(
+                                targetMethod.Parameters[returnedParameterIndex].ParameterType, targetMethod);
+                            var storage = CreateLocalStorage(entryBuilder, returnedType);
+                            var destination = builder.BuildLoad2(storage.Item2, storage.Item1);
+                            CopyValue(builder, destination, result, GetTypeSize(returnedType));
+                            result = destination;
+                        }
                     }
                     if (isArrayFactoryConstructor)
                     {

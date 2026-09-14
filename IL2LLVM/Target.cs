@@ -36,7 +36,12 @@ static class Target
     internal static LLVMTargetMachineRef CreateTargetMachine(string targetTriple, LLVMCodeModel codeModel)
     {
         var target = LLVMTargetRef.GetTargetFromTriple(targetTriple);
-        return target.CreateTargetMachine(targetTriple, "generic", "", LLVMCodeGenOptLevel.LLVMCodeGenLevelDefault,
+        return target.CreateTargetMachine(targetTriple, "generic", "",
+#if DEBUG
+            LLVMCodeGenOptLevel.LLVMCodeGenLevelNone,
+#else
+            LLVMCodeGenOptLevel.LLVMCodeGenLevelAggressive,
+#endif
             codeModel == LLVMCodeModel.LLVMCodeModelKernel ? LLVMRelocMode.LLVMRelocStatic : LLVMRelocMode.LLVMRelocPIC,
             codeModel);
     }
