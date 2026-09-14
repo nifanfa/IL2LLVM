@@ -213,4 +213,10 @@ sealed class InstructionHelpers(Translator translator) : TranslationComponent(tr
         return count;
     }
 
+    internal new bool UsesArgumentList(MethodReference method)
+    {
+        var definition = method.Resolve();
+        return definition?.Body?.Instructions.Any(instruction => instruction.OpCode.Code == Code.Arglist) == true;
+    }
+
 }

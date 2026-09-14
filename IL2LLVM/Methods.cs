@@ -489,13 +489,19 @@ sealed class Methods(Translator translator) : TranslationComponent(translator)
             // "this" will be a parameter
             paramTypes.Add(LLVMTypeRef.CreatePointer(int8Type, 0));
         }
+        var definition = method.Resolve();
         var parameters = method.CallingConvention == MethodCallingConvention.VarArg
-            ? method.Resolve()?.Parameters ?? method.Parameters
+            ? definition?.Parameters ?? method.Parameters
             : method.Parameters;
         foreach (var p in parameters)
         {
             var parameterType = SubstituteGenericParameter(p.ParameterType, method);
             paramTypes.Add(GetCallType(parameterType));
+        }
+        if (method.CallingConvention == MethodCallingConvention.VarArg && UsesArgumentList(method))
+        {
+            paramTypes.Add(LLVMTypeRef.CreatePointer(int8Type, 0));
+            paramTypes.Add(int32Type);
         }
         LLVMTypeRef returnType = GetCallType(SubstituteGenericParameter(method.ReturnType, method));
         var func = LLVMTypeRef.CreateFunction(returnType, paramTypes.ToArray(),

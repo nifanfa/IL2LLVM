@@ -253,6 +253,52 @@ sealed class Calls(Translator translator) : TranslationComponent(translator)
                         callTargetArgs[i] = ConvertValue(builder, callTargetArgs[i], expectedType);
                     }
 
+                    if (targetMethod.CallingConvention == MethodCallingConvention.VarArg &&
+                        UsesArgumentList(callTarget))
+                    {
+                        var receiverCount = instr.OpCode.Code != Code.Newobj && targetMethod.HasThis ? 1 : 0;
+                        var fixedArgumentCount = (callTarget.Resolve()?.Parameters.Count ?? targetMethod.Parameters.Count) + receiverCount;
+                        var variableArgumentCount = callTargetArgs.Length - fixedArgumentCount;
+                        var pointerType = LLVMTypeRef.CreatePointer(int8Type, 0);
+                        LLVMValueRef variableArguments = LLVMValueRef.CreateConstNull(pointerType);
+                        if (variableArgumentCount > 0)
+                        {
+                            var descriptorSize = GetTypeSize(coreLib.VariableArgument);
+                            var descriptors = methodContext.BuildEntryAlloca(LLVMTypeRef.CreateArray(int8Type,
+                                (uint)(descriptorSize * variableArgumentCount)));
+                            variableArguments = builder.BuildBitCast(descriptors, pointerType);
+                            for (int index = 0; index < variableArgumentCount; index++)
+                            {
+                                var argumentIndex = fixedArgumentCount + index;
+                                var parameterIndex = argumentIndex - receiverCount;
+                                var parameterType = SubstituteGenericParameter(
+                                    targetMethod.Parameters[parameterIndex].ParameterType, targetMethod);
+                                var valueStorage = methodContext.BuildEntryAlloca(callTargetArgs[argumentIndex].TypeOf);
+                                builder.BuildStore(callTargetArgs[argumentIndex], valueStorage);
+                                var descriptor = builder.BuildGEP2(int8Type, variableArguments,
+                                [
+                                    LLVMValueRef.CreateConstInt(sizeType,
+                                        (ulong)(descriptorSize * index), false)
+                                ]);
+                                StoreField(builder, descriptor, coreLib.VariableArgumentValueField,
+                                    builder.BuildBitCast(valueStorage, pointerType));
+                                var typeHandleStorage = methodContext.BuildEntryAlloca(LLVMTypeRef.CreateArray(
+                                    int8Type, (uint)Math.Max(1, GetTypeSize(coreLib.RuntimeTypeHandle))));
+                                var typeHandle = builder.BuildBitCast(typeHandleStorage, pointerType);
+                                StoreField(builder, typeHandle, coreLib.RuntimeTypeHandleTypeField,
+                                    GetRuntimeTypeObject(parameterType));
+                                StoreField(builder, descriptor, coreLib.VariableArgumentTypeField, typeHandle);
+                            }
+                        }
+                        callTargetArgs =
+                        [
+                            .. callTargetArgs.Take(fixedArgumentCount),
+                            variableArguments,
+                            LLVMValueRef.CreateConstInt(int32Type, (ulong)variableArgumentCount, false),
+                            .. callTargetArgs.Skip(fixedArgumentCount)
+                        ];
+                    }
+
                     if (byReferenceValueConstructor)
                     {
                         var referenceParameter = targetMethod.Parameters

@@ -177,6 +177,7 @@ abstract class TranslationComponent(Translator translator)
     protected LLVMValueRef GetBoxedValueAddress(LLVMBuilderRef builder, LLVMValueRef box, TypeReference? valueType = null) => Translator.Runtime.GetBoxedValueAddress(builder, box, valueType);
     protected void InitializeBoxedRuntimeType(LLVMBuilderRef builder, LLVMValueRef box, TypeReference type) => Translator.Runtime.InitializeBoxedRuntimeType(builder, box, type);
     protected LLVMValueRef GetRuntimeTypeObject(TypeReference type) => Translator.Runtime.GetRuntimeTypeObject(type);
+    protected bool UsesArgumentList(MethodReference method) => Translator.InstructionHelpers.UsesArgumentList(method);
     protected ulong GetEnumConstantValue(object? value, TypeReference? underlyingType) => Translator.Runtime.GetEnumConstantValue(value, underlyingType);
     protected LLVMValueRef GetStaticString(string value) => Translator.Runtime.GetStaticString(value);
     protected LLVMValueRef GetStaticStringArray(string[] values) => Translator.Runtime.GetStaticStringArray(values);

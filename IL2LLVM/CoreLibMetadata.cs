@@ -35,6 +35,7 @@ sealed class CoreLibMetadata
     public TypeDefinition Void => GetType("System.Void");
     public TypeDefinition RuntimeTypeHandle => GetType("System.RuntimeTypeHandle");
     public TypeDefinition RuntimeArgumentHandle => GetType("System.RuntimeArgumentHandle");
+    public TypeDefinition VariableArgument => GetType("System.VariableArgument");
     public TypeDefinition TypedReference => GetType("System.TypedReference");
     public TypeDefinition RuntimeFieldHandle => GetType("System.RuntimeFieldHandle");
     public TypeDefinition GCDesc => GetType("System.GCDesc");
@@ -85,6 +86,10 @@ sealed class CoreLibMetadata
     public FieldDefinition GCStaticRootDescriptorField => GetInstanceField(GCStaticRoot, "Descriptor");
     public FieldDefinition RuntimeFieldDataField => GetInstanceField(RuntimeFieldHandle, "Data");
     public FieldDefinition RuntimeFieldLengthField => GetInstanceField(RuntimeFieldHandle, "Length");
+    public FieldDefinition RuntimeArgumentHandleArgumentsField => GetInstanceField(RuntimeArgumentHandle, "Arguments");
+    public FieldDefinition RuntimeArgumentHandleCountField => GetInstanceField(RuntimeArgumentHandle, "Count");
+    public FieldDefinition VariableArgumentValueField => GetInstanceField(VariableArgument, "Value");
+    public FieldDefinition VariableArgumentTypeField => GetInstanceField(VariableArgument, "Type");
     public FieldDefinition TypedReferenceValueField => GetInstanceField(TypedReference, "Value");
     public FieldDefinition TypedReferenceTypeField => GetInstanceField(TypedReference, "Type");
     public FieldDefinition RuntimeTypeHandleTypeField => GetInstanceField(RuntimeTypeHandle, "Type");
