@@ -385,9 +385,6 @@ sealed class Methods(Translator translator) : TranslationComponent(translator)
     internal new bool IsGCFrameFree(MethodReference method)
     {
         var definition = method.Resolve();
-        if (definition?.CustomAttributes.Any(attribute =>
-                coreLib.IsRuntimeNoGCFrameAttribute(attribute.AttributeType)) == true)
-            return true;
         if (definition?.Body is not { } body || body.ExceptionHandlers.Count != 0)
             return false;
 

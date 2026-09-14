@@ -41,7 +41,6 @@ sealed class CoreLibMetadata
     public TypeDefinition GCDesc => GetType("System.GCDesc");
     public TypeDefinition FlagsAttribute => GetType("System.FlagsAttribute");
     public TypeDefinition RuntimeExportAttribute => GetType("System.Runtime.RuntimeExportAttribute");
-    public TypeDefinition RuntimeNoGCFrameAttribute => GetType("System.Runtime.NoGCFrameAttribute");
     public TypeDefinition MethodImplAttribute => GetType("System.Runtime.CompilerServices.MethodImplAttribute");
     public TypeDefinition MethodImplOptions => GetType("System.Runtime.CompilerServices.MethodImplOptions");
     public TypeDefinition ExceptionRuntime => GetType("System.Runtime.ExceptionRuntime");
@@ -133,7 +132,6 @@ sealed class CoreLibMetadata
     public bool IsNativeInteger(TypeReference type) => IsType(type, IntPtr) || IsType(type, UIntPtr);
     public bool IsFlagsAttribute(TypeReference type) => IsType(type, FlagsAttribute);
     public bool IsRuntimeExportAttribute(TypeReference type) => IsType(type, RuntimeExportAttribute);
-    public bool IsRuntimeNoGCFrameAttribute(TypeReference type) => IsType(type, RuntimeNoGCFrameAttribute);
     public bool IsMethodImplAttribute(TypeReference type) => IsType(type, MethodImplAttribute);
 
     public int GetMethodImplOptions(MethodDefinition method)
