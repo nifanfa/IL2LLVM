@@ -173,7 +173,7 @@ sealed class TypeSystem(Translator translator) : TranslationComponent(translator
             return null;
         }
         return resolved is { IsEnum: true } definition
-            ? definition.Fields.FirstOrDefault(field => field.Name == "value__")?.FieldType
+            ? coreLib.GetEnumUnderlyingValueField(definition)?.FieldType
             : null;
     }
 

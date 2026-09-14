@@ -18,18 +18,20 @@ sealed class Methods(Translator translator) : TranslationComponent(translator)
         bool HasIndexParameters(int count) => method.Parameters.Count == count &&
             method.Parameters.Take(rank).All(parameter => parameter.ParameterType.MetadataType == MetadataType.Int32);
 
-        return method.Name switch
+        if (HasIndexParameters(rank))
         {
-            ".ctor" when HasIndexParameters(rank) && IsVoidType(method.ReturnType) =>
-                ArrayRuntimeMethodKind.Constructor,
-            "Get" when HasIndexParameters(rank) && SameType(method.ReturnType, array.ElementType) =>
-                ArrayRuntimeMethodKind.Get,
-            "Set" when HasIndexParameters(rank + 1) && IsVoidType(method.ReturnType) &&
-                SameType(method.Parameters[rank].ParameterType, array.ElementType) => ArrayRuntimeMethodKind.Set,
-            "Address" when HasIndexParameters(rank) && method.ReturnType is ByReferenceType byReference &&
-                SameType(byReference.ElementType, array.ElementType) => ArrayRuntimeMethodKind.Address,
-            _ => ArrayRuntimeMethodKind.None
-        };
+            if (IsVoidType(method.ReturnType))
+                return ArrayRuntimeMethodKind.Constructor;
+            if (SameType(method.ReturnType, array.ElementType))
+                return ArrayRuntimeMethodKind.Get;
+            if (method.ReturnType is ByReferenceType byReference &&
+                SameType(byReference.ElementType, array.ElementType))
+                return ArrayRuntimeMethodKind.Address;
+        }
+        if (HasIndexParameters(rank + 1) && IsVoidType(method.ReturnType) &&
+            SameType(method.Parameters[rank].ParameterType, array.ElementType))
+            return ArrayRuntimeMethodKind.Set;
+        return ArrayRuntimeMethodKind.None;
     }
 
     internal new bool IsRuntimeDelegateConstructor(MethodReference method)
@@ -46,7 +48,7 @@ sealed class Methods(Translator translator) : TranslationComponent(translator)
         if (!IsDelegateType(method.DeclaringType))
             return false;
         var definition = FindMethodDefinition(method);
-        return definition is { Name: "Invoke", IsStatic: false, IsVirtual: true, HasBody: false } &&
+        return definition is { IsConstructor: false, IsStatic: false, IsVirtual: true, HasBody: false } &&
             (definition.ImplAttributes & MethodImplAttributes.Runtime) != 0;
     }
 
@@ -1110,7 +1112,7 @@ sealed class Methods(Translator translator) : TranslationComponent(translator)
         var definition = method.Resolve();
         var hasPInvokeOverloads = definition?.DeclaringType.Methods.Count(candidate =>
             candidate.Name == method.Name && candidate.PInvokeInfo is not null) > 1;
-        return pinvoke.Module?.Name == "*" && hasPInvokeOverloads
+        return pinvoke.Module?.Name == CoreLibMetadata.NativeModuleName && hasPInvokeOverloads
             ? friendlyName
             : method.Name;
     }

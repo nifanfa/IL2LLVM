@@ -95,6 +95,10 @@ dotnet IL2LLVM\bin\Debug\net10.0\IL2LLVM.dll `
 
 The output uses static relocation. Globals created by the translator for managed static fields, GC descriptors, field data, and compiler-generated helpers use internal linkage. Managed entry points and `[DllImport("*")]` imports remain external symbols for the host linker.
 
+### Calling convention
+
+IL2LLVM emits all generated calls using the C `cdecl` calling convention. This applies to calls across the managed/native boundary as well as calls to host runtime symbols. The host runtime must therefore expose matching `cdecl` entry points; IL2LLVM does not automatically select or adapt platform-specific calling conventions.
+
 The Visual Studio launch profiles in `IL2LLVM/Properties/launchSettings.json` provide the same commands for the console x86/x64 objects and the Linux x86-64 kernel object.
 
 ## Custom runtime boundary

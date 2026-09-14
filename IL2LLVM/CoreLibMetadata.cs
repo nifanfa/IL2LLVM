@@ -1,5 +1,8 @@
 sealed class CoreLibMetadata
 {
+    internal const string EnumUnderlyingValueFieldName = "value__";
+    internal const string NativeModuleName = "*";
+
     private readonly IReadOnlyDictionary<string, TypeDefinition> types;
 
     public CoreLibMetadata(IReadOnlyDictionary<string, TypeDefinition> types)
@@ -124,6 +127,9 @@ sealed class CoreLibMetadata
     public bool IsFlagsAttribute(TypeReference type) => IsType(type, FlagsAttribute);
     public bool IsRuntimeExportAttribute(TypeReference type) => IsType(type, RuntimeExportAttribute);
     public bool IsRuntimeNoGCFrameAttribute(TypeReference type) => IsType(type, RuntimeNoGCFrameAttribute);
+
+    public FieldDefinition? GetEnumUnderlyingValueField(TypeDefinition type) =>
+        type.Fields.FirstOrDefault(field => !field.IsStatic && field.Name == EnumUnderlyingValueFieldName);
 
     public FieldDefinition GetNullableHasValueField(TypeReference type) => GetInstanceField(Resolve(type), "_hasValue");
     public FieldDefinition GetNullableValueField(TypeReference type) => GetInstanceField(Resolve(type), "_value");
