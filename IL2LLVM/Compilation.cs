@@ -1232,22 +1232,32 @@ sealed class Compilation : TranslationComponent
                         foreach (var region in exceptionRegions)
                             AddRoot(new Tuple<LLVMValueRef, LLVMTypeRef>(region.Exception, exceptionPointerType), coreLib.Exception, true);
 
-                        var tracksGCFrames = method.Value.Item3.Resolve()?.CustomAttributes.Any(attribute =>
-                            coreLib.IsRuntimeNoGCFrameAttribute(attribute.AttributeType)) != true;
+                        var tracksGCFrames = !IsGCFrameFree(method.Value.Item3);
                         var maxStack = Math.Max(1, methodDefinition?.Body.MaxStackSize ?? 1);
                         var stackRootCapacity = maxStack + 2;
                         const int temporaryRootCount = 4;
-                        var rootEntryCount = fixedRoots.Count + stackRootCapacity + temporaryRootCount;
-                        var rootEntryType = LLVMTypeRef.CreateArray(exceptionPointerType, (uint)(rootEntryCount * 2));
-                        var rootEntries = BuildEntryAlloca(rootEntryType, (uint)pointerSize);
-                        var rootFrame = BuildEntryAlloca(LLVMTypeRef.CreateArray(int8Type,
-                            (uint)GetTypeSize(coreLib.GCFrame)), (uint)pointerSize);
-                        var rootSpills = Enumerable.Range(0, stackRootCapacity).Select(_ => BuildEntryAlloca(exceptionPointerType)).ToArray();
-                        var temporaryRootSpills = Enumerable.Range(0, temporaryRootCount)
-                            .Select(_ => BuildEntryAlloca(exceptionPointerType)).ToArray();
+                        var rootEntryCount = tracksGCFrames ? fixedRoots.Count + stackRootCapacity + temporaryRootCount : 0;
+                        var rootEntryType = LLVMTypeRef.CreateArray(exceptionPointerType,
+                            (uint)Math.Max(1, rootEntryCount * 2));
+                        var rootEntries = tracksGCFrames
+                            ? BuildEntryAlloca(rootEntryType, (uint)pointerSize)
+                            : default;
+                        var rootFrame = tracksGCFrames
+                            ? BuildEntryAlloca(LLVMTypeRef.CreateArray(int8Type,
+                                (uint)GetTypeSize(coreLib.GCFrame)), (uint)pointerSize)
+                            : default;
+                        var rootSpills = tracksGCFrames
+                            ? Enumerable.Range(0, stackRootCapacity).Select(_ => BuildEntryAlloca(exceptionPointerType)).ToArray()
+                            : [];
+                        var temporaryRootSpills = tracksGCFrames
+                            ? Enumerable.Range(0, temporaryRootCount)
+                                .Select(_ => BuildEntryAlloca(exceptionPointerType)).ToArray()
+                            : [];
 
                         LLVMValueRef GetRootEntryAddress(int index)
                         {
+                            if (!tracksGCFrames)
+                                return default;
                             return builder.BuildGEP2(rootEntryType, rootEntries,
                                 [LLVMValueRef.CreateConstInt(sizeType, 0, false),
                          LLVMValueRef.CreateConstInt(sizeType, (ulong)(index * 2), false)]);
@@ -1255,6 +1265,8 @@ sealed class Compilation : TranslationComponent
 
                         void StoreRootEntry(int index, LLVMValueRef address, TypeReference? descriptor)
                         {
+                            if (!tracksGCFrames)
+                                return;
                             var entry = GetRootEntryAddress(index);
                             builder.BuildStore(ConvertValue(builder, address, exceptionPointerType), entry);
                             var descriptorAddress = builder.BuildGEP2(exceptionPointerType, entry,
@@ -1265,13 +1277,18 @@ sealed class Compilation : TranslationComponent
                             builder.BuildStore(ConvertValue(builder, descriptorValue, exceptionPointerType), descriptorAddress);
                         }
 
-                        for (int index = 0; index < fixedRoots.Count; index++)
-                            StoreRootEntry(index, fixedRoots[index].Address, fixedRoots[index].Descriptor);
-                        for (int index = fixedRoots.Count; index < rootEntryCount; index++)
-                            StoreRootEntry(index, LLVMValueRef.CreateConstNull(exceptionPointerType), null);
+                        if (tracksGCFrames)
+                        {
+                            for (int index = 0; index < fixedRoots.Count; index++)
+                                StoreRootEntry(index, fixedRoots[index].Address, fixedRoots[index].Descriptor);
+                            for (int index = fixedRoots.Count; index < rootEntryCount; index++)
+                                StoreRootEntry(index, LLVMValueRef.CreateConstNull(exceptionPointerType), null);
+                        }
 
                         void SynchronizeRoots(IEnumerable<(LLVMValueRef Value, TypeReference? Type)> roots)
                         {
+                            if (!tracksGCFrames)
+                                return;
                             var values = roots.ToArray();
                             for (int index = 0; index < stackRootCapacity; index++)
                             {
@@ -1307,6 +1324,8 @@ sealed class Compilation : TranslationComponent
 
                         void StoreTemporaryRoot(int index, LLVMValueRef value, TypeReference type)
                         {
+                            if (!tracksGCFrames)
+                                return;
                             var rootIndex = fixedRoots.Count + stackRootCapacity + index;
                             if (IsPointerRoot(type) || IsByReferenceValue(type) || IsManagedReferenceType(type))
                             {
@@ -1487,6 +1506,9 @@ sealed class Compilation : TranslationComponent
             var passOptions = LLVMPassBuilderOptionsRef.Create();
             try
             {
+                // Keep the existing conservative cleanup pass. Inlining is expressed
+                // through LLVM function attributes and can be performed by a later
+                // target/link-time optimizer without rewriting the GC protocol here.
                 module.RunPasses("globaldce", machine, passOptions);
             }
             finally

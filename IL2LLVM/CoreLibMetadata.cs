@@ -42,6 +42,8 @@ sealed class CoreLibMetadata
     public TypeDefinition FlagsAttribute => GetType("System.FlagsAttribute");
     public TypeDefinition RuntimeExportAttribute => GetType("System.Runtime.RuntimeExportAttribute");
     public TypeDefinition RuntimeNoGCFrameAttribute => GetType("System.Runtime.NoGCFrameAttribute");
+    public TypeDefinition MethodImplAttribute => GetType("System.Runtime.CompilerServices.MethodImplAttribute");
+    public TypeDefinition MethodImplOptions => GetType("System.Runtime.CompilerServices.MethodImplOptions");
     public TypeDefinition ExceptionRuntime => GetType("System.Runtime.ExceptionRuntime");
     public TypeDefinition MemoryRuntime => GetType("System.Runtime.MemoryRuntime");
     public TypeDefinition ExceptionFrame => GetType("System.Runtime.ExceptionFrame");
@@ -132,6 +134,29 @@ sealed class CoreLibMetadata
     public bool IsFlagsAttribute(TypeReference type) => IsType(type, FlagsAttribute);
     public bool IsRuntimeExportAttribute(TypeReference type) => IsType(type, RuntimeExportAttribute);
     public bool IsRuntimeNoGCFrameAttribute(TypeReference type) => IsType(type, RuntimeNoGCFrameAttribute);
+    public bool IsMethodImplAttribute(TypeReference type) => IsType(type, MethodImplAttribute);
+
+    public int GetMethodImplOptions(MethodDefinition method)
+    {
+        var options = (int)method.ImplAttributes;
+        var attribute = method.CustomAttributes.FirstOrDefault(attribute =>
+            IsMethodImplAttribute(attribute.AttributeType));
+        if (attribute?.ConstructorArguments.Count != 1)
+            return options;
+
+        return options | attribute.ConstructorArguments[0].Value switch
+        {
+            byte value => value,
+            sbyte value => value,
+            ushort value => value,
+            short value => value,
+            uint value => unchecked((int)value),
+            int value => value,
+            ulong value => unchecked((int)value),
+            long value => unchecked((int)value),
+            _ => 0
+        };
+    }
 
     public FieldDefinition? GetEnumUnderlyingValueField(TypeDefinition type) =>
         type.Fields.FirstOrDefault(field => !field.IsStatic && field.Name == EnumUnderlyingValueFieldName);

@@ -122,6 +122,7 @@ abstract class TranslationComponent(Translator translator)
     protected bool SameMethodDeclarationSignature(MethodReference left, MethodReference right) => Translator.Methods.SameMethodDeclarationSignature(left, right);
     protected bool SameMethodSignature(MethodReference left, MethodReference right) => Translator.Methods.SameMethodSignature(left, right);
     protected bool SameMethodInstantiation(MethodReference left, MethodReference right) => Translator.Methods.SameMethodInstantiation(left, right);
+    protected bool IsGCFrameFree(MethodReference method) => Translator.Methods.IsGCFrameFree(method);
     protected ArrayRuntimeMethodKind GetArrayRuntimeMethodKind(MethodReference method) => Translator.Methods.GetArrayRuntimeMethodKind(method);
     protected bool IsRuntimeDelegateConstructor(MethodReference method) => Translator.Methods.IsRuntimeDelegateConstructor(method);
     protected bool IsRuntimeDelegateInvoke(MethodReference method) => Translator.Methods.IsRuntimeDelegateInvoke(method);

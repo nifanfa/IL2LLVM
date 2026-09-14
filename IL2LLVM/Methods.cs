@@ -364,6 +364,109 @@ sealed class Methods(Translator translator) : TranslationComponent(translator)
         return moduleMethods.Values.FirstOrDefault(candidate => SameMethodInstantiation(candidate.Item3, method));
     }
 
+    bool IsGCReferenceBearingType(TypeReference type)
+    {
+        while (type is RequiredModifierType or OptionalModifierType or PinnedType)
+            type = type switch
+            {
+                RequiredModifierType required => required.ElementType,
+                OptionalModifierType optional => optional.ElementType,
+                PinnedType pinned => pinned.ElementType,
+                _ => type
+            };
+        if (type is PointerType)
+            return false;
+        if (type is ByReferenceType byReference)
+            return IsGCReferenceBearingType(byReference.ElementType);
+        return IsByReferenceValue(type) || IsManagedReferenceType(type) ||
+            IsValueType(type) && GetGCReferenceOffsets(type).Any();
+    }
+
+    internal new bool IsGCFrameFree(MethodReference method)
+    {
+        var definition = method.Resolve();
+        if (definition?.CustomAttributes.Any(attribute =>
+                coreLib.IsRuntimeNoGCFrameAttribute(attribute.AttributeType)) == true)
+            return true;
+        if (definition?.Body is not { } body || body.ExceptionHandlers.Count != 0)
+            return false;
+
+        bool HasManagedType(TypeReference type) => IsGCReferenceBearingType(type);
+        if (method.HasThis && HasManagedType(method.DeclaringType) ||
+            method.Parameters.Any(parameter => HasManagedType(parameter.ParameterType)) ||
+            HasManagedType(method.ReturnType) ||
+            body.Variables.Any(variable => HasManagedType(variable.VariableType)))
+            return false;
+
+        foreach (var instruction in body.Instructions)
+        {
+            if (instruction.OpCode.Code is Code.Ldstr or Code.Newobj or Code.Newarr or Code.Box or
+                Code.Ldvirtftn)
+                return false;
+            if (instruction.Operand is MethodReference target &&
+                (target.HasThis && HasManagedType(target.DeclaringType) ||
+                 target.Parameters.Any(parameter => HasManagedType(parameter.ParameterType)) ||
+                 HasManagedType(target.ReturnType)))
+                return false;
+            if (instruction.Operand is FieldReference field && HasManagedType(field.FieldType))
+                return false;
+            if (instruction.Operand is TypeReference referencedType && HasManagedType(referencedType))
+                return false;
+            if (instruction.Operand is VariableDefinition variable && HasManagedType(variable.VariableType))
+                return false;
+        }
+        return true;
+    }
+
+    void AddFunctionEnumAttribute(LLVMValueRef function, string name)
+    {
+        var utf8Name = System.Text.Encoding.UTF8.GetBytes(name);
+        unsafe
+        {
+            fixed (byte* namePointer = utf8Name)
+            {
+                var kind = LLVM.GetEnumAttributeKindForName((sbyte*)namePointer, (nuint)utf8Name.Length);
+                function.AddAttributeAtIndex(LLVMAttributeIndex.LLVMAttributeFunctionIndex,
+                    context.CreateEnumAttribute(kind, 0));
+            }
+        }
+    }
+
+    void ApplyInliningAttributes(LLVMValueRef function, MethodReference method, bool hasBody,
+        bool hasNativeImport, bool isDirectExport, bool isEntryPoint)
+    {
+        if (!hasBody || hasNativeImport || isDirectExport || isEntryPoint)
+            return;
+
+        const int noInlining = 8;
+        const int aggressiveInlining = 256;
+        var options = method.Resolve() is { } definition
+            ? (int?)coreLib.GetMethodImplOptions(definition)
+            : null;
+        if (options is { } value && (value & noInlining) != 0)
+        {
+            AddFunctionEnumAttribute(function, "noinline");
+            return;
+        }
+        if (options is { } aggressive && (aggressive & aggressiveInlining) != 0)
+        {
+            AddFunctionEnumAttribute(function, "alwaysinline");
+            return;
+        }
+
+        // Methods that can carry managed roots stay out-of-line. Inlining them
+        // would duplicate the bookkeeping that this compiler uses for GC.
+        if (!IsGCFrameFree(method))
+        {
+            AddFunctionEnumAttribute(function, "noinline");
+            return;
+        }
+
+        // Let LLVM inline ordinary managed helpers when its cost model says it is
+        // profitable. Explicit AggressiveInlining above bypasses that cost model.
+        AddFunctionEnumAttribute(function, "inlinehint");
+    }
+
     internal new int GetGenericMethodArity(MethodReference method)
     {
         return method is GenericInstanceMethod genericMethod
@@ -919,6 +1022,8 @@ sealed class Methods(Translator translator) : TranslationComponent(translator)
         }
         if (method.Resolve()?.HasBody == true)
             funcValue.Section = $".text${GetStableSymbolSuffix(friendlyName)}";
+        ApplyInliningAttributes(funcValue, method, method.Resolve()?.HasBody == true, pinvoke is not null,
+            directExport, isEntryPoint);
         moduleMethods.Add(friendlyName, new(funcValue, funcType, method, instructions));
         if (isRuntimeGenerated)
         {
