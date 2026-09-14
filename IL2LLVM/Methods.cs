@@ -1,4 +1,4 @@
-enum ArrayIntrinsicKind
+enum ArrayRuntimeMethodKind
 {
     None,
     Constructor,
@@ -9,10 +9,10 @@ enum ArrayIntrinsicKind
 
 sealed class Methods(Translator translator) : TranslationComponent(translator)
 {
-    internal new ArrayIntrinsicKind GetArrayIntrinsicKind(MethodReference method)
+    internal new ArrayRuntimeMethodKind GetArrayRuntimeMethodKind(MethodReference method)
     {
         if (method.DeclaringType is not ArrayType { Rank: > 1 } array || !method.HasThis)
-            return ArrayIntrinsicKind.None;
+            return ArrayRuntimeMethodKind.None;
 
         var rank = array.Rank;
         bool HasIndexParameters(int count) => method.Parameters.Count == count &&
@@ -21,37 +21,40 @@ sealed class Methods(Translator translator) : TranslationComponent(translator)
         return method.Name switch
         {
             ".ctor" when HasIndexParameters(rank) && IsVoidType(method.ReturnType) =>
-                ArrayIntrinsicKind.Constructor,
+                ArrayRuntimeMethodKind.Constructor,
             "Get" when HasIndexParameters(rank) && SameType(method.ReturnType, array.ElementType) =>
-                ArrayIntrinsicKind.Get,
+                ArrayRuntimeMethodKind.Get,
             "Set" when HasIndexParameters(rank + 1) && IsVoidType(method.ReturnType) &&
-                SameType(method.Parameters[rank].ParameterType, array.ElementType) => ArrayIntrinsicKind.Set,
+                SameType(method.Parameters[rank].ParameterType, array.ElementType) => ArrayRuntimeMethodKind.Set,
             "Address" when HasIndexParameters(rank) && method.ReturnType is ByReferenceType byReference &&
-                SameType(byReference.ElementType, array.ElementType) => ArrayIntrinsicKind.Address,
-            _ => ArrayIntrinsicKind.None
+                SameType(byReference.ElementType, array.ElementType) => ArrayRuntimeMethodKind.Address,
+            _ => ArrayRuntimeMethodKind.None
         };
     }
 
-    internal new bool IsDelegateConstructor(MethodReference method)
-    {
-        return IsDelegateType(method.DeclaringType) &&
-            FindMethodDefinition(method) is { IsConstructor: true, IsStatic: false };
-    }
-
-    internal new bool IsDelegateInvoke(MethodReference method)
+    internal new bool IsRuntimeDelegateConstructor(MethodReference method)
     {
         if (!IsDelegateType(method.DeclaringType))
             return false;
         var definition = FindMethodDefinition(method);
-        return definition is { Name: "Invoke", IsStatic: false, IsVirtual: true } &&
+        return definition is { IsConstructor: true, IsStatic: false, HasBody: false } &&
             (definition.ImplAttributes & MethodImplAttributes.Runtime) != 0;
     }
 
-    internal new MethodDefinition GetDelegateInvokeMethod(TypeReference type)
+    internal new bool IsRuntimeDelegateInvoke(MethodReference method)
+    {
+        if (!IsDelegateType(method.DeclaringType))
+            return false;
+        var definition = FindMethodDefinition(method);
+        return definition is { Name: "Invoke", IsStatic: false, IsVirtual: true, HasBody: false } &&
+            (definition.ImplAttributes & MethodImplAttributes.Runtime) != 0;
+    }
+
+    internal new MethodDefinition GetRuntimeDelegateInvokeMethod(TypeReference type)
     {
         var definition = type.Resolve() ??
             throw new NotSupportedException($"Delegate type is not defined: {type.FullName}");
-        var matches = definition.Methods.Where(IsDelegateInvoke).ToList();
+        var matches = definition.Methods.Where(IsRuntimeDelegateInvoke).ToList();
         return matches.Count == 1
             ? matches[0]
             : throw new NotSupportedException(
@@ -469,28 +472,16 @@ sealed class Methods(Translator translator) : TranslationComponent(translator)
         return targetMethod;
     }
 
-    internal new bool UsesValueReturnBuffer(MethodReference method)
-    {
-        if (UsesUnmanagedSignature(method))
-            return false;
-        var returnType = SubstituteGenericParameter(method.ReturnType, method);
-        return IsValueType(returnType) && !IsByReferenceValue(returnType);
-    }
-
-    internal new bool UsesUnmanagedSignature(MethodReference method)
-    {
-        var definition = method.Resolve();
-        return definition is not null && definition.CustomAttributes.Any(attribute =>
-            coreLib.IsRuntimeExportAttribute(attribute.AttributeType) ||
-            coreLib.IsUnmanagedCallersOnlyAttribute(attribute.AttributeType));
-    }
-
     internal new LLVMTypeRef CreateLLVMFunction(LLVMModuleRef module, MethodReference method)
     {
-        var usesUnmanagedSignature = UsesUnmanagedSignature(method);
+        if (GetArrayRuntimeMethodKind(method) == ArrayRuntimeMethodKind.Constructor)
+        {
+            var arrayConstructorParameters = method.Parameters.Select(parameter =>
+                GetCallType(SubstituteGenericParameter(parameter.ParameterType, method))).ToArray();
+            return LLVMTypeRef.CreateFunction(LLVMTypeRef.CreatePointer(int8Type, 0), arrayConstructorParameters);
+        }
+
         List<LLVMTypeRef> paramTypes = new List<LLVMTypeRef>();
-        if (UsesValueReturnBuffer(method))
-            paramTypes.Add(LLVMTypeRef.CreatePointer(int8Type, 0));
         if (method.HasThis)
         {
             // "this" will be a parameter
@@ -502,18 +493,211 @@ sealed class Methods(Translator translator) : TranslationComponent(translator)
         foreach (var p in parameters)
         {
             var parameterType = SubstituteGenericParameter(p.ParameterType, method);
-            paramTypes.Add(usesUnmanagedSignature
-                ? GetUnmanagedCallType(parameterType)
-                : GetLLVMTypeRef(parameterType));
+            paramTypes.Add(GetCallType(parameterType));
         }
-        LLVMTypeRef returnType = UsesValueReturnBuffer(method)
-            ? voidType
-            : usesUnmanagedSignature
-                ? GetUnmanagedCallType(SubstituteGenericParameter(method.ReturnType, method))
-                : GetLLVMTypeRef(SubstituteGenericParameter(method.ReturnType, method));
+        LLVMTypeRef returnType = GetCallType(SubstituteGenericParameter(method.ReturnType, method));
         var func = LLVMTypeRef.CreateFunction(returnType, paramTypes.ToArray(),
             method.CallingConvention == MethodCallingConvention.VarArg);
         return func;
+    }
+
+    internal new bool TryGetReturnedParameterAddress(MethodReference method, out int parameterIndex)
+    {
+        parameterIndex = -1;
+        var definition = method.Resolve();
+        if (definition?.HasBody != true || definition.Body.Instructions.Count == 0 ||
+            (method.ReturnType is not PointerType && method.ReturnType is not ByReferenceType))
+            return false;
+
+        var instructions = definition.Body.Instructions;
+        var entryStates = new Dictionary<int, (List<int?> Stack, Dictionary<int, int?> Locals)>();
+        var work = new Queue<int>();
+        entryStates[0] = ([], new Dictionary<int, int?>());
+        work.Enqueue(0);
+        int? returned = null;
+
+        void Merge(int index, List<int?> stack, Dictionary<int, int?> locals)
+        {
+            if (!entryStates.TryGetValue(index, out var existing))
+            {
+                entryStates[index] = (new(stack), new(locals));
+                work.Enqueue(index);
+                return;
+            }
+            if (existing.Stack.Count != stack.Count)
+                return;
+            bool changed = false;
+            for (int i = 0; i < stack.Count; i++)
+            {
+                var value = existing.Stack[i] == stack[i] ? existing.Stack[i] : null;
+                changed |= value != existing.Stack[i];
+                existing.Stack[i] = value;
+            }
+            foreach (var key in existing.Locals.Keys.Union(locals.Keys).ToArray())
+            {
+                existing.Locals.TryGetValue(key, out var oldValue);
+                locals.TryGetValue(key, out var newValue);
+                var value = oldValue == newValue ? oldValue : null;
+                changed |= !existing.Locals.TryGetValue(key, out var current) || current != value;
+                existing.Locals[key] = value;
+            }
+            if (changed)
+            {
+                entryStates[index] = existing;
+                work.Enqueue(index);
+            }
+        }
+
+        int ArgumentIndex(Instruction instruction)
+        {
+            return instruction.Operand is ParameterDefinition parameter
+                ? parameter.Index
+                : instruction.OpCode.Code switch
+                {
+                    Code.Ldarg_0 or Code.Ldarga => 0,
+                    Code.Ldarg_1 => 1,
+                    Code.Ldarg_2 => 2,
+                    Code.Ldarg_3 => 3,
+                    _ => Convert.ToInt32(instruction.Operand)
+                };
+        }
+
+        while (work.Count != 0)
+        {
+            int index = work.Dequeue();
+            var state = entryStates[index];
+            var stack = new List<int?>(state.Stack);
+            var locals = new Dictionary<int, int?>(state.Locals);
+            var instruction = instructions[index];
+            var code = instruction.OpCode.Code;
+            bool stop = false;
+
+            switch (code)
+            {
+                case Code.Ldarga:
+                case Code.Ldarga_S:
+                    stack.Add(ArgumentIndex(instruction));
+                    break;
+                case Code.Ldarg_0:
+                case Code.Ldarg_1:
+                case Code.Ldarg_2:
+                case Code.Ldarg_3:
+                case Code.Ldarg:
+                case Code.Ldarg_S:
+                    stack.Add(null);
+                    break;
+                case Code.Conv_I:
+                case Code.Conv_I1:
+                case Code.Conv_I2:
+                case Code.Conv_I4:
+                case Code.Conv_I8:
+                case Code.Conv_U:
+                case Code.Conv_U1:
+                case Code.Conv_U2:
+                case Code.Conv_U4:
+                case Code.Conv_U8:
+                    break;
+                case Code.Dup:
+                    if (stack.Count != 0)
+                        stack.Add(stack[^1]);
+                    break;
+                case Code.Pop:
+                    if (stack.Count != 0)
+                        stack.RemoveAt(stack.Count - 1);
+                    break;
+                case Code.Stloc_0:
+                case Code.Stloc_1:
+                case Code.Stloc_2:
+                case Code.Stloc_3:
+                case Code.Stloc:
+                case Code.Stloc_S:
+                    if (stack.Count != 0)
+                    {
+                        int localIndex = code switch
+                        {
+                            Code.Stloc_0 => 0,
+                            Code.Stloc_1 => 1,
+                            Code.Stloc_2 => 2,
+                            Code.Stloc_3 => 3,
+                            _ => ((VariableDefinition)instruction.Operand).Index
+                        };
+                        locals[localIndex] = stack[^1];
+                        stack.RemoveAt(stack.Count - 1);
+                    }
+                    break;
+                case Code.Ldloc_0:
+                case Code.Ldloc_1:
+                case Code.Ldloc_2:
+                case Code.Ldloc_3:
+                case Code.Ldloc:
+                case Code.Ldloc_S:
+                    int loadIndex = code switch
+                    {
+                        Code.Ldloc_0 => 0,
+                        Code.Ldloc_1 => 1,
+                        Code.Ldloc_2 => 2,
+                        Code.Ldloc_3 => 3,
+                        _ => ((VariableDefinition)instruction.Operand).Index
+                    };
+                    stack.Add(locals.TryGetValue(loadIndex, out var localValue) ? localValue : null);
+                    break;
+                case Code.Ret:
+                    if (stack.Count != 0 && stack[^1] is int addressParameter)
+                        returned = returned is null || returned == addressParameter ? addressParameter : -1;
+                    stop = true;
+                    break;
+                case Code.Br:
+                case Code.Br_S:
+                    Merge(instructions.IndexOf((Instruction)instruction.Operand), stack, locals);
+                    stop = true;
+                    break;
+                default:
+                    if (instruction.OpCode.FlowControl == FlowControl.Cond_Branch)
+                    {
+                        if (stack.Count != 0)
+                            stack.RemoveAt(stack.Count - 1);
+                        if (instruction.Operand is Instruction target)
+                            Merge(instructions.IndexOf(target), stack, locals);
+                    }
+                    else if (instruction.OpCode.FlowControl == FlowControl.Call)
+                    {
+                        var called = instruction.Operand as MethodReference;
+                        int popCount = (called?.Parameters.Count ?? 0) + (called?.HasThis == true ? 1 : 0);
+                        while (popCount-- > 0 && stack.Count != 0)
+                            stack.RemoveAt(stack.Count - 1);
+                        if (called is not null && !IsVoidType(called.ReturnType))
+                            stack.Add(null);
+                    }
+                    else
+                    {
+                        int popCount = instruction.OpCode.StackBehaviourPop switch
+                        {
+                            StackBehaviour.Pop0 => 0,
+                            StackBehaviour.Pop1 or StackBehaviour.Popi or StackBehaviour.Popref => 1,
+                            StackBehaviour.Pop1_pop1 or StackBehaviour.Popi_pop1 or StackBehaviour.Popi_popi or
+                            StackBehaviour.Popi_popi8 or StackBehaviour.Popi_popr4 or StackBehaviour.Popi_popr8 or
+                            StackBehaviour.Popref_pop1 or StackBehaviour.Popref_popi => 2,
+                            StackBehaviour.Popi_popi_popi or StackBehaviour.Popref_popi_popi or StackBehaviour.Popref_popi_popi8 or
+                            StackBehaviour.Popref_popi_popr4 or StackBehaviour.Popref_popi_popr8 => 3,
+                            StackBehaviour.PopAll => stack.Count,
+                            _ => 0
+                        };
+                        while (popCount-- > 0 && stack.Count != 0)
+                            stack.RemoveAt(stack.Count - 1);
+                        if (instruction.OpCode.StackBehaviourPush != StackBehaviour.Push0)
+                            stack.Add(null);
+                    }
+                    break;
+            }
+
+            if (!stop && index + 1 < instructions.Count)
+                Merge(index + 1, stack, locals);
+        }
+
+        if (returned is not int result || result < 0)
+            return false;
+        parameterIndex = result;
+        return true;
     }
 
     internal new string GetFriendlyMethodName(MethodReference method, TypeReference? methodDeclareType = null)
@@ -662,11 +846,9 @@ sealed class Methods(Translator translator) : TranslationComponent(translator)
             method.Resolve() is { } varargDefinition &&
             method.Parameters.Count != varargDefinition.Parameters.Count)
             method = BindMethodToDeclaringType(varargDefinition, method.DeclaringType, method);
-        if (GetArrayIntrinsicKind(method) != ArrayIntrinsicKind.None)
-            return;
+        var isRuntimeGenerated = GetArrayRuntimeMethodKind(method) != ArrayRuntimeMethodKind.None ||
+            IsRuntimeDelegateConstructor(method) || IsRuntimeDelegateInvoke(method);
         if (method.DeclaringType.Resolve()?.IsInterface == true && method.Resolve()?.HasBody != true)
-            return;
-        if (IsDelegateConstructor(method) || IsDelegateInvoke(method))
             return;
 
         TypeReference declareType = method.DeclaringType;
@@ -718,6 +900,7 @@ sealed class Methods(Translator translator) : TranslationComponent(translator)
         {
             throw new InvalidOperationException($"Native symbol '{exportedName}' has incompatible signatures.");
         }
+        funcValue.FunctionCallConv = (uint)LLVMCallConv.LLVMCCallConv;
         var hasDiscardableBody = method.Resolve()?.HasBody == true && !directExport && !isEntryPoint;
         if (hasDiscardableBody)
         {
@@ -729,8 +912,194 @@ sealed class Methods(Translator translator) : TranslationComponent(translator)
         if (method.Resolve()?.HasBody == true)
             funcValue.Section = $".text${GetStableSymbolSuffix(friendlyName)}";
         moduleMethods.Add(friendlyName, new(funcValue, funcType, method, instructions));
+        if (isRuntimeGenerated)
+        {
+            runtimeGeneratedMethods.Add((funcValue, funcType, method));
+            return;
+        }
         if (instructions?.Count > 0 && queuedMethodTranslations.Add(friendlyName))
             pendingMethodTranslations.Enqueue(friendlyName);
+    }
+
+    internal new void GenerateRuntimeMethodBodies()
+    {
+        foreach (var (function, functionType, method) in runtimeGeneratedMethods)
+        {
+            var arrayKind = GetArrayRuntimeMethodKind(method);
+            if (arrayKind != ArrayRuntimeMethodKind.None)
+                GenerateArrayRuntimeMethod(function, method, arrayKind);
+            else if (IsRuntimeDelegateConstructor(method))
+                GenerateDelegateConstructor(function);
+            else if (IsRuntimeDelegateInvoke(method))
+                GenerateDelegateInvoke(function, method);
+            else
+                throw new InvalidOperationException($"Unknown runtime-generated method: {method.FullName}");
+        }
+    }
+
+    private void GenerateDelegateConstructor(LLVMValueRef function)
+    {
+        var builder = context.CreateBuilder();
+        builder.PositionAtEnd(function.AppendBasicBlock("entry"));
+        var instance = function.GetParam(0);
+        StoreField(builder, instance, coreLib.DelegateTargetField, function.GetParam(1));
+        StoreField(builder, instance, coreLib.DelegateFunctionField, function.GetParam(2));
+        builder.BuildRetVoid();
+        builder.Dispose();
+    }
+
+    private void GenerateDelegateInvoke(LLVMValueRef function, MethodReference method)
+    {
+        var builder = context.CreateBuilder();
+        var entry = function.AppendBasicBlock("entry");
+        var dispatch = function.AppendBasicBlock("dispatch");
+        var call = function.AppendBasicBlock("call");
+        var continuation = function.AppendBasicBlock("continuation");
+        builder.PositionAtEnd(entry);
+
+        var returnType = SubstituteGenericParameter(method.ReturnType, method);
+        var currentSlot = builder.BuildAlloca(LLVMTypeRef.CreatePointer(int8Type, 0));
+        builder.BuildStore(function.GetParam(0), currentSlot);
+        LLVMValueRef resultSlot = default;
+        if (!IsVoidType(returnType))
+            resultSlot = builder.BuildAlloca(GetCallType(returnType));
+        builder.BuildBr(dispatch);
+
+        builder.PositionAtEnd(dispatch);
+        var current = builder.BuildLoad2(LLVMTypeRef.CreatePointer(int8Type, 0), currentSlot);
+        builder.BuildCondBr(builder.BuildICmp(LLVMIntPredicate.LLVMIntEQ, current,
+            LLVMValueRef.CreateConstNull(current.TypeOf)), continuation, call);
+
+        builder.PositionAtEnd(call);
+        var target = builder.BuildLoad2(LLVMTypeRef.CreatePointer(int8Type, 0),
+            GetFieldAddress(builder, current, coreLib.DelegateTargetField));
+        var targetParameters = method.Parameters.Select(parameter =>
+            GetCallType(SubstituteGenericParameter(parameter.ParameterType, method))).ToArray();
+        var targetFunctionType = LLVMTypeRef.CreateFunction(GetCallType(returnType),
+            [LLVMTypeRef.CreatePointer(int8Type, 0), .. targetParameters]);
+        var callArguments = new List<LLVMValueRef>();
+        callArguments.Add(target);
+        for (var index = 0; index < method.Parameters.Count; index++)
+            callArguments.Add(function.GetParam(1u + (uint)index));
+        var functionPointer = builder.BuildLoad2(LLVMTypeRef.CreatePointer(int8Type, 0),
+            GetFieldAddress(builder, current, coreLib.DelegateFunctionField));
+        var result = builder.BuildCall2(targetFunctionType, functionPointer, callArguments.ToArray());
+        if (!IsVoidType(returnType))
+            builder.BuildStore(result, resultSlot);
+        var next = builder.BuildLoad2(LLVMTypeRef.CreatePointer(int8Type, 0),
+            GetFieldAddress(builder, current, coreLib.DelegateNextField));
+        builder.BuildStore(next, currentSlot);
+        builder.BuildBr(dispatch);
+
+        builder.PositionAtEnd(continuation);
+        if (IsVoidType(returnType))
+            builder.BuildRetVoid();
+        else
+            builder.BuildRet(builder.BuildLoad2(GetCallType(returnType), resultSlot));
+        builder.Dispose();
+    }
+
+    private void GenerateArrayRuntimeMethod(LLVMValueRef function, MethodReference method,
+        ArrayRuntimeMethodKind kind)
+    {
+        var arrayType = (ArrayType)method.DeclaringType;
+        var elementType = arrayType.ElementType;
+        var builder = context.CreateBuilder();
+        builder.PositionAtEnd(function.AppendBasicBlock("entry"));
+        var pointerType = LLVMTypeRef.CreatePointer(int8Type, 0);
+        var exceptionThrow = GetRegisteredMethod(coreLib.ExceptionThrowMethod) ??
+            throw new NotSupportedException($"Method is not defined: {coreLib.ExceptionThrowMethod.FullName}");
+
+        void EmitException(LLVMValueRef condition, TypeReference exceptionType)
+        {
+            var fail = function.AppendBasicBlock($"fail.{nextVirtualDispatchId++}");
+            var next = function.AppendBasicBlock($"next.{nextVirtualDispatchId++}");
+            builder.BuildCondBr(condition, fail, next);
+            builder.PositionAtEnd(fail);
+            var exception = BuildAllocation(builder, GetObjectSize(exceptionType));
+            InitializeRuntimeType(builder, exception, exceptionType);
+            builder.BuildCall2(exceptionThrow.Item2, exceptionThrow.Item1, [exception]);
+            builder.BuildUnreachable();
+            builder.PositionAtEnd(next);
+        }
+
+        if (kind == ArrayRuntimeMethodKind.Constructor)
+        {
+            var dimensions = Enumerable.Range(0, arrayType.Rank)
+                .Select(index => function.GetParam((uint)index)).ToArray();
+            var total = LLVMValueRef.CreateConstInt(sizeType, 1, false);
+            var maximum = LLVMValueRef.CreateConstInt(sizeType,
+                pointerSize == 4 ? uint.MaxValue : ulong.MaxValue, false);
+            foreach (var dimension in dimensions)
+            {
+                var nativeDimension = ConvertValue(builder, dimension, sizeType);
+                EmitException(builder.BuildICmp(LLVMIntPredicate.LLVMIntSLT, nativeDimension,
+                    LLVMValueRef.CreateConstInt(sizeType, 0, false)), coreLib.OverflowException);
+                var isNonZero = builder.BuildICmp(LLVMIntPredicate.LLVMIntNE, nativeDimension,
+                    LLVMValueRef.CreateConstInt(sizeType, 0, false));
+                var exceeds = builder.BuildICmp(LLVMIntPredicate.LLVMIntUGT, total,
+                    builder.BuildUDiv(maximum, builder.BuildSelect(isNonZero, nativeDimension,
+                        LLVMValueRef.CreateConstInt(sizeType, 1, false))));
+                EmitException(builder.BuildAnd(isNonZero, exceeds), coreLib.OverflowException);
+                total = builder.BuildMul(total, nativeDimension);
+            }
+
+            EmitException(builder.BuildICmp(LLVMIntPredicate.LLVMIntEQ, total, maximum),
+                coreLib.OverflowException);
+            var allocationCount = builder.BuildAdd(total, LLVMValueRef.CreateConstInt(sizeType, 1, false));
+            var elementSize = LLVMValueRef.CreateConstInt(sizeType, (ulong)GetTypeSize(elementType), false);
+            var hasElements = builder.BuildICmp(LLVMIntPredicate.LLVMIntNE, allocationCount,
+                LLVMValueRef.CreateConstInt(sizeType, 0, false));
+            var dataOverflow = builder.BuildICmp(LLVMIntPredicate.LLVMIntUGT, allocationCount,
+                builder.BuildUDiv(maximum, builder.BuildSelect(hasElements, elementSize,
+                    LLVMValueRef.CreateConstInt(sizeType, 1, false))));
+            EmitException(builder.BuildAnd(hasElements, dataOverflow), coreLib.OverflowException);
+            var dataSize = builder.BuildMul(allocationCount, elementSize);
+            var baseSize = LLVMValueRef.CreateConstInt(sizeType,
+                (ulong)GetTypeDefinitionSize(coreLib.Array), false);
+            EmitException(builder.BuildICmp(LLVMIntPredicate.LLVMIntUGT, baseSize,
+                builder.BuildSub(maximum, dataSize)), coreLib.OverflowException);
+            var array = BuildAllocationSize(builder, builder.BuildAdd(baseSize, dataSize));
+            StoreField(builder, array, GetArrayLengthField(), total);
+            InitializeRuntimeType(builder, array, arrayType);
+            StoreField(builder, array, GetArrayLengthsField(), BuildArrayLengthTable(builder, dimensions));
+            builder.BuildRet(array);
+            builder.Dispose();
+            return;
+        }
+
+        var arrayValue = function.GetParam(0);
+        EmitException(builder.BuildICmp(LLVMIntPredicate.LLVMIntEQ, arrayValue,
+            LLVMValueRef.CreateConstNull(pointerType)), coreLib.NullReferenceException);
+        var indices = Enumerable.Range(0, arrayType.Rank)
+            .Select(index => function.GetParam(1u + (uint)index)).ToArray();
+        var lengths = builder.BuildLoad2(GetLLVMTypeRef(GetArrayLengthsField().FieldType),
+            GetFieldAddress(builder, arrayValue, GetArrayLengthsField()));
+        for (var index = 0; index < indices.Length; index++)
+        {
+            var nativeIndex = ConvertValue(builder, indices[index], sizeType);
+            var length = ConvertValue(builder, builder.BuildLoad2(int32Type,
+                GetArrayElementAddress(builder, lengths,
+                    LLVMValueRef.CreateConstInt(sizeType, (ulong)index, false), int32Type)), sizeType, false);
+            EmitException(builder.BuildICmp(LLVMIntPredicate.LLVMIntUGE, nativeIndex, length),
+                coreLib.IndexOutOfRangeException);
+        }
+        var address = GetMultiArrayElementAddress(builder, arrayValue, indices,
+            GetLLVMTypeRef(elementType), GetTypeSize(elementType));
+        if (kind == ArrayRuntimeMethodKind.Set)
+        {
+            var value = function.GetParam(1u + (uint)arrayType.Rank);
+            if (IsValueType(elementType))
+                CopyValue(builder, address, value, GetTypeSize(elementType));
+            else
+                builder.BuildStore(ConvertValue(builder, value, GetLLVMTypeRef(elementType)), address);
+            builder.BuildRetVoid();
+        }
+        else if (kind == ArrayRuntimeMethodKind.Get)
+            builder.BuildRet(builder.BuildLoad2(GetCallType(elementType), address));
+        else
+            builder.BuildRet(ConvertValue(builder, address, GetLLVMTypeRef(method.ReturnType)));
+        builder.Dispose();
     }
 
     private string GetPInvokeNativeSymbolName(MethodReference method, string friendlyName, PInvokeInfo pinvoke)

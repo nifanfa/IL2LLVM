@@ -32,15 +32,14 @@ sealed class CoreLibMetadata
     public TypeDefinition Void => GetType("System.Void");
     public TypeDefinition RuntimeTypeHandle => GetType("System.RuntimeTypeHandle");
     public TypeDefinition RuntimeArgumentHandle => GetType("System.RuntimeArgumentHandle");
-    public TypeDefinition ArgIterator => GetType("System.ArgIterator");
     public TypeDefinition TypedReference => GetType("System.TypedReference");
     public TypeDefinition RuntimeFieldHandle => GetType("System.RuntimeFieldHandle");
     public TypeDefinition GCDesc => GetType("System.GCDesc");
     public TypeDefinition FlagsAttribute => GetType("System.FlagsAttribute");
     public TypeDefinition RuntimeExportAttribute => GetType("System.Runtime.RuntimeExportAttribute");
     public TypeDefinition RuntimeNoGCFrameAttribute => GetType("System.Runtime.NoGCFrameAttribute");
-    public TypeDefinition UnmanagedCallersOnlyAttribute => GetType("System.Runtime.InteropServices.UnmanagedCallersOnlyAttribute");
     public TypeDefinition ExceptionRuntime => GetType("System.Runtime.ExceptionRuntime");
+    public TypeDefinition MemoryRuntime => GetType("System.Runtime.MemoryRuntime");
     public TypeDefinition ExceptionFrame => GetType("System.Runtime.ExceptionFrame");
     public TypeDefinition JumpBuffer => GetType("System.Runtime.JumpBuffer");
     public TypeDefinition StackPointer => GetType("System.Runtime.StackPointer");
@@ -64,6 +63,7 @@ sealed class CoreLibMetadata
     public FieldDefinition TypeEnumValuesField => GetInstanceField(Type, "EnumValues");
     public FieldDefinition TypeIsFlagsEnumField => GetInstanceField(Type, "IsFlagsEnum");
     public FieldDefinition TypeIsSignedEnumField => GetInstanceField(Type, "IsSignedEnum");
+    public FieldDefinition TypeFactoryField => GetInstanceField(Type, "Factory");
     public FieldDefinition EnumValueField => GetInstanceField(Enum, "m_value");
     public FieldDefinition ArrayLengthField => GetInstanceField(Array, "Length");
     public FieldDefinition ArrayLengthsField => GetInstanceField(Array, "_lengths");
@@ -82,22 +82,11 @@ sealed class CoreLibMetadata
     public FieldDefinition GCStaticRootDescriptorField => GetInstanceField(GCStaticRoot, "Descriptor");
     public FieldDefinition RuntimeFieldDataField => GetInstanceField(RuntimeFieldHandle, "Data");
     public FieldDefinition RuntimeFieldLengthField => GetInstanceField(RuntimeFieldHandle, "Length");
-    public FieldDefinition RuntimeArgumentHandleValueField => GetInstanceField(RuntimeArgumentHandle, "Value");
-    public FieldDefinition ArgIteratorHandleField => GetInstanceField(ArgIterator, "_handle");
     public FieldDefinition TypedReferenceValueField => GetInstanceField(TypedReference, "Value");
     public FieldDefinition TypedReferenceTypeField => GetInstanceField(TypedReference, "Type");
-    public FieldDefinition TypedReferenceKindField => GetInstanceField(TypedReference, "Kind");
-    public MethodDefinition ArgIteratorGetNextArgMethod => GetRequiredMethod(ArgIterator, "GetNextArg", true,
-        TypedReference);
-    public MethodDefinition ArgIteratorConstructor => GetRequiredConstructor(ArgIterator, RuntimeArgumentHandle);
     public FieldDefinition RuntimeTypeHandleTypeField => GetInstanceField(RuntimeTypeHandle, "Type");
 
-    public MethodDefinition ActivatorCreateInstanceMethod => Activator.Methods.Single(method =>
-        method.Name == "CreateInstance" && method.IsStatic && method.GenericParameters.Count == 1 &&
-        method.Parameters.Count == 0);
     public MethodDefinition StringCharArrayConstructor => GetRequiredConstructor(String, new ArrayType(Char));
-    public MethodDefinition TypeGetTypeFromHandleMethod => GetRequiredMethod(Type, "GetTypeFromHandle", false,
-        Type, RuntimeTypeHandle);
     public MethodDefinition ExceptionPushMethod => GetRequiredMethod(ExceptionRuntime, "Push", false, Void,
         new PointerType(ExceptionFrame), new PointerType(JumpBuffer));
     public MethodDefinition ExceptionPopMethod => GetRequiredMethod(ExceptionRuntime, "Pop", false, Void,
@@ -115,6 +104,10 @@ sealed class CoreLibMetadata
     public MethodDefinition ExceptionAbortMethod => GetRequiredMethod(ExceptionRuntime, "Abort", false, Void);
     public MethodDefinition ExceptionThrowMethod => GetRequiredMethod(ExceptionRuntime, "Throw", false, Void,
         Exception);
+    public MethodDefinition MemoryCopyMethod => GetRequiredMethod(MemoryRuntime, "Copy", false, Void,
+        new PointerType(GetType("System.Byte")), new PointerType(GetType("System.Byte")), UIntPtr);
+    public MethodDefinition MemoryFillMethod => GetRequiredMethod(MemoryRuntime, "Fill", false, Void,
+        new PointerType(GetType("System.Byte")), GetType("System.Byte"), UIntPtr);
     public MethodDefinition GCAllocateMethod => GetRequiredMethod(GCHeap, "Allocate", false,
         new PointerType(Object), UIntPtr);
     public MethodDefinition GCPushMethod => GetRequiredMethod(GCHeap, "Push", false, Void,
@@ -131,7 +124,6 @@ sealed class CoreLibMetadata
     public bool IsFlagsAttribute(TypeReference type) => IsType(type, FlagsAttribute);
     public bool IsRuntimeExportAttribute(TypeReference type) => IsType(type, RuntimeExportAttribute);
     public bool IsRuntimeNoGCFrameAttribute(TypeReference type) => IsType(type, RuntimeNoGCFrameAttribute);
-    public bool IsUnmanagedCallersOnlyAttribute(TypeReference type) => IsType(type, UnmanagedCallersOnlyAttribute);
 
     public FieldDefinition GetNullableHasValueField(TypeReference type) => GetInstanceField(Resolve(type), "_hasValue");
     public FieldDefinition GetNullableValueField(TypeReference type) => GetInstanceField(Resolve(type), "_value");

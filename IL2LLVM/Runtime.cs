@@ -17,7 +17,8 @@ sealed class Runtime(Translator translator) : TranslationComponent(translator)
         definition = null!;
         constructor = null!;
         if (!targetMethod.HasThis || targetMethod.Parameters.Count != 0 ||
-            targetMethod.DeclaringType.Resolve()?.IsInterface != true)
+            targetMethod.DeclaringType.Resolve()?.IsInterface != true ||
+            targetMethod.Resolve() is not { HasBody: false, IsAbstract: true })
             return false;
         var returnType = SubstituteGenericParameter(targetMethod.ReturnType, targetMethod);
         if (returnType.Resolve()?.IsInterface != true)
@@ -42,6 +43,36 @@ sealed class Runtime(Translator translator) : TranslationComponent(translator)
             return true;
         }
         return false;
+    }
+
+    internal new (LLVMValueRef Function, LLVMTypeRef FunctionType) GetArrayEnumeratorAdapter(
+        TypeReference elementType, TypeDefinition definition, MethodDefinition constructor)
+    {
+        var key = GetRuntimeTypeKey(elementType);
+        if (arrayEnumeratorAdapters.TryGetValue(key, out var existing))
+            return existing;
+
+        var pointerType = LLVMTypeRef.CreatePointer(int8Type, 0);
+        var functionType = LLVMTypeRef.CreateFunction(pointerType, [pointerType]);
+        var function = module.AddFunction($"__array_enumerator_{GetStableSymbolSuffix(key)}", functionType);
+        function.FunctionCallConv = (uint)LLVMCallConv.LLVMCCallConv;
+        function.Linkage = LLVMLinkage.LLVMInternalLinkage;
+        arrayEnumeratorAdapters.Add(key, (function, functionType));
+
+        var enumeratorType = new GenericInstanceType(definition);
+        enumeratorType.GenericArguments.Add(elementType);
+        var boundConstructor = BindMethodToDeclaringType(constructor, enumeratorType);
+        var registeredConstructor = GetRegisteredMethod(boundConstructor) ?? GetRegisteredMethod(constructor) ??
+            throw new NotSupportedException($"Method is not defined in the input module: {constructor.FullName}");
+        var builder = context.CreateBuilder();
+        builder.PositionAtEnd(function.AppendBasicBlock("entry"));
+        var enumerator = BuildAllocation(builder, GetObjectSize(enumeratorType));
+        InitializeRuntimeType(builder, enumerator, enumeratorType);
+        builder.BuildCall2(registeredConstructor.Item2, registeredConstructor.Item1,
+            [enumerator, function.GetParam(0)]);
+        builder.BuildRet(enumerator);
+        builder.Dispose();
+        return (function, functionType);
     }
 
     internal new LLVMValueRef GetArrayElementAddress(LLVMBuilderRef builder, LLVMValueRef array, LLVMValueRef index,
@@ -103,6 +134,7 @@ sealed class Runtime(Translator translator) : TranslationComponent(translator)
         return builder.BuildCall2(gcAllocateType, gcAllocateFunction,
             [ConvertValue(builder, size, sizeType, false)]);
     }
+
 
     internal new LLVMValueRef BuildBoxedValue(LLVMBuilderRef builder, LLVMValueRef value, TypeReference valueType)
     {
@@ -220,11 +252,32 @@ sealed class Runtime(Translator translator) : TranslationComponent(translator)
             builder.BuildStore(source, destinationPointer);
         if (source.TypeOf.Kind != LLVMTypeKind.LLVMPointerTypeKind)
             builder.BuildStore(source, sourcePointer);
-        unsafe
-        {
-            LLVM.BuildMemCpy(builder, destinationPointer, 1, sourcePointer, 1,
-                LLVMValueRef.CreateConstInt(sizeType, (ulong)Math.Max(1, size), false));
-        }
+        CopyMemory(builder, destinationPointer, sourcePointer,
+            LLVMValueRef.CreateConstInt(sizeType, (ulong)Math.Max(1, size), false));
+    }
+
+    internal new void CopyMemory(LLVMBuilderRef builder, LLVMValueRef destination, LLVMValueRef source,
+        LLVMValueRef length)
+    {
+        var pointerType = LLVMTypeRef.CreatePointer(int8Type, 0);
+        builder.BuildCall2(memoryCopyType, memoryCopyFunction,
+        [
+            ConvertValue(builder, destination, pointerType),
+            ConvertValue(builder, source, pointerType),
+            ConvertValue(builder, length, sizeType, false)
+        ]);
+    }
+
+    internal new void FillMemory(LLVMBuilderRef builder, LLVMValueRef destination, LLVMValueRef value,
+        LLVMValueRef length)
+    {
+        var pointerType = LLVMTypeRef.CreatePointer(int8Type, 0);
+        builder.BuildCall2(memoryFillType, memoryFillFunction,
+        [
+            ConvertValue(builder, destination, pointerType),
+            ConvertValue(builder, value, int8Type, false),
+            ConvertValue(builder, length, sizeType, false)
+        ]);
     }
 
     internal new void StoreField(LLVMBuilderRef builder, LLVMValueRef obj, FieldDefinition field, LLVMValueRef value)
@@ -363,12 +416,96 @@ sealed class Runtime(Translator translator) : TranslationComponent(translator)
                 value = LLVMValueRef.CreateConstInt(GetLLVMTypeRef(field.FieldType), isFlags ? 1ul : 0ul, false);
             else if (ReferenceEquals(field, coreLib.TypeIsSignedEnumField))
                 value = LLVMValueRef.CreateConstInt(GetLLVMTypeRef(field.FieldType), isSigned ? 1ul : 0ul, false);
+            else if (ReferenceEquals(field, coreLib.TypeFactoryField))
+            {
+                var factory = GetRuntimeTypeFactory(type);
+                value = factory == default
+                    ? LLVMValueRef.CreateConstNull(pointerType)
+                    : LLVMValueRef.CreateConstPointerCast(factory, pointerType);
+            }
             else
                 value = LLVMValueRef.CreateConstNull(GetLLVMTypeRef(field.FieldType));
             values.Add(value);
         }
         typeObject.Initializer = LLVMValueRef.CreateConstNamedStruct(storageType, values.ToArray());
         return typeObject;
+    }
+
+    private LLVMValueRef GetRuntimeTypeFactory(TypeReference type)
+    {
+        var key = GetRuntimeTypeKey(type);
+        if (runtimeTypeFactories.TryGetValue(key, out var existing))
+            return existing;
+
+        if (type is ArrayType)
+        {
+            runtimeTypeFactories.Add(key, default);
+            return default;
+        }
+
+        var definition = type.Resolve();
+        var isScalar = !IsValueType(type) && !IsManagedReferenceType(type);
+        var constructorDefinition = definition?.Methods.FirstOrDefault(candidate =>
+            candidate.IsConstructor && !candidate.IsStatic && candidate.Parameters.Count == 0 && candidate.IsPublic);
+        if (!isScalar && !IsValueType(type) &&
+            (definition is null || definition.IsInterface || definition.IsAbstract || constructorDefinition is null))
+        {
+            runtimeTypeFactories.Add(key, default);
+            return default;
+        }
+
+        Tuple<LLVMValueRef, LLVMTypeRef, MethodReference, Collection<Instruction>?>? registeredClassConstructor = null;
+        if (!isScalar && !IsValueType(type))
+        {
+            var constructor = BindMethodToDeclaringType(constructorDefinition!, type);
+            registeredClassConstructor = GetRegisteredMethod(constructor);
+            if (registeredClassConstructor is null)
+            {
+                runtimeTypeFactories.Add(key, default);
+                return default;
+            }
+        }
+
+        var returnType = GetCallType(type);
+        var factoryType = LLVMTypeRef.CreateFunction(returnType, []);
+        var factory = module.AddFunction($"__type_factory_{GetStableSymbolSuffix(key)}", factoryType);
+        factory.FunctionCallConv = (uint)LLVMCallConv.LLVMCCallConv;
+        runtimeTypeFactories.Add(key, factory);
+        var builder = context.CreateBuilder();
+        builder.PositionAtEnd(factory.AppendBasicBlock("entry"));
+
+        if (isScalar)
+        {
+            builder.BuildRet(LLVMValueRef.CreateConstNull(returnType));
+            builder.Dispose();
+            return factory;
+        }
+
+        if (IsValueType(type))
+        {
+            var storageType = LLVMTypeRef.CreateArray(int8Type, (uint)Math.Max(1, GetTypeSize(type)));
+            var storage = builder.BuildAlloca(storageType);
+            FillMemory(builder, storage, LLVMValueRef.CreateConstNull(int8Type),
+                LLVMValueRef.CreateConstInt(sizeType, (ulong)Math.Max(1, GetTypeSize(type)), false));
+            if (constructorDefinition is not null)
+            {
+                var constructor = BindMethodToDeclaringType(constructorDefinition, type);
+                if (GetRegisteredMethod(constructor) is { } registered)
+                    builder.BuildCall2(registered.Item2, registered.Item1,
+                        [builder.BuildBitCast(storage, LLVMTypeRef.CreatePointer(int8Type, 0))]);
+            }
+            builder.BuildRet(builder.BuildLoad2(returnType,
+                builder.BuildBitCast(storage, LLVMTypeRef.CreatePointer(returnType, 0))));
+            builder.Dispose();
+            return factory;
+        }
+
+        var instance = BuildAllocation(builder, GetObjectSize(type));
+        InitializeRuntimeType(builder, instance, type);
+        builder.BuildCall2(registeredClassConstructor!.Item2, registeredClassConstructor.Item1, [instance]);
+        builder.BuildRet(instance);
+        builder.Dispose();
+        return factory;
     }
 
     internal new ulong GetEnumConstantValue(object? value, TypeReference? underlyingType)
@@ -547,6 +684,7 @@ sealed class Runtime(Translator translator) : TranslationComponent(translator)
         state.Initializer = LLVMValueRef.CreateConstNull(int8Type);
         var guardType = LLVMTypeRef.CreateFunction(voidType, []);
         var guard = module.AddFunction($"__cctor_guard_{suffix}", guardType);
+        guard.FunctionCallConv = (uint)LLVMCallConv.LLVMCCallConv;
         guard.Linkage = LLVMLinkage.LLVMExternalLinkage;
         cctorGuards.Add(key, (guard, state));
 

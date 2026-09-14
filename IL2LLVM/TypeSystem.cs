@@ -94,22 +94,22 @@ sealed class TypeSystem(Translator translator) : TranslationComponent(translator
         return result;
     }
 
-    internal new LLVMTypeRef GetUnmanagedCallType(TypeReference type)
+    internal new LLVMTypeRef GetCallType(TypeReference type)
     {
         if (type is RequiredModifierType requiredModifier)
-            return GetUnmanagedCallType(requiredModifier.ElementType);
+            return GetCallType(requiredModifier.ElementType);
         if (type is OptionalModifierType optionalModifier)
-            return GetUnmanagedCallType(optionalModifier.ElementType);
+            return GetCallType(optionalModifier.ElementType);
         if (type is PinnedType pinned)
-            return GetUnmanagedCallType(pinned.ElementType);
+            return GetCallType(pinned.ElementType);
         var enumUnderlyingType = GetEnumUnderlyingType(type);
         if (enumUnderlyingType is not null)
-            return GetUnmanagedCallType(enumUnderlyingType);
+            return GetCallType(enumUnderlyingType);
         if (!IsValueType(type) || IsByReferenceValue(type))
             return GetLLVMTypeRef(type);
 
         var definition = type.Resolve() ?? throw new NotSupportedException(
-            $"Unmanaged value type is not defined in the input module: {type.FullName}");
+            $"Value type is not defined in the input module: {type.FullName}");
         var fields = definition.Fields.Where(field => !field.IsStatic)
             .Select(field =>
             {
@@ -131,7 +131,7 @@ sealed class TypeSystem(Translator translator) : TranslationComponent(translator
             }
             if (field.Offset > offset)
                 elements.Add(LLVMTypeRef.CreateArray(int8Type, (uint)(field.Offset - offset)));
-            elements.Add(GetUnmanagedCallType(field.Type));
+            elements.Add(GetCallType(field.Type));
             offset = field.Offset + GetTypeSize(field.Type);
         }
         var size = Math.Max(1, GetTypeSize(type));
@@ -592,6 +592,11 @@ sealed class TypeSystem(Translator translator) : TranslationComponent(translator
 
     internal new bool IsValueType(TypeReference type)
     {
+        // Cecil represents the CLI typedref signature as MetadataType.TypedByReference,
+        // while the defining CoreLib type can also be observed as a normal value type.
+        // Do not let those two representations share a conflicting FullName cache entry.
+        if (type.MetadataType == MetadataType.TypedByReference)
+            return true;
         var key = type.FullName;
         if (valueTypeCache.TryGetValue(key, out var cached))
             return cached;
@@ -622,6 +627,11 @@ sealed class TypeSystem(Translator translator) : TranslationComponent(translator
 
     internal new bool IsByReferenceValue(TypeReference type)
     {
+        // CLI typedref is a two-field value carried in normal value storage. It
+        // must not inherit the byref-like classification of a resolved runtime
+        // implementation with a different internal representation.
+        if (type.MetadataType == MetadataType.TypedByReference)
+            return false;
         var key = type.FullName;
         if (byReferenceValueCache.TryGetValue(key, out var cached))
             return cached;

@@ -37,6 +37,7 @@ sealed class Translator
     internal Dictionary<string, TypeReference> runtimeTypes = new(StringComparer.Ordinal);
     internal Dictionary<string, TypeReference> runtimeBaseTypes = new(StringComparer.Ordinal);
     internal Dictionary<string, LLVMValueRef> runtimeTypeObjects = new(StringComparer.Ordinal);
+    internal Dictionary<string, LLVMValueRef> runtimeTypeFactories = new(StringComparer.Ordinal);
     internal Dictionary<string, LLVMValueRef> staticStrings = new(StringComparer.Ordinal);
     internal Dictionary<string, LLVMValueRef> staticStringArrays = new(StringComparer.Ordinal);
     internal Dictionary<string, LLVMValueRef> staticUInt64Arrays = new(StringComparer.Ordinal);
@@ -45,6 +46,8 @@ sealed class Translator
     internal Dictionary<string, LLVMValueRef> runtimeFieldData = new(StringComparer.Ordinal);
     internal Dictionary<string, LLVMValueRef> missingVirtualFunctionPointers = new(StringComparer.Ordinal);
     internal Dictionary<string, LLVMValueRef> delegateThunks = new(StringComparer.Ordinal);
+    internal Dictionary<string, (LLVMValueRef Function, LLVMTypeRef FunctionType)> arrayEnumeratorAdapters = new(StringComparer.Ordinal);
+    internal List<(LLVMValueRef Function, LLVMTypeRef FunctionType, MethodReference Method)> runtimeGeneratedMethods = [];
     internal Queue<string> pendingMethodTranslations = new();
     internal HashSet<string> queuedMethodTranslations = new(StringComparer.Ordinal);
     internal List<TypeDefinition> arrayEnumeratorTypes = [];
@@ -52,6 +55,10 @@ sealed class Translator
     internal MethodDefinition stringConstructor = null!;
     internal LLVMTypeRef gcAllocateType;
     internal LLVMValueRef gcAllocateFunction;
+    internal LLVMTypeRef memoryCopyType;
+    internal LLVMValueRef memoryCopyFunction;
+    internal LLVMTypeRef memoryFillType;
+    internal LLVMValueRef memoryFillFunction;
     internal int nextRuntimeTypeId;
     internal int nextVirtualDispatchId;
 

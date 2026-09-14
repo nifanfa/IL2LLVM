@@ -85,12 +85,8 @@ sealed class Memory(Translator translator) : TranslationComponent(translator)
                 {
                     var type = SubstituteGenericParameter((TypeReference)instruction.Operand, method);
                     var address = stack.Pop();
-                    unsafe
-                    {
-                        LLVM.BuildMemSet(builder, address, LLVMValueRef.CreateConstInt(int8Type, 0, false),
-                            LLVMValueRef.CreateConstInt(sizeType, (ulong)Math.Max(1, GetTypeSize(type)), false),
-                            unalignedAlignment == 0 ? 1 : unalignedAlignment);
-                    }
+                    FillMemory(builder, address, LLVMValueRef.CreateConstInt(int8Type, 0, false),
+                        LLVMValueRef.CreateConstInt(sizeType, (ulong)Math.Max(1, GetTypeSize(type)), false));
                     unalignedAlignment = 0;
                     return true;
                 }
@@ -148,11 +144,7 @@ sealed class Memory(Translator translator) : TranslationComponent(translator)
                     var length = ConvertValue(builder, stack.Pop(), sizeType, false);
                     var source = ConvertValue(builder, stack.Pop(), pointerType);
                     var destination = ConvertValue(builder, stack.Pop(), pointerType);
-                    unsafe
-                    {
-                        LLVM.BuildMemCpy(builder, destination, unalignedAlignment == 0 ? 1 : unalignedAlignment,
-                            source, unalignedAlignment == 0 ? 1 : unalignedAlignment, length);
-                    }
+                    CopyMemory(builder, destination, source, length);
                     unalignedAlignment = 0;
                     return true;
                 }
@@ -161,11 +153,7 @@ sealed class Memory(Translator translator) : TranslationComponent(translator)
                     var length = ConvertValue(builder, stack.Pop(), sizeType, false);
                     var value = ConvertValue(builder, stack.Pop(), int8Type, false);
                     var destination = ConvertValue(builder, stack.Pop(), pointerType);
-                    unsafe
-                    {
-                        LLVM.BuildMemSet(builder, destination, value, length,
-                            unalignedAlignment == 0 ? 1 : unalignedAlignment);
-                    }
+                    FillMemory(builder, destination, value, length);
                     unalignedAlignment = 0;
                     return true;
                 }
