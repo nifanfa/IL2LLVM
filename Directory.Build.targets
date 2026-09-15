@@ -4,7 +4,9 @@
     <NoStdLib>true</NoStdLib>
     <NoConfig>true</NoConfig>
     <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>disable</Nullable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <RuntimeMetadataVersion>v4.0.30319</RuntimeMetadataVersion>
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
     <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
   </PropertyGroup>
