@@ -164,6 +164,12 @@ abstract class TranslationComponent(Translator translator)
     protected LLVMValueRef GetFieldAddress(LLVMBuilderRef builder, LLVMValueRef obj, FieldDefinition field, TypeReference? declaringType = null) => Translator.Runtime.GetFieldAddress(builder, obj, field, declaringType);
     protected Tuple<LLVMValueRef, LLVMTypeRef> CreateLocalStorage(LLVMBuilderRef builder, TypeReference type) => Translator.Runtime.CreateLocalStorage(builder, type);
     protected void CopyValue(LLVMBuilderRef builder, LLVMValueRef destination, LLVMValueRef source, int size) => Translator.Runtime.CopyValue(builder, destination, source, size);
+    protected LLVMValueRef LoadValue(LLVMBuilderRef builder, LLVMBuilderRef entryBuilder, LLVMValueRef address,
+        TypeReference type, uint alignment = 0, bool isVolatile = false) =>
+        Translator.Runtime.LoadValue(builder, entryBuilder, address, type, alignment, isVolatile);
+    protected void StoreValue(LLVMBuilderRef builder, LLVMValueRef address, LLVMValueRef value, TypeReference type,
+        uint alignment = 0, bool isVolatile = false) =>
+        Translator.Runtime.StoreValue(builder, address, value, type, alignment, isVolatile);
     protected void CopyMemory(LLVMBuilderRef builder, LLVMValueRef destination, LLVMValueRef source, LLVMValueRef length) => Translator.Runtime.CopyMemory(builder, destination, source, length);
     protected void FillMemory(LLVMBuilderRef builder, LLVMValueRef destination, LLVMValueRef value, LLVMValueRef length) => Translator.Runtime.FillMemory(builder, destination, value, length);
     protected void StoreField(LLVMBuilderRef builder, LLVMValueRef obj, FieldDefinition field, LLVMValueRef value) => Translator.Runtime.StoreField(builder, obj, field, value);

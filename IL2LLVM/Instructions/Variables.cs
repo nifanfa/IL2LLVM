@@ -29,7 +29,7 @@ sealed class Variables(Translator translator) : TranslationComponent(translator)
                             ? existing
                             : CreateLocalStorage(entryBuilder, variableType);
                         locals.TryAdd(index, storage);
-                        CopyValue(builder, builder.BuildLoad2(storage.Item2, storage.Item1), value, GetTypeSize(variableType));
+                        StoreValue(builder, builder.BuildLoad2(storage.Item2, storage.Item1), value, variableType);
                     }
                     else
                     {
@@ -60,7 +60,9 @@ sealed class Variables(Translator translator) : TranslationComponent(translator)
                     var value = builder.BuildLoad2(locals[index].Item2, locals[index].Item1);
                     if (localType is not null)
                     {
-                        value = PromoteSmallIntegerLoad(builder, value, localType);
+                        value = IsValueType(localType) && !IsByReferenceValue(localType)
+                            ? LoadValue(builder, entryBuilder, value, localType)
+                            : PromoteSmallIntegerLoad(builder, value, localType);
                         trackType(value, localRuntimeTypes.TryGetValue(index, out var runtimeType)
                             ? runtimeType
                             : localType);
@@ -106,7 +108,9 @@ sealed class Variables(Translator translator) : TranslationComponent(translator)
                     var argument = locals.TryGetValue(-1 - index, out var storage)
                         ? builder.BuildLoad2(storage.Item2, storage.Item1)
                         : getMethodParameter(index);
-                    argument = PromoteSmallIntegerLoad(builder, argument, parameterType);
+                    argument = IsValueType(parameterType) && !IsByReferenceValue(parameterType)
+                        ? LoadValue(builder, entryBuilder, argument, parameterType)
+                        : PromoteSmallIntegerLoad(builder, argument, parameterType);
                     trackType(argument, parameterType);
                     stack.Push(argument);
                     return true;
@@ -127,7 +131,7 @@ sealed class Variables(Translator translator) : TranslationComponent(translator)
                         storage.Item2.Kind == LLVMTypeKind.LLVMPointerTypeKind)
                     {
                         var destination = builder.BuildLoad2(storage.Item2, storage.Item1);
-                        CopyValue(builder, destination, value, GetTypeSize(parameterType));
+                        StoreValue(builder, destination, value, parameterType);
                     }
                     else
                         builder.BuildStore(ConvertValue(builder, value, llvmType), storage.Item1);

@@ -902,9 +902,26 @@ sealed class Methods(Translator translator) : TranslationComponent(translator)
             return existing;
         var fieldReferenceType = SubstituteFieldType(field, context);
         var fieldType = GetLLVMTypeRef(fieldReferenceType);
-        if (IsValueType(fieldReferenceType))
+        var definition = GetLocalField(field);
+        var initialValue = definition.InitialValue;
+        if (initialValue is { Length: > 0 })
         {
-            var storageType = LLVMTypeRef.CreateArray(int8Type, (uint)Math.Max(1, GetTypeSize(fieldReferenceType)));
+            var storageSize = Math.Max(initialValue.Length, Math.Max(1, GetTypeSize(fieldReferenceType)));
+            var storageType = LLVMTypeRef.CreateArray(int8Type, (uint)storageSize);
+            var storage = AddInternalGlobal(storageType, fieldName);
+            storage.Initializer = LLVMValueRef.CreateConstArray(int8Type, Enumerable.Range(0, storageSize)
+                .Select(index => LLVMValueRef.CreateConstInt(int8Type,
+                    index < initialValue.Length ? initialValue[index] : 0ul, false))
+                .ToArray());
+            var storageResult = new Tuple<LLVMValueRef, LLVMTypeRef>(storage, fieldType);
+            staticFields.Add(fieldName, storageResult);
+            staticFieldTypes.Add(fieldName, fieldReferenceType);
+            return storageResult;
+        }
+        if (IsValueType(fieldReferenceType) && !IsByReferenceValue(fieldReferenceType))
+        {
+            var storageSize = Math.Max(1, GetTypeSize(fieldReferenceType));
+            var storageType = LLVMTypeRef.CreateArray(int8Type, (uint)storageSize);
             var storage = AddInternalGlobal(storageType, fieldName);
             storage.Initializer = LLVMValueRef.CreateConstNull(storageType);
             var storageResult = new Tuple<LLVMValueRef, LLVMTypeRef>(storage, fieldType);
@@ -1199,10 +1216,7 @@ sealed class Methods(Translator translator) : TranslationComponent(translator)
         if (kind == ArrayRuntimeMethodKind.Set)
         {
             var value = function.GetParam(1u + (uint)arrayType.Rank);
-            if (IsValueType(elementType))
-                CopyValue(builder, address, value, GetTypeSize(elementType));
-            else
-                builder.BuildStore(ConvertValue(builder, value, GetLLVMTypeRef(elementType)), address);
+            StoreValue(builder, address, value, elementType);
             builder.BuildRetVoid();
         }
         else if (kind == ArrayRuntimeMethodKind.Get)

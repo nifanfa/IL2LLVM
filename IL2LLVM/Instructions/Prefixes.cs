@@ -1,15 +1,18 @@
 sealed class Prefixes(Translator translator) : TranslationComponent(translator)
 {
-    internal bool TryTranslatePrefixInstruction(MethodContext methodContext, Instruction instruction, ref uint unalignedAlignment)
+    internal bool TryTranslatePrefixInstruction(MethodContext methodContext, Instruction instruction,
+        ref uint unalignedAlignment, ref bool volatileAccess)
     {
         switch (instruction.OpCode.Code)
         {
             case Code.Nop:
             case Code.Break:
             case Code.No:
-            case Code.Volatile:
             case Code.Readonly:
             case Code.Tail:
+                return true;
+            case Code.Volatile:
+                volatileAccess = true;
                 return true;
             case Code.Unaligned:
                 unalignedAlignment = Convert.ToUInt32(instruction.Operand);

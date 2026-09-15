@@ -403,7 +403,9 @@ sealed class TypeSystem(Translator translator) : TranslationComponent(translator
                 throw new InvalidOperationException($"Explicit-layout field has no offset: {field.FullName}.");
             return offset + field.Offset;
         }
-        foreach (var candidate in definition.Fields.TakeWhile(candidate => !ReferenceEquals(candidate, field))
+        foreach (var candidate in definition.Fields.TakeWhile(candidate =>
+                     candidate.MetadataToken != field.MetadataToken &&
+                     !(candidate.Name == field.Name && SameType(candidate.FieldType, field.FieldType)))
                      .Where(candidate => !candidate.IsStatic))
         {
             var candidateType = declaringType is GenericInstanceType genericType

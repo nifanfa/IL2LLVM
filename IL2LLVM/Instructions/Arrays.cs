@@ -61,8 +61,8 @@ sealed class Arrays(Translator translator) : TranslationComponent(translator)
                     };
                     var address = GetArrayElementAddress(builder, array, index, llvmType,
                         elementType is null ? null : GetTypeSize(elementType));
-                    if (elementType is not null && IsValueType(elementType))
-                        CopyValue(builder, address, value, GetTypeSize(elementType));
+                    if (elementType is not null)
+                        StoreValue(builder, address, value, elementType);
                     else
                         builder.BuildStore(ConvertValue(builder, value, llvmType), address);
                     return true;
@@ -102,12 +102,8 @@ sealed class Arrays(Translator translator) : TranslationComponent(translator)
                     var address = GetArrayElementAddress(builder, array, index, llvmType,
                         elementType is null ? null : GetTypeSize(elementType));
                     LLVMValueRef value;
-                    if (elementType is not null && IsValueType(elementType))
-                    {
-                        var storage = CreateLocalStorage(entryBuilder, elementType);
-                        value = builder.BuildLoad2(storage.Item2, storage.Item1);
-                        CopyValue(builder, value, address, GetTypeSize(elementType));
-                    }
+                    if (elementType is not null && IsValueType(elementType) && !IsByReferenceValue(elementType))
+                        value = LoadValue(builder, entryBuilder, address, elementType);
                     else
                         value = builder.BuildLoad2(llvmType, address);
                     if (instruction.OpCode.Code is Code.Ldelem_I1 or Code.Ldelem_U1 or Code.Ldelem_I2 or Code.Ldelem_U2)

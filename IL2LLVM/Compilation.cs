@@ -1062,7 +1062,7 @@ sealed class Compilation : TranslationComponent
                                 if (storage.Item2.Kind == LLVMTypeKind.LLVMPointerTypeKind)
                                 {
                                     var address = entryBuilder.BuildLoad2(storage.Item2, storage.Item1);
-                                    entryBuilder.BuildStore(argument, address);
+                                    StoreValue(entryBuilder, address, argument, parameterType);
                                 }
                                 else
                                     entryBuilder.BuildStore(argument, storage.Item1);
@@ -1391,6 +1391,7 @@ sealed class Compilation : TranslationComponent
                             BuildVirtualDispatch = BuildVirtualDispatch,
                             BuildVirtualFunctionPointer = BuildVirtualFunctionPointer
                         };
+                        bool volatileAccess = false;
                         foreach (var instr in method.Value.Item4)
                         {
                             if (label.ContainsKey(instr.Offset))
@@ -1423,19 +1424,22 @@ sealed class Compilation : TranslationComponent
                             }
                             if (constants.TryTranslateConstantInstruction(builder, instr, stack) ||
                                 arguments.TryTranslateArgumentInstruction(builder, method.Value.Item1, method.Value.Item3, instr, stack, TrackType) ||
-                                fields.TryTranslateFieldInstruction(builder, instr, method.Value.Item3, stack, TrackType) ||
+                                fields.TryTranslateFieldInstruction(builder, entryBuilder, instr, method.Value.Item3,
+                                    stack, TrackType, ref unalignedAlignment, ref volatileAccess) ||
                                 arrays.TryTranslateArrayInstruction(builder, entryBuilder, instr, method.Value.Item3, stack, trackedTypes, TrackType, BuildCheckedIntegerArithmetic, EmitConditionalException, SynchronizeEvaluationStackRoots) ||
                                 variables.TryTranslateVariableInstruction(builder, entryBuilder, instr, method.Value.Item3, stack, local, trackedTypes, localRuntimeTypes, GetMethodParameter, TrackType) ||
                                 branches.TryTranslateBranchInstruction(builder, instr, stack, label, terminatedBlocks, SaveStack, RestoreStack) ||
                                 types.TryTranslateTypeInstruction(builder, entryBuilder, method.Value.Item1, instr, method.Value.Item3, stack, terminatedBlocks, BuildRuntimeTypeMatch, TrackType, StoreTemporaryRoot, SynchronizeEvaluationStackRoots, exceptionThrowType, exceptionThrowFunction, type => BuildEntryAlloca(type)) ||
                                 exceptions.TryTranslateExceptionInstruction(builder, method.Value.Item1, instr, methodDefinition, stack, terminatedBlocks, caughtExceptions, finallyStates, filterStates, label, exceptionRegions, RegisterFinallyContinuation, SaveStack, exceptionThrowType, exceptionThrowFunction, exceptionCurrentType, exceptionCurrentFunction, exceptionPopType, exceptionPopFunction) ||
                                 calls.TryTranslateCallInstruction(methodContext, instr) ||
-                                prefixes.TryTranslatePrefixInstruction(methodContext, instr, ref unalignedAlignment) ||
+                                prefixes.TryTranslatePrefixInstruction(methodContext, instr, ref unalignedAlignment,
+                                    ref volatileAccess) ||
                                 returns.TryTranslateReturnInstruction(builder, instr, method.Value.Item3, stack, PopGCFrame, terminatedBlocks) ||
                                 strings.TryTranslateStringInstruction(builder, instr, stack, SynchronizeEvaluationStackRoots, StoreTemporaryRoot, TrackType) ||
                                 calls.TryTranslateMethodCallInstruction(methodContext, instr) ||
                                 this.stack.TryTranslateStackInstruction(instr, stack) ||
-                                memory.TryTranslateMemoryInstruction(builder, entryBuilder, instr, method.Value.Item3, stack, GetIndirectType, TrackType, ref unalignedAlignment) ||
+                                memory.TryTranslateMemoryInstruction(builder, entryBuilder, instr, method.Value.Item3, stack,
+                                    GetIndirectType, TrackType, ref unalignedAlignment, ref volatileAccess) ||
                                 numeric.TryTranslateNumericInstruction(builder, instr, stack, BuildCheckedIntegerArithmetic, EmitConditionalException))
                             {
                             }

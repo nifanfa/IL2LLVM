@@ -256,6 +256,76 @@ sealed class Runtime(Translator translator) : TranslationComponent(translator)
             LLVMValueRef.CreateConstInt(sizeType, (ulong)Math.Max(1, size), false));
     }
 
+    internal new LLVMValueRef LoadValue(LLVMBuilderRef builder, LLVMBuilderRef entryBuilder,
+        LLVMValueRef address, TypeReference type, uint alignment = 0, bool isVolatile = false)
+    {
+        var storage = CreateLocalStorage(entryBuilder, type);
+        var destination = builder.BuildLoad2(storage.Item2, storage.Item1);
+        if (GetTypeSize(type) <= pointerSize || isVolatile)
+        {
+            var llvmType = GetCallType(type);
+            var load = builder.BuildLoad2(llvmType,
+                ConvertValue(builder, address, LLVMTypeRef.CreatePointer(llvmType, 0)));
+            if (alignment != 0)
+                load.Alignment = alignment;
+            load.Volatile = isVolatile;
+            builder.BuildStore(load,
+                ConvertValue(builder, destination, LLVMTypeRef.CreatePointer(llvmType, 0)));
+        }
+        else
+        {
+            CopyValue(builder, destination, address, GetTypeSize(type));
+        }
+        return destination;
+    }
+
+    internal new void StoreValue(LLVMBuilderRef builder, LLVMValueRef address,
+        LLVMValueRef value, TypeReference type, uint alignment = 0, bool isVolatile = false)
+    {
+        if (!IsValueType(type) || IsByReferenceValue(type))
+        {
+            var llvmType = GetLLVMTypeRef(type);
+            var store = builder.BuildStore(ConvertValue(builder, value, llvmType),
+                ConvertValue(builder, address, LLVMTypeRef.CreatePointer(llvmType, 0)));
+            if (alignment != 0)
+                store.Alignment = alignment;
+            store.Volatile = isVolatile;
+            return;
+        }
+
+        if (GetTypeSize(type) <= pointerSize)
+        {
+            var llvmType = GetCallType(type);
+            if (value.TypeOf.Kind == LLVMTypeKind.LLVMPointerTypeKind &&
+                llvmType.Kind != LLVMTypeKind.LLVMPointerTypeKind)
+                value = builder.BuildLoad2(llvmType,
+                    ConvertValue(builder, value, LLVMTypeRef.CreatePointer(llvmType, 0)));
+            var store = builder.BuildStore(ConvertValue(builder, value, llvmType),
+                ConvertValue(builder, address, LLVMTypeRef.CreatePointer(llvmType, 0)));
+            if (alignment != 0)
+                store.Alignment = alignment;
+            store.Volatile = isVolatile;
+            return;
+        }
+
+        if (isVolatile)
+        {
+            var llvmType = GetCallType(type);
+            if (value.TypeOf.Kind == LLVMTypeKind.LLVMPointerTypeKind)
+                value = builder.BuildLoad2(llvmType,
+                    ConvertValue(builder, value, LLVMTypeRef.CreatePointer(llvmType, 0)));
+            var store = builder.BuildStore(value,
+                ConvertValue(builder, address, LLVMTypeRef.CreatePointer(llvmType, 0)));
+            if (alignment != 0)
+                store.Alignment = alignment;
+            store.Volatile = true;
+        }
+        else
+        {
+            CopyValue(builder, address, value, GetTypeSize(type));
+        }
+    }
+
     internal new void CopyMemory(LLVMBuilderRef builder, LLVMValueRef destination, LLVMValueRef source,
         LLVMValueRef length)
     {
@@ -282,13 +352,7 @@ sealed class Runtime(Translator translator) : TranslationComponent(translator)
 
     internal new void StoreField(LLVMBuilderRef builder, LLVMValueRef obj, FieldDefinition field, LLVMValueRef value)
     {
-        if (IsValueType(field.FieldType))
-        {
-            CopyValue(builder, GetFieldAddress(builder, obj, field), value, GetTypeSize(field.FieldType));
-            return;
-        }
-        var fieldType = GetLLVMTypeRef(field.FieldType);
-        builder.BuildStore(ConvertValue(builder, value, fieldType), GetFieldAddress(builder, obj, field));
+        StoreValue(builder, GetFieldAddress(builder, obj, field), value, field.FieldType);
     }
 
     internal new FieldDefinition GetArrayLengthField()
@@ -841,7 +905,9 @@ sealed class Runtime(Translator translator) : TranslationComponent(translator)
                     ? SubstituteGenericTypeArguments(field.FieldType, genericType)
                     : field.FieldType;
                 var fieldOffset = baseOffset + GetFieldOffsetForType(field, currentType);
-                if (IsManagedReferenceType(fieldType))
+                if (fieldType is ByReferenceType)
+                    references.Add(fieldOffset);
+                else if (IsManagedReferenceType(fieldType))
                     references.Add(fieldOffset);
                 else if (IsValueType(fieldType))
                     Collect(fieldType, fieldOffset, false);

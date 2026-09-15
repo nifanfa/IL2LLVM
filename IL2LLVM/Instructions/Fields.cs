@@ -1,7 +1,8 @@
 sealed class Fields(Translator translator) : TranslationComponent(translator)
 {
-    internal bool TryTranslateFieldInstruction(LLVMBuilderRef builder, Instruction instruction, MethodReference method,
-        Stack<LLVMValueRef> stack, Action<LLVMValueRef, TypeReference> trackType)
+    internal bool TryTranslateFieldInstruction(LLVMBuilderRef builder, LLVMBuilderRef entryBuilder,
+        Instruction instruction, MethodReference method, Stack<LLVMValueRef> stack,
+        Action<LLVMValueRef, TypeReference> trackType, ref uint unalignedAlignment, ref bool volatileAccess)
     {
         switch (instruction.OpCode.Code)
         {
@@ -13,11 +14,10 @@ sealed class Fields(Translator translator) : TranslationComponent(translator)
                     var fieldDeclaringType = ResolveGenericType(fieldReference.DeclaringType, method);
                     var value = stack.Pop();
                     var instance = stack.Pop();
-                    if (IsValueType(fieldType))
-                        CopyValue(builder, GetFieldAddress(builder, instance, field, fieldDeclaringType), value, GetTypeSize(fieldType));
-                    else
-                        builder.BuildStore(ConvertValue(builder, value, GetLLVMTypeRef(fieldType)),
-                            GetFieldAddress(builder, instance, field, fieldDeclaringType));
+                    StoreValue(builder, GetFieldAddress(builder, instance, field, fieldDeclaringType), value, fieldType,
+                        unalignedAlignment, volatileAccess);
+                    unalignedAlignment = 0;
+                    volatileAccess = false;
                     return true;
                 }
             case Code.Ldfld:
@@ -34,18 +34,25 @@ sealed class Fields(Translator translator) : TranslationComponent(translator)
                         stack.Push(address);
                         trackType(address, new ByReferenceType(fieldType));
                     }
-                    else if (IsValueType(fieldType))
+                    else if (IsValueType(fieldType) && !IsByReferenceValue(fieldType))
                     {
-                        stack.Push(address);
-                        trackType(address, fieldType);
-                    }
-                    else
-                    {
-                        var value = PromoteSmallIntegerLoad(builder,
-                            builder.BuildLoad2(GetLLVMTypeRef(fieldType), address), fieldType);
+                        var value = LoadValue(builder, entryBuilder, address, fieldType,
+                            unalignedAlignment, volatileAccess);
                         stack.Push(value);
                         trackType(value, fieldType);
                     }
+                    else
+                    {
+                        var load = builder.BuildLoad2(GetLLVMTypeRef(fieldType), address);
+                        load.Volatile = volatileAccess;
+                        if (unalignedAlignment != 0)
+                            load.Alignment = unalignedAlignment;
+                        var value = PromoteSmallIntegerLoad(builder, load, fieldType);
+                        stack.Push(value);
+                        trackType(value, fieldType);
+                    }
+                    unalignedAlignment = 0;
+                    volatileAccess = false;
                     return true;
                 }
             case Code.Stsfld:
@@ -60,11 +67,10 @@ sealed class Fields(Translator translator) : TranslationComponent(translator)
                     {
                         var value = stack.Count == 0 ? LLVMValueRef.CreateConstNull(storage.Item2) : stack.Pop();
                         var fieldType = SubstituteFieldType(field, method);
-                        if (IsValueType(fieldType))
-                            CopyValue(builder, storage.Item1, value, GetTypeSize(fieldType));
-                        else
-                            builder.BuildStore(ConvertValue(builder, value, storage.Item2), storage.Item1);
+                        StoreValue(builder, storage.Item1, value, fieldType, isVolatile: volatileAccess);
                     }
+                    volatileAccess = false;
+                    unalignedAlignment = 0;
                     return true;
                 }
             case Code.Ldsfld:
@@ -73,9 +79,18 @@ sealed class Fields(Translator translator) : TranslationComponent(translator)
                     EmitStaticConstructorGuard(builder, method, field.DeclaringType);
                     var storage = GetStaticField(field, method);
                     var fieldType = SubstituteFieldType(field, method);
-                    var value = IsValueType(fieldType)
-                        ? storage.Item1
-                        : PromoteSmallIntegerLoad(builder, builder.BuildLoad2(storage.Item2, storage.Item1), fieldType);
+                    LLVMValueRef value;
+                    if (IsValueType(fieldType) && !IsByReferenceValue(fieldType))
+                        value = LoadValue(builder, entryBuilder, storage.Item1, fieldType,
+                            isVolatile: volatileAccess);
+                    else
+                    {
+                        var load = builder.BuildLoad2(storage.Item2, storage.Item1);
+                        load.Volatile = volatileAccess;
+                        value = PromoteSmallIntegerLoad(builder, load, fieldType);
+                    }
+                    volatileAccess = false;
+                    unalignedAlignment = 0;
                     stack.Push(value);
                     trackType(value, fieldType);
                     return true;

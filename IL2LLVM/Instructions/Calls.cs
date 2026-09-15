@@ -241,11 +241,21 @@ sealed class Calls(Translator translator) : TranslationComponent(translator)
                             : SubstituteGenericParameter(targetMethod.Parameters[parameterIndex].ParameterType, targetMethod);
                         if (parameterType is not null && IsValueType(parameterType) && !IsByReferenceValue(parameterType))
                         {
-                            var storage = CreateLocalStorage(entryBuilder, parameterType);
-                            var copy = builder.BuildLoad2(storage.Item2, storage.Item1);
-                            CopyValue(builder, copy, callTargetArgs[i], GetTypeSize(parameterType));
-                            TrackType(copy, parameterType);
-                            callTargetArgs[i] = builder.BuildLoad2(GetCallType(parameterType), copy);
+                            var callType = GetCallType(parameterType);
+                            if (GetTypeSize(parameterType) <= pointerSize)
+                            {
+                                callTargetArgs[i] = callTargetArgs[i].TypeOf.Kind == LLVMTypeKind.LLVMPointerTypeKind
+                                    ? builder.BuildLoad2(callType, callTargetArgs[i])
+                                    : ConvertValue(builder, callTargetArgs[i], callType);
+                            }
+                            else
+                            {
+                                var storage = CreateLocalStorage(entryBuilder, parameterType);
+                                var copy = builder.BuildLoad2(storage.Item2, storage.Item1);
+                                CopyValue(builder, copy, callTargetArgs[i], GetTypeSize(parameterType));
+                                TrackType(copy, parameterType);
+                                callTargetArgs[i] = builder.BuildLoad2(callType, copy);
+                            }
                         }
                         var expectedType = parameterType is null
                             ? LLVMTypeRef.CreatePointer(int8Type, 0)
@@ -303,7 +313,7 @@ sealed class Calls(Translator translator) : TranslationComponent(translator)
                     {
                         var referenceParameter = targetMethod.Parameters
                             .Select((parameter, index) => (Type: SubstituteGenericParameter(parameter.ParameterType, targetMethod), Index: index))
-                            .SingleOrDefault(parameter => parameter.Type is ByReferenceType);
+                            .SingleOrDefault(parameter => parameter.Type is ByReferenceType or PointerType);
                         if (referenceParameter.Type is null)
                             throw new InvalidOperationException($"By-reference value constructor has no ref parameter: {targetMethod.FullName}.");
                         var reference = ConvertValue(builder, targetArgs[referenceParameter.Index],

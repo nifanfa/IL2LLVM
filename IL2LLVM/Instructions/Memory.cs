@@ -2,7 +2,7 @@ sealed class Memory(Translator translator) : TranslationComponent(translator)
 {
     internal bool TryTranslateMemoryInstruction(LLVMBuilderRef builder, LLVMBuilderRef entryBuilder, Instruction instruction,
         MethodReference method, Stack<LLVMValueRef> stack, Func<LLVMValueRef, TypeReference?> getIndirectType,
-        Action<LLVMValueRef, TypeReference> trackType, ref uint unalignedAlignment)
+        Action<LLVMValueRef, TypeReference> trackType, ref uint unalignedAlignment, ref bool volatileAccess)
     {
         var pointerType = LLVMTypeRef.CreatePointer(int8Type, 0);
         switch (instruction.OpCode.Code)
@@ -35,11 +35,13 @@ sealed class Memory(Translator translator) : TranslationComponent(translator)
                         _ => throw new InvalidOperationException(instruction.OpCode.Code.ToString())
                     };
                     var value = builder.BuildLoad2(type, address);
+                    value.Volatile = volatileAccess;
                     if (unalignedAlignment != 0)
                     {
                         value.Alignment = unalignedAlignment;
                         unalignedAlignment = 0;
                     }
+                    volatileAccess = false;
                     if (instruction.OpCode.Code is Code.Ldind_I1 or Code.Ldind_U1 or Code.Ldind_I2 or Code.Ldind_U2)
                         value = ConvertValue(builder, value, int32Type,
                             instruction.OpCode.Code is Code.Ldind_I1 or Code.Ldind_I2);
@@ -74,11 +76,13 @@ sealed class Memory(Translator translator) : TranslationComponent(translator)
                         _ => throw new InvalidOperationException(instruction.OpCode.Code.ToString())
                     };
                     var store = builder.BuildStore(ConvertValue(builder, value, type), address);
+                    store.Volatile = volatileAccess;
                     if (unalignedAlignment != 0)
                     {
                         store.Alignment = unalignedAlignment;
                         unalignedAlignment = 0;
                     }
+                    volatileAccess = false;
                     return true;
                 }
             case Code.Initobj:
@@ -96,21 +100,20 @@ sealed class Memory(Translator translator) : TranslationComponent(translator)
                     var address = stack.Pop();
                     var alignment = unalignedAlignment;
                     unalignedAlignment = 0;
-                    if (IsValueType(type))
+                    if (IsValueType(type) && !IsByReferenceValue(type))
                     {
-                        var storage = CreateLocalStorage(entryBuilder, type);
-                        var destination = builder.BuildLoad2(storage.Item2, storage.Item1);
-                        CopyValue(builder, destination, address, GetTypeSize(type));
-                        stack.Push(destination);
+                        stack.Push(LoadValue(builder, entryBuilder, address, type, alignment, volatileAccess));
                     }
                     else
                     {
                         var value = builder.BuildLoad2(GetLLVMTypeRef(type), address);
+                        value.Volatile = volatileAccess;
                         if (alignment != 0)
                             value.Alignment = alignment;
                         stack.Push(value);
                         trackType(value, type);
                     }
+                    volatileAccess = false;
                     return true;
                 }
             case Code.Stobj:
@@ -120,14 +123,8 @@ sealed class Memory(Translator translator) : TranslationComponent(translator)
                     var address = stack.Pop();
                     var alignment = unalignedAlignment;
                     unalignedAlignment = 0;
-                    if (IsValueType(type))
-                        CopyValue(builder, address, value, GetTypeSize(type));
-                    else
-                    {
-                        var store = builder.BuildStore(ConvertValue(builder, value, GetLLVMTypeRef(type)), address);
-                        if (alignment != 0)
-                            store.Alignment = alignment;
-                    }
+                    StoreValue(builder, address, value, type, alignment, volatileAccess);
+                    volatileAccess = false;
                     return true;
                 }
             case Code.Cpobj:
@@ -146,6 +143,7 @@ sealed class Memory(Translator translator) : TranslationComponent(translator)
                     var destination = ConvertValue(builder, stack.Pop(), pointerType);
                     CopyMemory(builder, destination, source, length);
                     unalignedAlignment = 0;
+                    volatileAccess = false;
                     return true;
                 }
             case Code.Initblk:
@@ -155,6 +153,7 @@ sealed class Memory(Translator translator) : TranslationComponent(translator)
                     var destination = ConvertValue(builder, stack.Pop(), pointerType);
                     FillMemory(builder, destination, value, length);
                     unalignedAlignment = 0;
+                    volatileAccess = false;
                     return true;
                 }
             case Code.Localloc:
