@@ -973,7 +973,8 @@ sealed class Methods(Translator translator) : TranslationComponent(translator)
             method = BindMethodToDeclaringType(varargDefinition, method.DeclaringType, method);
         var isRuntimeGenerated = GetArrayRuntimeMethodKind(method) != ArrayRuntimeMethodKind.None ||
             IsRuntimeDelegateConstructor(method) || IsRuntimeDelegateInvoke(method);
-        if (method.DeclaringType.Resolve()?.IsInterface == true && method.Resolve()?.HasBody != true)
+        if (method.DeclaringType.Resolve()?.IsInterface == true &&
+            method.Resolve()?.HasBody != true && method.Resolve()?.PInvokeInfo is null)
             return;
 
         TypeReference declareType = method.DeclaringType;
@@ -1134,8 +1135,7 @@ sealed class Methods(Translator translator) : TranslationComponent(translator)
         var builder = context.CreateBuilder();
         builder.PositionAtEnd(function.AppendBasicBlock("entry"));
         var pointerType = LLVMTypeRef.CreatePointer(int8Type, 0);
-        var exceptionThrow = GetRegisteredMethod(coreLib.ExceptionThrowMethod) ??
-            throw new NotSupportedException($"Method is not defined: {coreLib.ExceptionThrowMethod.FullName}");
+        var exceptionThrow = EnsureMethodRegistered(coreLib.ExceptionThrowMethod);
 
         void EmitException(LLVMValueRef condition, TypeReference exceptionType)
         {

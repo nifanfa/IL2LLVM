@@ -132,83 +132,91 @@ sealed class Compilation : TranslationComponent
             localTypes = GetAllTypes(assembly.MainModule.Types)
                 .ToDictionary(t => t.FullName, StringComparer.Ordinal);
             coreLib = new CoreLibMetadata(localTypes);
-            var objectPointerType = new PointerType(coreLib.Object);
-            var objectReferenceSlotPointerType = new PointerType(objectPointerType);
             var exceptionPushMethod = coreLib.ExceptionPushMethod;
             var exceptionPopMethod = coreLib.ExceptionPopMethod;
             var exceptionBufferMethod = coreLib.ExceptionGetBufferMethod;
-            var exceptionTopMethod = coreLib.ExceptionGetTopMethod;
             var exceptionCurrentMethod = coreLib.ExceptionGetCurrentMethod;
             var setjmpMethod = coreLib.ExceptionSetJumpMethod;
-            var longjmpMethod = coreLib.ExceptionLongJumpMethod;
             var exceptionAbortMethod = coreLib.ExceptionAbortMethod;
-            var memoryCopyMethod = coreLib.MemoryCopyMethod;
-            var memoryFillMethod = coreLib.MemoryFillMethod;
             var exceptionThrowMethod = coreLib.ExceptionThrowMethod;
-            RegisterMethodFunction(module, exceptionPushMethod, exceptionPushMethod.Body.Instructions);
-            RegisterMethodFunction(module, exceptionPopMethod, exceptionPopMethod.Body.Instructions);
-            RegisterMethodFunction(module, exceptionBufferMethod, exceptionBufferMethod.Body.Instructions);
-            RegisterMethodFunction(module, exceptionTopMethod, exceptionTopMethod.Body.Instructions);
-            RegisterMethodFunction(module, exceptionCurrentMethod, exceptionCurrentMethod.Body.Instructions);
-            RegisterMethodFunction(module, setjmpMethod, null);
-            RegisterMethodFunction(module, longjmpMethod, null);
-            RegisterMethodFunction(module, exceptionAbortMethod, null);
             var exceptionPointerType = LLVMTypeRef.CreatePointer(int8Type, 0);
-            RegisterMethodFunction(module, exceptionThrowMethod, exceptionThrowMethod.Body.Instructions);
-            RegisterMethodFunction(module, memoryCopyMethod, memoryCopyMethod.Body.Instructions);
-            RegisterMethodFunction(module, memoryFillMethod, memoryFillMethod.Body.Instructions);
-            var gcDescPointerType = new PointerType(coreLib.GCDesc);
-            var gcAllocateMethod = coreLib.GCAllocateMethod;
             var gcPushMethod = coreLib.GCPushMethod;
             var gcPopMethod = coreLib.GCPopMethod;
-            RegisterMethodFunction(module, gcAllocateMethod, gcAllocateMethod.Body.Instructions);
-            RegisterMethodFunction(module, gcPushMethod, gcPushMethod.Body.Instructions);
-            RegisterMethodFunction(module, gcPopMethod, gcPopMethod.Body.Instructions);
-            var registeredGCAllocate = GetRegisteredMethod(gcAllocateMethod)!;
-            gcAllocateFunction = registeredGCAllocate.Item1;
-            gcAllocateType = registeredGCAllocate.Item2;
-            var registeredGCPush = GetRegisteredMethod(gcPushMethod)!;
-            gcPushFunction = registeredGCPush.Item1;
-            gcPushType = registeredGCPush.Item2;
-            var registeredGCPop = GetRegisteredMethod(gcPopMethod)!;
-            gcPopFunction = registeredGCPop.Item1;
-            gcPopType = registeredGCPop.Item2;
-            var registeredExceptionPush = GetRegisteredMethod(exceptionPushMethod)!;
-            exceptionPushFunction = registeredExceptionPush.Item1;
-            exceptionPushType = registeredExceptionPush.Item2;
-            var registeredExceptionPop = GetRegisteredMethod(exceptionPopMethod)!;
-            exceptionPopFunction = registeredExceptionPop.Item1;
-            exceptionPopType = registeredExceptionPop.Item2;
-            var registeredExceptionBuffer = GetRegisteredMethod(exceptionBufferMethod)!;
-            exceptionBufferFunction = registeredExceptionBuffer.Item1;
-            exceptionBufferType = registeredExceptionBuffer.Item2;
-            var registeredExceptionCurrent = GetRegisteredMethod(exceptionCurrentMethod)!;
-            exceptionCurrentFunction = registeredExceptionCurrent.Item1;
-            exceptionCurrentType = registeredExceptionCurrent.Item2;
-            var registeredSetjmp = GetRegisteredMethod(setjmpMethod)!;
-            setjmpFunction = registeredSetjmp.Item1;
-            setjmpType = registeredSetjmp.Item2;
-            ReadOnlySpan<byte> returnsTwiceName = "returns_twice"u8;
-            unsafe
-            {
-                fixed (byte* name = returnsTwiceName)
-                {
-                    var kind = LLVM.GetEnumAttributeKindForName((sbyte*)name, (nuint)returnsTwiceName.Length);
-                    var attribute = context.CreateEnumAttribute(kind, 0);
-                    setjmpFunction.AddAttributeAtIndex(LLVMAttributeIndex.LLVMAttributeFunctionIndex, attribute);
-                }
-            }
-            var registeredExceptionThrow = GetRegisteredMethod(exceptionThrowMethod)!;
-            exceptionThrowFunction = registeredExceptionThrow.Item1;
-            exceptionThrowType = registeredExceptionThrow.Item2;
-            var registeredMemoryCopy = GetRegisteredMethod(memoryCopyMethod)!;
-            memoryCopyFunction = registeredMemoryCopy.Item1;
-            memoryCopyType = registeredMemoryCopy.Item2;
-            var registeredMemoryFill = GetRegisteredMethod(memoryFillMethod)!;
-            memoryFillFunction = registeredMemoryFill.Item1;
-            memoryFillType = registeredMemoryFill.Item2;
             arrayEnumeratorTypes = [coreLib.ArrayEnumerator];
             stringConstructor = coreLib.StringCharArrayConstructor;
+            void EnsureExceptionThrow()
+            {
+                if (exceptionThrowFunction != default)
+                    return;
+                var registered = EnsureMethodRegistered(exceptionThrowMethod);
+                exceptionThrowFunction = registered.Item1;
+                exceptionThrowType = registered.Item2;
+            }
+
+            Tuple<LLVMValueRef, LLVMTypeRef, MethodReference, Collection<Instruction>?> EnsureExceptionAbort() =>
+                EnsureMethodRegistered(exceptionAbortMethod);
+
+            void EnsureExceptionSetupFunctions()
+            {
+                if (exceptionPushFunction == default)
+                {
+                    var registered = EnsureMethodRegistered(exceptionPushMethod);
+                    exceptionPushFunction = registered.Item1;
+                    exceptionPushType = registered.Item2;
+                }
+                if (exceptionPopFunction == default)
+                {
+                    var registered = EnsureMethodRegistered(exceptionPopMethod);
+                    exceptionPopFunction = registered.Item1;
+                    exceptionPopType = registered.Item2;
+                }
+                if (exceptionBufferFunction == default)
+                {
+                    var registered = EnsureMethodRegistered(exceptionBufferMethod);
+                    exceptionBufferFunction = registered.Item1;
+                    exceptionBufferType = registered.Item2;
+                }
+                if (exceptionCurrentFunction == default)
+                {
+                    var registered = EnsureMethodRegistered(exceptionCurrentMethod);
+                    exceptionCurrentFunction = registered.Item1;
+                    exceptionCurrentType = registered.Item2;
+                }
+                if (setjmpFunction == default)
+                {
+                    var registered = EnsureMethodRegistered(setjmpMethod);
+                    setjmpFunction = registered.Item1;
+                    setjmpType = registered.Item2;
+                    ReadOnlySpan<byte> returnsTwiceName = "returns_twice"u8;
+                    unsafe
+                    {
+                        fixed (byte* name = returnsTwiceName)
+                        {
+                            var kind = LLVM.GetEnumAttributeKindForName((sbyte*)name, (nuint)returnsTwiceName.Length);
+                            var attribute = context.CreateEnumAttribute(kind, 0);
+                            setjmpFunction.AddAttributeAtIndex(LLVMAttributeIndex.LLVMAttributeFunctionIndex, attribute);
+                        }
+                    }
+                }
+            }
+
+            void EnsureGCPush()
+            {
+                if (gcPushFunction != default)
+                    return;
+                var registered = EnsureMethodRegistered(gcPushMethod);
+                gcPushFunction = registered.Item1;
+                gcPushType = registered.Item2;
+            }
+
+            void EnsureGCPop()
+            {
+                if (gcPopFunction != default)
+                    return;
+                var registered = EnsureMethodRegistered(gcPopMethod);
+                gcPopFunction = registered.Item1;
+                gcPopType = registered.Item2;
+            }
             foreach (TypeDefinition type in GetAllTypes(assembly.MainModule.Types))
             {
                 var fields = type.Fields;
@@ -621,8 +629,7 @@ sealed class Compilation : TranslationComponent
                                         ConvertCallArguments(targetFunction, targetArgs));
                                     return result;
                                 }
-                                var abort = GetRegisteredMethod(exceptionAbortMethod) ??
-                                    throw new NotSupportedException($"Method is not defined in the input module: {exceptionAbortMethod.FullName}");
+                                var abort = EnsureExceptionAbort();
                                 builder.BuildCall2(abort.Item2, abort.Item1, []);
                                 builder.BuildUnreachable();
                                 terminatedBlocks.Add(builder.InsertBlock);
@@ -687,8 +694,7 @@ sealed class Compilation : TranslationComponent
                             }
                             else
                             {
-                                var abort = GetRegisteredMethod(exceptionAbortMethod) ??
-                                    throw new NotSupportedException($"Method is not defined in the input module: {exceptionAbortMethod.FullName}");
+                                var abort = EnsureExceptionAbort();
                                 builder.BuildCall2(abort.Item2, abort.Item1, []);
                                 builder.BuildUnreachable();
                                 terminatedBlocks.Add(builder.InsertBlock);
@@ -712,8 +718,7 @@ sealed class Compilation : TranslationComponent
                                 var key = GetFriendlyMethodName(targetMethod);
                                 if (!missingVirtualFunctionPointers.TryGetValue(key, out var missingFunction))
                                 {
-                                    var abortMethod = GetRegisteredMethod(exceptionAbortMethod) ??
-                                        throw new NotSupportedException($"Method is not defined in the input module: {exceptionAbortMethod.FullName}");
+                                    var abortMethod = EnsureExceptionAbort();
                                     missingFunction = module.AddFunction($"__missing_virtual_{GetStableSymbolSuffix(key)}",
                                         CreateLLVMFunction(module, targetMethod));
                                     missingFunction.FunctionCallConv = (uint)LLVMCallConv.LLVMCCallConv;
@@ -751,8 +756,7 @@ sealed class Compilation : TranslationComponent
 
                                 builder.PositionAtEnd(nextBlock);
                             }
-                            var abort = GetRegisteredMethod(exceptionAbortMethod) ??
-                                throw new NotSupportedException($"Method is not defined in the input module: {exceptionAbortMethod.FullName}");
+                            var abort = EnsureExceptionAbort();
                             builder.BuildCall2(abort.Item2, abort.Item1, []);
                             builder.BuildUnreachable();
                             terminatedBlocks.Add(builder.InsertBlock);
@@ -941,6 +945,7 @@ sealed class Compilation : TranslationComponent
 
                         void EmitExceptionSetup(ExceptionRegion region)
                         {
+                            EnsureExceptionSetupFunctions();
                             var source = builder.InsertBlock;
                             var normal = context.AppendBasicBlock(method.Value.Item1, $"eh.normal.{nextVirtualDispatchId++}");
                             var dispatch = context.AppendBasicBlock(method.Value.Item1, $"eh.dispatch.{nextVirtualDispatchId++}");
@@ -1358,12 +1363,16 @@ sealed class Compilation : TranslationComponent
                         void PopGCFrame()
                         {
                             if (tracksGCFrames)
+                            {
+                                EnsureGCPop();
                                 builder.BuildCall2(gcPopType, gcPopFunction, [rootFrame]);
+                            }
                         }
 
                         var rootEntriesPointer = GetRootEntryAddress(0);
                         if (tracksGCFrames)
                         {
+                            EnsureGCPush();
                             builder.BuildCall2(gcPushType, gcPushFunction,
                                 [rootFrame, rootEntriesPointer, LLVMValueRef.CreateConstInt(int32Type, (ulong)rootEntryCount, false)]);
                         }
@@ -1394,6 +1403,9 @@ sealed class Compilation : TranslationComponent
                         bool volatileAccess = false;
                         foreach (var instr in method.Value.Item4)
                         {
+                            EnsureExceptionThrow();
+                            if (instr.OpCode.Code == Code.Rethrow)
+                                EnsureExceptionSetupFunctions();
                             if (label.ContainsKey(instr.Offset))
                             {
                                 var curr = label[instr.Offset];

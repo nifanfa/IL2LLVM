@@ -129,6 +129,16 @@ abstract class TranslationComponent(Translator translator)
     protected MethodDefinition GetRuntimeDelegateInvokeMethod(TypeReference type) => Translator.Methods.GetRuntimeDelegateInvokeMethod(type);
     protected bool IsTypeInitializer(MethodReference method) => Translator.Methods.IsTypeInitializer(method);
     protected Tuple<LLVMValueRef, LLVMTypeRef, MethodReference, Collection<Instruction>?>? GetRegisteredMethod(MethodReference method) => Translator.Methods.GetRegisteredMethod(method);
+    protected Tuple<LLVMValueRef, LLVMTypeRef, MethodReference, Collection<Instruction>?> EnsureMethodRegistered(MethodReference method)
+    {
+        var registered = GetRegisteredMethod(method);
+        if (registered is not null)
+            return registered;
+
+        var definition = method.Resolve();
+        RegisterMethodFunction(module, method, definition?.HasBody == true ? definition.Body.Instructions : null);
+        return GetRegisteredMethod(method)!;
+    }
     protected int GetGenericMethodArity(MethodReference method) => Translator.Methods.GetGenericMethodArity(method);
     protected MethodReference BindMethodToDeclaringType(MethodDefinition method, TypeReference declaringType, MethodReference? requestedMethod = null) => Translator.Methods.BindMethodToDeclaringType(method, declaringType, requestedMethod);
     protected MethodReference? FindMethodImplementation(TypeReference type, MethodReference targetMethod) => Translator.Methods.FindMethodImplementation(type, targetMethod);

@@ -62,8 +62,7 @@ sealed class Runtime(Translator translator) : TranslationComponent(translator)
         var enumeratorType = new GenericInstanceType(definition);
         enumeratorType.GenericArguments.Add(elementType);
         var boundConstructor = BindMethodToDeclaringType(constructor, enumeratorType);
-        var registeredConstructor = GetRegisteredMethod(boundConstructor) ?? GetRegisteredMethod(constructor) ??
-            throw new NotSupportedException($"Method is not defined in the input module: {constructor.FullName}");
+        var registeredConstructor = EnsureMethodRegistered(boundConstructor);
         var builder = context.CreateBuilder();
         builder.PositionAtEnd(function.AppendBasicBlock("entry"));
         var enumerator = BuildAllocation(builder, GetObjectSize(enumeratorType));
@@ -118,8 +117,7 @@ sealed class Runtime(Translator translator) : TranslationComponent(translator)
         var stringType = coreLib.String;
         var stringObject = BuildAllocation(builder, GetTypeDefinitionSize(stringType));
         InitializeRuntimeType(builder, stringObject, stringType);
-        var constructor = GetRegisteredMethod(stringConstructor) ??
-            throw new NotSupportedException($"Method is not defined in the input module: {stringConstructor.FullName}");
+        var constructor = EnsureMethodRegistered(stringConstructor);
         builder.BuildCall2(constructor.Item2, constructor.Item1, [stringObject, array]);
         return stringObject;
     }
@@ -131,7 +129,8 @@ sealed class Runtime(Translator translator) : TranslationComponent(translator)
 
     internal new LLVMValueRef BuildAllocationSize(LLVMBuilderRef builder, LLVMValueRef size)
     {
-        return builder.BuildCall2(gcAllocateType, gcAllocateFunction,
+        var gcAllocate = EnsureMethodRegistered(coreLib.GCAllocateMethod);
+        return builder.BuildCall2(gcAllocate.Item2, gcAllocate.Item1,
             [ConvertValue(builder, size, sizeType, false)]);
     }
 
@@ -330,7 +329,8 @@ sealed class Runtime(Translator translator) : TranslationComponent(translator)
         LLVMValueRef length)
     {
         var pointerType = LLVMTypeRef.CreatePointer(int8Type, 0);
-        builder.BuildCall2(memoryCopyType, memoryCopyFunction,
+        var memoryCopy = EnsureMethodRegistered(coreLib.MemoryCopyMethod);
+        builder.BuildCall2(memoryCopy.Item2, memoryCopy.Item1,
         [
             ConvertValue(builder, destination, pointerType),
             ConvertValue(builder, source, pointerType),
@@ -342,7 +342,8 @@ sealed class Runtime(Translator translator) : TranslationComponent(translator)
         LLVMValueRef length)
     {
         var pointerType = LLVMTypeRef.CreatePointer(int8Type, 0);
-        builder.BuildCall2(memoryFillType, memoryFillFunction,
+        var memoryFill = EnsureMethodRegistered(coreLib.MemoryFillMethod);
+        builder.BuildCall2(memoryFill.Item2, memoryFill.Item1,
         [
             ConvertValue(builder, destination, pointerType),
             ConvertValue(builder, value, int8Type, false),
