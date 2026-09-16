@@ -111,6 +111,14 @@ The built-in collector uses GC descriptors emitted by IL2LLVM and registers stat
 
 `System.Threading.Monitor.Enter` and `Exit` are currently host hooks. The supplied hosts contain placeholders, not a complete synchronization implementation.
 
+### Single-threaded runtime
+
+The current runtime supports one managed execution thread only. GC frames, exception state, the allocation list, task continuations, and other runtime state are process-global and are not synchronized for concurrent managed execution.
+
+`Task` support is cooperative and does not imply thread-pool or multithreading support. Asynchronous work must be resumed by the same managed thread at an explicit scheduler or event-loop boundary. A native timer, signal handler, interrupt handler, or worker thread must not call into managed code concurrently or inject a managed callback at an arbitrary instruction. Hosts that need timers should wake the main event loop and let the main managed thread process the pending work.
+
+The `Monitor.Enter` and `Monitor.Exit` host hooks do not change this restriction. Their supplied no-op implementations are sufficient only for single-threaded execution; they are not locks and do not make the GC or managed runtime thread-safe.
+
 ## Console host
 
 Build the managed console input first:
@@ -163,6 +171,7 @@ This example is not portable to another architecture without a matching native h
 
 - IL2LLVM translates methods with bodies in the input assembly. It does not link arbitrary .NET framework assemblies.
 - Unsupported IL or unresolved managed methods stop translation with an error; they are not silently replaced by runtime stubs.
+- The current CoreLib runtime is single-threaded. Concurrent or asynchronously injected managed execution is unsupported, including callbacks entered from native timer or worker threads.
 - There is no automatic executable or module linker step in the MSBuild targets. Object generation and native linking are separate steps.
 - Linux kernel code must not rely on the C standard library. The kernel example provides its own implementations for the external symbols it uses.
 - Native runtime code is target-specific by design; CoreLib and IL2LLVM do not select runtime layouts or exception buffers from the target triple.

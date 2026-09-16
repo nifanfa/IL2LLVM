@@ -1030,10 +1030,19 @@ sealed class Methods(Translator translator) : TranslationComponent(translator)
         var hasDiscardableBody = method.Resolve()?.HasBody == true && !directExport && !isEntryPoint;
         if (hasDiscardableBody)
         {
-            funcValue.Linkage = LLVMLinkage.LLVMLinkOnceODRLinkage;
-            var comdat = module.GetOrInsertComdat(friendlyName);
-            comdat.SelectionKind = LLVMComdatSelectionKind.LLVMAnyComdatSelectionKind;
-            funcValue.Comdat = comdat;
+            if (codeModel == LLVMCodeModel.LLVMCodeModelKernel)
+            {
+                // Kernel module loaders do not support GOTPCRELX relocations.
+                // Keep same-module managed bodies local instead of weak/linkonce.
+                funcValue.Linkage = LLVMLinkage.LLVMInternalLinkage;
+            }
+            else
+            {
+                funcValue.Linkage = LLVMLinkage.LLVMLinkOnceODRLinkage;
+                var comdat = module.GetOrInsertComdat(friendlyName);
+                comdat.SelectionKind = LLVMComdatSelectionKind.LLVMAnyComdatSelectionKind;
+                funcValue.Comdat = comdat;
+            }
         }
         if (method.Resolve()?.HasBody == true)
             funcValue.Section = $".text${GetStableSymbolSuffix(friendlyName)}";

@@ -5,6 +5,7 @@ sealed class Translator
     internal LLVMContextRef context;
     internal LLVMModuleRef module;
     internal LLVMTargetMachineRef machine;
+    internal LLVMCodeModel codeModel;
     internal int pointerSize;
     internal LLVMTypeRef int1Type;
     internal LLVMTypeRef int8Type;

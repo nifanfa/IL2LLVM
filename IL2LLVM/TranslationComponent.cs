@@ -4,6 +4,7 @@ abstract class TranslationComponent(Translator translator)
     protected LLVMContextRef context { get => Translator.context; set => Translator.context = value; }
     protected LLVMModuleRef module { get => Translator.module; set => Translator.module = value; }
     protected LLVMTargetMachineRef machine { get => Translator.machine; set => Translator.machine = value; }
+    protected LLVMCodeModel codeModel { get => Translator.codeModel; set => Translator.codeModel = value; }
     protected int pointerSize { get => Translator.pointerSize; set => Translator.pointerSize = value; }
     protected LLVMTypeRef int1Type { get => Translator.int1Type; set => Translator.int1Type = value; }
     protected LLVMTypeRef int8Type { get => Translator.int8Type; set => Translator.int8Type = value; }

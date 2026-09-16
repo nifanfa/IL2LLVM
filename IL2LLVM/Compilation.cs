@@ -46,6 +46,7 @@ sealed class Compilation : TranslationComponent
         string fileName = Path.GetFullPath(args[0]);
         string outputFileName = Path.GetFullPath(args[1]);
         var (targetTriple, codeModel) = Target.ParseTargetSpecification(args[2]);
+        Translator.codeModel = codeModel;
 
         context = LLVMContextRef.Create();
         module = context.CreateModuleWithName(Path.GetFileNameWithoutExtension(fileName));
@@ -1531,6 +1532,21 @@ sealed class Compilation : TranslationComponent
             var staticRootHead = GetStaticField(coreLib.GCStaticRootsField);
             var staticRootHeadStorage = staticRootHead.Item1;
             staticRootHeadStorage.Initializer = LLVMValueRef.CreateConstPointerCast(nextStaticRoot, staticRootHead.Item2);
+
+            if (codeModel == LLVMCodeModel.LLVMCodeModelKernel)
+            {
+                ReadOnlySpan<byte> noRedZoneName = "noredzone"u8;
+                unsafe
+                {
+                    fixed (byte* name = noRedZoneName)
+                    {
+                        var kind = LLVM.GetEnumAttributeKindForName((sbyte*)name, (nuint)noRedZoneName.Length);
+                        var attribute = context.CreateEnumAttribute(kind, 0);
+                        foreach (var function in module.Functions)
+                            function.AddAttributeAtIndex(LLVMAttributeIndex.LLVMAttributeFunctionIndex, attribute);
+                    }
+                }
+            }
 
             var passOptions = LLVMPassBuilderOptionsRef.Create();
             try

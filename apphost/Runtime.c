@@ -6,60 +6,29 @@
 #include <wchar.h>
 #endif
 
-void System_Console_Write_System_ByReference_System_Byte(const char* str)
-{
-    if (str == NULL)
-        return;
-    printf("%s", str);
-}
-
-void System_Console_WriteLine_System_ByReference_System_Byte(const char* str)
-{
-    System_Console_Write_System_ByReference_System_Byte(str);
-    printf("\n");
-}
+void System_Console_Write_System_ByReference_System_Byte(const char* str) { if (str != NULL) printf("%s", str); }
+void System_Console_WriteLine_System_ByReference_System_Byte(const char* str) { printf("%s\n", str == NULL ? "" : str); }
 
 #ifdef _WIN32
 
-void System_Console_Write_System_ByReference_System_Char(const wchar_t* str)
-{
-    if (str == NULL)
-        return;
-    wprintf(L"%ls", str);
-}
-
-void System_Console_WriteLine_System_ByReference_System_Char(const wchar_t* str)
-{
-    System_Console_Write_System_ByReference_System_Char(str);
-    wprintf(L"\n");
-}
+void System_Console_Write_System_ByReference_System_Char(const wchar_t* str) { if (str != NULL) wprintf(L"%ls", str); }
+void System_Console_WriteLine_System_ByReference_System_Char(const wchar_t* str) { wprintf(L"%ls\n", str == NULL ? L"" : str); }
 
 #else
 
 static void WriteUtf8(uint32_t value)
 {
-    if (value <= 0x7f)
-    {
-        fputc((int)value, stdout);
-    }
-    else if (value <= 0x7ff)
-    {
-        fputc((int)(0xc0 | (value >> 6)), stdout);
-        fputc((int)(0x80 | (value & 0x3f)), stdout);
-    }
-    else if (value <= 0xffff)
-    {
-        fputc((int)(0xe0 | (value >> 12)), stdout);
-        fputc((int)(0x80 | ((value >> 6) & 0x3f)), stdout);
-        fputc((int)(0x80 | (value & 0x3f)), stdout);
-    }
+    unsigned char bytes[4];
+    size_t length = value <= 0x7f ? 1 : value <= 0x7ff ? 2 : value <= 0xffff ? 3 : 4;
+    if (length == 1)
+        bytes[0] = (unsigned char)value;
     else
     {
-        fputc((int)(0xf0 | (value >> 18)), stdout);
-        fputc((int)(0x80 | ((value >> 12) & 0x3f)), stdout);
-        fputc((int)(0x80 | ((value >> 6) & 0x3f)), stdout);
-        fputc((int)(0x80 | (value & 0x3f)), stdout);
+        for (size_t index = length; --index != 0; value >>= 6)
+            bytes[index] = (unsigned char)(0x80 | (value & 0x3f));
+        bytes[0] = (unsigned char)((0xf00 >> length) | value);
     }
+    fwrite(bytes, 1, length, stdout);
 }
 
 void System_Console_Write_System_ByReference_System_Char(const uint16_t* str)
@@ -99,22 +68,7 @@ void System_Console_WriteLine_System_ByReference_System_Char(const uint16_t* str
 
 #endif
 
-void System_Console_WriteLine_Int32(int value)
-{
-    printf("%d\n", value);
-}
-
-void System_Console_WriteLine_IntPtr(size_t value)
-{
-    printf("%zu\n", value);
-}
-
-void Enter(void* obj)
-{
-    (void)obj;
-}
-
-void Exit(void* obj)
-{
-    (void)obj;
-}
+void System_Console_WriteLine_Int32(int value) { printf("%d\n", value); }
+void System_Console_WriteLine_IntPtr(size_t value) { printf("%zu\n", value); }
+void Enter(void* value) { (void)value; }
+void Exit(void* value) { (void)value; }
