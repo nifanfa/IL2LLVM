@@ -117,6 +117,71 @@ The current runtime supports one managed execution thread only. GC frames, excep
 
 `Task` support is cooperative and does not imply thread-pool or multithreading support. Asynchronous work must be resumed by the same managed thread at an explicit scheduler or event-loop boundary. A native timer, signal handler, interrupt handler, or worker thread must not call into managed code concurrently or inject a managed callback at an arbitrary instruction. Hosts that need timers should wake the main event loop and let the main managed thread process the pending work.
 
+Single-threaded does not mean that asynchronous code is unavailable. `await` can return to the event loop and resume later on the same managed thread. Native code can queue an event, and the managed thread can process it and complete the pending task.
+
+### Minimal `TaskCompletionSource<T>` example
+
+Use `TaskCompletionSource<T>` when a C event source will produce a value later.
+
+```csharp
+using System;
+using System.Runtime;
+using System.Threading.Tasks;
+
+internal static class Program
+{
+    static TaskCompletionSource<int> pending;
+
+    static Task<int> ReadAsync()
+    {
+        pending = new TaskCompletionSource<int>();
+        return pending.Task;
+    }
+
+    static async Task RunAsync()
+    {
+        int value = await ReadAsync();
+        Console.WriteLine(value);
+    }
+
+    [RuntimeExport("OnValue")]
+    static void OnValue(int value)
+    {
+        TaskCompletionSource<int> current = pending;
+        pending = null;
+        current?.SetResult(value);
+    }
+
+    // This is the managed entry point called by native code.
+    static void Main()
+    {
+        _ = RunAsync();
+    }
+}
+```
+
+The native side can call the exported method when its event is ready:
+
+```c
+// These symbols are generated/provided by the managed object.
+extern void managed_Main(void);
+extern void OnValue(int value);
+
+static void process_event(void)
+{
+    OnValue(42);
+}
+
+int main(void)
+{
+    managed_Main();  // RunAsync reaches await and returns here.
+    process_event(); // Completes the TaskCompletionSource.
+    return 0;
+}
+```
+
+The program prints `42`. `managed_Main()` starts `RunAsync()` and returns when it reaches `await`; `OnValue(42)` then calls `SetResult`, which resumes the `await`. In a real host, `process_event` would be an event-loop step. The callback must run on the same managed/event-loop thread; an interrupt or native worker must queue the event instead of calling managed code directly. A source should be completed only once.
+
 The `Monitor.Enter` and `Monitor.Exit` host hooks do not change this restriction. Their supplied no-op implementations are sufficient only for single-threaded execution; they are not locks and do not make the GC or managed runtime thread-safe.
 
 ## Console host
