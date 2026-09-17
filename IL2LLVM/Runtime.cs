@@ -329,26 +329,20 @@ sealed class Runtime(Translator translator) : TranslationComponent(translator)
         LLVMValueRef length)
     {
         var pointerType = LLVMTypeRef.CreatePointer(int8Type, 0);
-        var memoryCopy = EnsureMethodRegistered(coreLib.MemoryCopyMethod);
-        builder.BuildCall2(memoryCopy.Item2, memoryCopy.Item1,
-        [
-            ConvertValue(builder, destination, pointerType),
-            ConvertValue(builder, source, pointerType),
-            ConvertValue(builder, length, sizeType, false)
-        ]);
+        builder.BuildMemCpy(
+            ConvertValue(builder, destination, pointerType), 1,
+            ConvertValue(builder, source, pointerType), 1,
+            ConvertValue(builder, length, sizeType, false));
     }
 
     internal new void FillMemory(LLVMBuilderRef builder, LLVMValueRef destination, LLVMValueRef value,
         LLVMValueRef length)
     {
         var pointerType = LLVMTypeRef.CreatePointer(int8Type, 0);
-        var memoryFill = EnsureMethodRegistered(coreLib.MemoryFillMethod);
-        builder.BuildCall2(memoryFill.Item2, memoryFill.Item1,
-        [
+        builder.BuildMemSet(
             ConvertValue(builder, destination, pointerType),
             ConvertValue(builder, value, int8Type, false),
-            ConvertValue(builder, length, sizeType, false)
-        ]);
+            ConvertValue(builder, length, sizeType, false), 1);
     }
 
     internal new void StoreField(LLVMBuilderRef builder, LLVMValueRef obj, FieldDefinition field, LLVMValueRef value)
