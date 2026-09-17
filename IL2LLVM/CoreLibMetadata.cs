@@ -18,6 +18,7 @@ sealed class CoreLibMetadata
     public TypeDefinition Enum => GetType("System.Enum");
     public TypeDefinition Delegate => GetType("System.Delegate");
     public TypeDefinition MulticastDelegate => GetType("System.MulticastDelegate");
+    public TypeDefinition Func => GetType("System.Func`1");
     public TypeDefinition Nullable => GetType("System.Nullable`1");
     public TypeDefinition Activator => GetType("System.Activator");
     public TypeDefinition ArrayEnumerator => GetType("System.ArrayEnumerator`1");
@@ -38,7 +39,6 @@ sealed class CoreLibMetadata
     public TypeDefinition VariableArgument => GetType("System.VariableArgument");
     public TypeDefinition TypedReference => GetType("System.TypedReference");
     public TypeDefinition RuntimeFieldHandle => GetType("System.RuntimeFieldHandle");
-    public TypeDefinition GCDesc => GetType("System.GCDesc");
     public TypeDefinition FlagsAttribute => GetType("System.FlagsAttribute");
     public TypeDefinition RuntimeExportAttribute => GetType("System.Runtime.RuntimeExportAttribute");
     public TypeDefinition MethodImplAttribute => GetType("System.Runtime.CompilerServices.MethodImplAttribute");
@@ -63,7 +63,8 @@ sealed class CoreLibMetadata
     public FieldDefinition TypeNamespaceField => GetInstanceField(Type, "Namespace");
     public FieldDefinition TypeFullNameField => GetInstanceField(Type, "FullName");
     public FieldDefinition TypeRuntimeTypeIdField => GetInstanceField(Type, "RuntimeTypeId");
-    public FieldDefinition TypeGCDescriptorField => GetInstanceField(Type, "GCDescriptor");
+    public FieldDefinition TypeObjectReferenceOffsetsField => GetInstanceField(Type, "ObjectReferenceOffsets");
+    public FieldDefinition TypeArrayElementReferenceOffsetsField => GetInstanceField(Type, "ArrayElementReferenceOffsets");
     public FieldDefinition TypeEnumNamesField => GetInstanceField(Type, "EnumNames");
     public FieldDefinition TypeEnumValuesField => GetInstanceField(Type, "EnumValues");
     public FieldDefinition TypeIsFlagsEnumField => GetInstanceField(Type, "IsFlagsEnum");
@@ -74,17 +75,10 @@ sealed class CoreLibMetadata
     public FieldDefinition ArrayLengthsField => GetInstanceField(Array, "_lengths");
     public FieldDefinition ArrayElementSizeField => GetInstanceField(Array, "m_elementSize");
     public FieldDefinition ArrayDataField => GetInstanceField(Array, "m_pData");
-    public TypeDefinition GCDescReference => GetType("System.GCDescReference");
-    public FieldDefinition GCDescObjectReferencesField => GetInstanceField(GCDesc, "ObjectReferences");
-    public FieldDefinition GCDescArrayElementReferencesField => GetInstanceField(GCDesc, "ArrayElementReferences");
-    public FieldDefinition GCDescReferenceNextField => GetInstanceField(GCDescReference, "Next");
-    public FieldDefinition GCDescReferenceOffsetField => GetInstanceField(GCDescReference, "Offset");
-    public IReadOnlyList<FieldDefinition> GCDescReferenceFields =>
-        [GCDescObjectReferencesField, GCDescArrayElementReferencesField];
     public FieldDefinition GCStaticRootsField => GetStaticField(GCHeap, "s_staticRoots");
     public FieldDefinition GCStaticRootNextField => GetInstanceField(GCStaticRoot, "Next");
     public FieldDefinition GCStaticRootAddressField => GetInstanceField(GCStaticRoot, "Address");
-    public FieldDefinition GCStaticRootDescriptorField => GetInstanceField(GCStaticRoot, "Descriptor");
+    public FieldDefinition GCStaticRootTypeField => GetInstanceField(GCStaticRoot, "Type");
     public FieldDefinition RuntimeFieldDataField => GetInstanceField(RuntimeFieldHandle, "Data");
     public FieldDefinition RuntimeFieldLengthField => GetInstanceField(RuntimeFieldHandle, "Length");
     public FieldDefinition RuntimeArgumentHandleArgumentsField => GetInstanceField(RuntimeArgumentHandle, "Arguments");

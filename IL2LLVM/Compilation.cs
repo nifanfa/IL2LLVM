@@ -80,8 +80,8 @@ sealed class Compilation : TranslationComponent
         runtimeTypeFactories = new(StringComparer.Ordinal);
         staticStrings = new(StringComparer.Ordinal);
         staticStringArrays = new(StringComparer.Ordinal);
+        staticInt32Arrays = new(StringComparer.Ordinal);
         staticUInt64Arrays = new(StringComparer.Ordinal);
-        gcDescriptors = new(StringComparer.Ordinal);
         runtimeFieldData = new(StringComparer.Ordinal);
         missingVirtualFunctionPointers = new(StringComparer.Ordinal);
         delegateThunks = new(StringComparer.Ordinal);
@@ -1184,7 +1184,7 @@ sealed class Compilation : TranslationComponent
                             });
                         }
 
-                        var fixedRoots = new List<(LLVMValueRef Address, TypeReference? Descriptor)>();
+                        var fixedRoots = new List<(LLVMValueRef Address, TypeReference? Type)>();
 
                         bool IsPointerRoot(TypeReference type)
                         {
@@ -1282,24 +1282,24 @@ sealed class Compilation : TranslationComponent
                          LLVMValueRef.CreateConstInt(sizeType, (ulong)(index * 2), false)]);
                         }
 
-                        void StoreRootEntry(int index, LLVMValueRef address, TypeReference? descriptor)
+                        void StoreRootEntry(int index, LLVMValueRef address, TypeReference? type)
                         {
                             if (!tracksGCFrames)
                                 return;
                             var entry = GetRootEntryAddress(index);
                             builder.BuildStore(ConvertValue(builder, address, exceptionPointerType), entry);
-                            var descriptorAddress = builder.BuildGEP2(exceptionPointerType, entry,
+                            var typeAddress = builder.BuildGEP2(exceptionPointerType, entry,
                                 [LLVMValueRef.CreateConstInt(sizeType, 1, false)]);
-                            var descriptorValue = descriptor is null
+                            var typeValue = type is null
                                 ? LLVMValueRef.CreateConstNull(exceptionPointerType)
-                                : GetGCDescriptor(descriptor);
-                            builder.BuildStore(ConvertValue(builder, descriptorValue, exceptionPointerType), descriptorAddress);
+                                : GetRuntimeTypeObject(type);
+                            builder.BuildStore(ConvertValue(builder, typeValue, exceptionPointerType), typeAddress);
                         }
 
                         if (tracksGCFrames)
                         {
                             for (int index = 0; index < fixedRoots.Count; index++)
-                                StoreRootEntry(index, fixedRoots[index].Address, fixedRoots[index].Descriptor);
+                                StoreRootEntry(index, fixedRoots[index].Address, fixedRoots[index].Type);
                             for (int index = fixedRoots.Count; index < rootEntryCount; index++)
                                 StoreRootEntry(index, LLVMValueRef.CreateConstNull(exceptionPointerType), null);
                         }
@@ -1494,7 +1494,7 @@ sealed class Compilation : TranslationComponent
             Progress($"[6/7] Translated {translatedMethods.Count} methods. Running LLVM cleanup and verification...");
 
             var pointerType = LLVMTypeRef.CreatePointer(int8Type, 0);
-            var staticRoots = new List<(LLVMValueRef Address, LLVMValueRef Descriptor)>();
+            var staticRoots = new List<(LLVMValueRef Address, LLVMValueRef Type)>();
             foreach (var (name, storage) in staticFields)
             {
                 var fieldType = staticFieldTypes[name];
@@ -1502,13 +1502,13 @@ sealed class Compilation : TranslationComponent
                     staticRoots.Add((LLVMValueRef.CreateConstPointerCast(storage.Item1, pointerType), LLVMValueRef.CreateConstNull(pointerType)));
                 else if (IsValueType(fieldType) && GetGCReferenceOffsets(fieldType).Any())
                     staticRoots.Add((LLVMValueRef.CreateConstPointerCast(storage.Item1, pointerType),
-                        LLVMValueRef.CreateConstPointerCast(GetGCDescriptor(fieldType), pointerType)));
+                        LLVMValueRef.CreateConstPointerCast(GetRuntimeTypeObject(fieldType), pointerType)));
             }
             var staticRootFields = coreLib.GCStaticRoot.Fields.Where(field => !field.IsStatic).ToArray();
             if (staticRootFields.Length != 3 ||
                 !staticRootFields.Contains(coreLib.GCStaticRootNextField) ||
                 !staticRootFields.Contains(coreLib.GCStaticRootAddressField) ||
-                !staticRootFields.Contains(coreLib.GCStaticRootDescriptorField))
+                !staticRootFields.Contains(coreLib.GCStaticRootTypeField))
                 throw new InvalidOperationException($"Unexpected {coreLib.GCStaticRoot.FullName} layout.");
             var staticRootType = context.GetStructType(
                 staticRootFields.Select(field => GetLLVMTypeRef(field.FieldType)).ToArray(), false);
@@ -1522,8 +1522,8 @@ sealed class Compilation : TranslationComponent
                         return nextStaticRoot;
                     if (ReferenceEquals(field, coreLib.GCStaticRootAddressField))
                         return staticRoots[index].Address;
-                    if (ReferenceEquals(field, coreLib.GCStaticRootDescriptorField))
-                        return staticRoots[index].Descriptor;
+                    if (ReferenceEquals(field, coreLib.GCStaticRootTypeField))
+                        return staticRoots[index].Type;
                     throw new InvalidOperationException($"Unexpected {coreLib.GCStaticRoot.FullName} field: {field.Name}.");
                 }).ToArray();
                 staticRoot.Initializer = LLVMValueRef.CreateConstNamedStruct(staticRootType, staticRootValues);

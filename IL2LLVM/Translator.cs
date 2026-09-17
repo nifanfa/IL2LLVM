@@ -41,9 +41,8 @@ sealed class Translator
     internal Dictionary<string, LLVMValueRef> runtimeTypeFactories = new(StringComparer.Ordinal);
     internal Dictionary<string, LLVMValueRef> staticStrings = new(StringComparer.Ordinal);
     internal Dictionary<string, LLVMValueRef> staticStringArrays = new(StringComparer.Ordinal);
+    internal Dictionary<string, LLVMValueRef> staticInt32Arrays = new(StringComparer.Ordinal);
     internal Dictionary<string, LLVMValueRef> staticUInt64Arrays = new(StringComparer.Ordinal);
-    internal Dictionary<string, LLVMValueRef> gcDescriptors = new(StringComparer.Ordinal);
-    internal Dictionary<string, LLVMValueRef> gcReferenceLists = new(StringComparer.Ordinal);
     internal Dictionary<string, LLVMValueRef> runtimeFieldData = new(StringComparer.Ordinal);
     internal Dictionary<string, LLVMValueRef> missingVirtualFunctionPointers = new(StringComparer.Ordinal);
     internal Dictionary<string, LLVMValueRef> delegateThunks = new(StringComparer.Ordinal);

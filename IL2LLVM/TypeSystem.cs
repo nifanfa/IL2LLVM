@@ -267,11 +267,6 @@ sealed class TypeSystem(Translator translator) : TranslationComponent(translator
         return coreLib.TypeRuntimeTypeIdField;
     }
 
-    internal new FieldDefinition GetTypeGCDescriptorField()
-    {
-        return coreLib.TypeGCDescriptorField;
-    }
-
     internal new FieldDefinition GetEnumValueField()
     {
         return coreLib.EnumValueField;

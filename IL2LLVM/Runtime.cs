@@ -443,6 +443,14 @@ sealed class Runtime(Translator translator) : TranslationComponent(translator)
             coreLib.IsFlagsAttribute(attribute.AttributeType)) == true;
         var isSigned = underlyingType?.MetadataType is MetadataType.SByte or MetadataType.Int16 or
             MetadataType.Int32 or MetadataType.Int64;
+        var objectReferenceOffsets = GetGCReferenceOffsets(type).Distinct().Order().ToArray();
+        var arrayElementReferenceOffsets = type is ArrayType arrayType
+            ? IsManagedReferenceType(arrayType.ElementType)
+                ? [0]
+                : IsValueType(arrayType.ElementType)
+                    ? GetGCReferenceOffsets(arrayType.ElementType).Distinct().Order().ToArray()
+                    : []
+            : [];
 
         var values = new List<LLVMValueRef>
         {
@@ -461,8 +469,10 @@ sealed class Runtime(Translator translator) : TranslationComponent(translator)
                 value = LLVMValueRef.CreateConstPointerCast(GetStaticString(type.FullName.Replace('/', '+')), pointerType);
             else if (ReferenceEquals(field, coreLib.TypeRuntimeTypeIdField))
                 value = LLVMValueRef.CreateConstInt(int32Type, (ulong)GetRuntimeTypeId(type), false);
-            else if (ReferenceEquals(field, coreLib.TypeGCDescriptorField))
-                value = LLVMValueRef.CreateConstPointerCast(GetGCDescriptor(type), pointerType);
+            else if (ReferenceEquals(field, coreLib.TypeObjectReferenceOffsetsField))
+                value = LLVMValueRef.CreateConstPointerCast(GetStaticInt32Array(objectReferenceOffsets), pointerType);
+            else if (ReferenceEquals(field, coreLib.TypeArrayElementReferenceOffsetsField))
+                value = LLVMValueRef.CreateConstPointerCast(GetStaticInt32Array(arrayElementReferenceOffsets), pointerType);
             else if (ReferenceEquals(field, coreLib.TypeEnumNamesField))
                 value = underlyingType is null
                     ? LLVMValueRef.CreateConstNull(pointerType)
@@ -525,11 +535,11 @@ sealed class Runtime(Translator translator) : TranslationComponent(translator)
             }
         }
 
+        var pointerType = LLVMTypeRef.CreatePointer(int8Type, 0);
         var returnType = GetCallType(type);
-        var factoryType = LLVMTypeRef.CreateFunction(returnType, []);
+        var factoryType = LLVMTypeRef.CreateFunction(returnType, [pointerType]);
         var factory = module.AddFunction($"__type_factory_{GetStableSymbolSuffix(key)}", factoryType);
         factory.FunctionCallConv = (uint)LLVMCallConv.LLVMCCallConv;
-        runtimeTypeFactories.Add(key, factory);
         var builder = context.CreateBuilder();
         builder.PositionAtEnd(factory.AppendBasicBlock("entry"));
 
@@ -537,7 +547,7 @@ sealed class Runtime(Translator translator) : TranslationComponent(translator)
         {
             builder.BuildRet(LLVMValueRef.CreateConstNull(returnType));
             builder.Dispose();
-            return factory;
+            return CreateFactoryDelegate();
         }
 
         if (IsValueType(type))
@@ -556,7 +566,7 @@ sealed class Runtime(Translator translator) : TranslationComponent(translator)
             builder.BuildRet(builder.BuildLoad2(returnType,
                 builder.BuildBitCast(storage, LLVMTypeRef.CreatePointer(returnType, 0))));
             builder.Dispose();
-            return factory;
+            return CreateFactoryDelegate();
         }
 
         var instance = BuildAllocation(builder, GetObjectSize(type));
@@ -564,7 +574,28 @@ sealed class Runtime(Translator translator) : TranslationComponent(translator)
         builder.BuildCall2(registeredClassConstructor!.Item2, registeredClassConstructor.Item1, [instance]);
         builder.BuildRet(instance);
         builder.Dispose();
-        return factory;
+        return CreateFactoryDelegate();
+
+        LLVMValueRef CreateFactoryDelegate()
+        {
+            var delegateType = new GenericInstanceType(coreLib.Func);
+            delegateType.GenericArguments.Add(type);
+            var fields = GetObjectLayoutFields(coreLib.Func);
+            var storageType = context.GetStructType(
+                fields.Select(field => GetLLVMTypeRef(field.FieldType)).ToArray(), false);
+            var storage = AddInternalGlobal(storageType, $"__type_factory_delegate_{GetStableSymbolSuffix(key)}");
+            runtimeTypeFactories.Add(key, storage);
+            storage.Initializer = LLVMValueRef.CreateConstNamedStruct(storageType,
+                fields.Select(field =>
+                {
+                    if (ReferenceEquals(field, coreLib.ObjectTypeField))
+                        return LLVMValueRef.CreateConstPointerCast(GetRuntimeTypeObject(delegateType), pointerType);
+                    if (ReferenceEquals(field, coreLib.DelegateFunctionField))
+                        return LLVMValueRef.CreateConstPointerCast(factory, GetLLVMTypeRef(field.FieldType));
+                    return LLVMValueRef.CreateConstNull(GetLLVMTypeRef(field.FieldType));
+                }).ToArray());
+            return storage;
+        }
     }
 
     internal new ulong GetEnumConstantValue(object? value, TypeReference? underlyingType)
@@ -669,6 +700,28 @@ sealed class Runtime(Translator translator) : TranslationComponent(translator)
         return result;
     }
 
+    internal new LLVMValueRef GetStaticInt32Array(int[] values)
+    {
+        var key = string.Join(",", values);
+        if (staticInt32Arrays.TryGetValue(key, out var result))
+            return result;
+        var elementValues = values.Select(value => LLVMValueRef.CreateConstInt(int32Type, (ulong)value, true))
+            .Append(LLVMValueRef.CreateConstNull(int32Type)).ToArray();
+        var dataType = LLVMTypeRef.CreateArray(int32Type, (uint)elementValues.Length);
+        var arrayFields = GetObjectLayoutFields(coreLib.Array);
+        var storageType = context.GetStructType(
+            [.. arrayFields.Select(field => GetLLVMTypeRef(field.FieldType)), dataType], false);
+        result = AddInternalGlobal(storageType, $"__static_int32_array_{GetStableSymbolSuffix(key)}");
+        staticInt32Arrays.Add(key, result);
+        var zero = LLVMValueRef.CreateConstInt(int32Type, 0, false);
+        var dataPointer = LLVMValueRef.CreateConstGEP2(storageType, result,
+            [zero, LLVMValueRef.CreateConstInt(int32Type, (ulong)arrayFields.Length, false), zero]);
+        result.Initializer = LLVMValueRef.CreateConstNamedStruct(storageType,
+            [.. GetStaticArrayHeaderValues(arrayFields, new ArrayType(coreLib.Int32), values.Length, dataPointer),
+             LLVMValueRef.CreateConstArray(int32Type, elementValues)]);
+        return result;
+    }
+
     private FieldDefinition[] GetObjectLayoutFields(TypeDefinition type)
     {
         var fields = new List<FieldDefinition>();
@@ -764,115 +817,6 @@ sealed class Runtime(Translator translator) : TranslationComponent(translator)
         guardBuilder.PositionAtEnd(done);
         guardBuilder.BuildRetVoid();
         return (guard, state);
-    }
-
-    internal new LLVMValueRef GetGCDescriptor(TypeReference type)
-    {
-        var key = GetRuntimeTypeKey(type);
-        if (gcDescriptors.TryGetValue(key, out var descriptor))
-            return descriptor;
-
-        var fixedReferences = GetGCReferenceOffsets(type).Distinct().Order().ToArray();
-        var elementReferences = Array.Empty<int>();
-        if (type is ArrayType arrayType)
-        {
-            elementReferences = IsManagedReferenceType(arrayType.ElementType)
-                ? [0]
-                : IsValueType(arrayType.ElementType)
-                    ? GetGCReferenceOffsets(arrayType.ElementType).Distinct().Order().ToArray()
-                    : [];
-        }
-
-        ValidateGCReferenceOffsets(type, fixedReferences, "object");
-        ValidateGCReferenceOffsets(type, elementReferences, "array element");
-
-        var gcDescType = coreLib.GCDesc;
-        var allGCDescFields = gcDescType.Fields.Where(field => !field.IsStatic).ToArray();
-        var expectedGCDescFields = coreLib.GCDescReferenceFields.ToArray();
-        if (allGCDescFields.Length != expectedGCDescFields.Length ||
-            allGCDescFields.Any(field => !expectedGCDescFields.Contains(field)) ||
-            allGCDescFields.Any(field => field.FieldType is not PointerType))
-            throw new InvalidOperationException($"{coreLib.GCDesc.FullName} has an unexpected layout. Expected ObjectReferences and ArrayElementReferences pointers.");
-
-        var pointerType = LLVMTypeRef.CreatePointer(int8Type, 0);
-        var referenceNodeType = CreateGCDescReferenceNodeType();
-        var objectReferences = CreateGCDescReferenceList(referenceNodeType, fixedReferences);
-        var arrayElementReferences = CreateGCDescReferenceList(referenceNodeType, elementReferences);
-        var values = new List<LLVMValueRef>(allGCDescFields.Length);
-        var fieldTypes = new List<LLVMTypeRef>(allGCDescFields.Length);
-        foreach (var field in allGCDescFields)
-        {
-            fieldTypes.Add(pointerType);
-            if (ReferenceEquals(field, coreLib.GCDescObjectReferencesField))
-                values.Add(objectReferences);
-            else if (ReferenceEquals(field, coreLib.GCDescArrayElementReferencesField))
-                values.Add(arrayElementReferences);
-            else
-                throw new InvalidOperationException($"Unexpected field in {coreLib.GCDesc.FullName}: {field.FullName}.");
-        }
-        var descriptorType = context.GetStructType(fieldTypes.ToArray(), false);
-        descriptor = AddInternalGlobal(descriptorType, $"__gc_desc_{GetStableSymbolSuffix(key)}");
-        descriptor.Initializer = LLVMValueRef.CreateConstNamedStruct(descriptorType, values.ToArray());
-        gcDescriptors.Add(key, descriptor);
-        return descriptor;
-
-        LLVMTypeRef CreateGCDescReferenceNodeType()
-        {
-            var offsetFieldOffset = GetFieldOffset(coreLib.GCDescReferenceOffsetField);
-            var nodeSize = GetTypeSize(coreLib.GCDescReference);
-            var nodeFields = new List<LLVMTypeRef> { pointerType };
-            var currentOffset = pointerSize;
-            if (offsetFieldOffset > currentOffset)
-            {
-                nodeFields.Add(LLVMTypeRef.CreateArray(int8Type, (uint)(offsetFieldOffset - currentOffset)));
-                currentOffset = offsetFieldOffset;
-            }
-            nodeFields.Add(int16Type);
-            currentOffset += sizeof(ushort);
-            if (nodeSize > currentOffset)
-                nodeFields.Add(LLVMTypeRef.CreateArray(int8Type, (uint)(nodeSize - currentOffset)));
-            return context.GetStructType(nodeFields.ToArray(), false);
-        }
-
-        LLVMValueRef CreateGCDescReferenceList(LLVMTypeRef nodeType, IReadOnlyList<int> offsets)
-        {
-            var key = string.Join(",", offsets);
-            if (gcReferenceLists.TryGetValue(key, out var cachedList))
-                return cachedList;
-
-            var next = LLVMValueRef.CreateConstNull(pointerType);
-            var suffix = GetStableSymbolSuffix(key);
-            for (int index = offsets.Count - 1; index >= 0; index--)
-            {
-                var node = AddInternalGlobal(nodeType, $"__gc_ref_{suffix}_{index}");
-                var nodeValues = new List<LLVMValueRef>
-                {
-                    next,
-                    LLVMValueRef.CreateConstInt(int16Type, (ulong)offsets[index], false)
-                };
-                var offsetFieldOffset = GetFieldOffset(coreLib.GCDescReferenceOffsetField);
-                if (offsetFieldOffset > pointerSize)
-                    nodeValues.Insert(1, LLVMValueRef.CreateConstNull(
-                        LLVMTypeRef.CreateArray(int8Type, (uint)(offsetFieldOffset - pointerSize))));
-                var nodeSize = GetTypeSize(coreLib.GCDescReference);
-                var tailSize = nodeSize - offsetFieldOffset - sizeof(ushort);
-                if (tailSize > 0)
-                    nodeValues.Add(LLVMValueRef.CreateConstNull(LLVMTypeRef.CreateArray(int8Type, (uint)tailSize)));
-                node.Initializer = LLVMValueRef.CreateConstNamedStruct(nodeType, nodeValues.ToArray());
-                next = LLVMValueRef.CreateConstPointerCast(node, pointerType);
-            }
-            gcReferenceLists.Add(key, next);
-            return next;
-        }
-    }
-
-    internal new void ValidateGCReferenceOffsets(TypeReference type, IEnumerable<int> offsets, string region)
-    {
-        foreach (var offset in offsets)
-        {
-            if ((uint)offset > ushort.MaxValue)
-                throw new InvalidOperationException($"GC {region} reference offset for {type.FullName} does not fit in ushort: {offset}.");
-        }
     }
 
     internal new IEnumerable<int> GetGCReferenceOffsets(TypeReference type)

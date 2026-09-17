@@ -40,9 +40,8 @@ abstract class TranslationComponent(Translator translator)
     protected Dictionary<string, LLVMValueRef> runtimeTypeFactories { get => Translator.runtimeTypeFactories; set => Translator.runtimeTypeFactories = value; }
     protected Dictionary<string, LLVMValueRef> staticStrings { get => Translator.staticStrings; set => Translator.staticStrings = value; }
     protected Dictionary<string, LLVMValueRef> staticStringArrays { get => Translator.staticStringArrays; set => Translator.staticStringArrays = value; }
+    protected Dictionary<string, LLVMValueRef> staticInt32Arrays { get => Translator.staticInt32Arrays; set => Translator.staticInt32Arrays = value; }
     protected Dictionary<string, LLVMValueRef> staticUInt64Arrays { get => Translator.staticUInt64Arrays; set => Translator.staticUInt64Arrays = value; }
-    protected Dictionary<string, LLVMValueRef> gcDescriptors { get => Translator.gcDescriptors; set => Translator.gcDescriptors = value; }
-    protected Dictionary<string, LLVMValueRef> gcReferenceLists { get => Translator.gcReferenceLists; set => Translator.gcReferenceLists = value; }
     protected Dictionary<string, LLVMValueRef> runtimeFieldData { get => Translator.runtimeFieldData; set => Translator.runtimeFieldData = value; }
     protected Dictionary<string, LLVMValueRef> missingVirtualFunctionPointers { get => Translator.missingVirtualFunctionPointers; set => Translator.missingVirtualFunctionPointers = value; }
     protected Dictionary<string, LLVMValueRef> delegateThunks { get => Translator.delegateThunks; set => Translator.delegateThunks = value; }
@@ -88,7 +87,6 @@ abstract class TranslationComponent(Translator translator)
     protected TypeReference? GetMethodVariableType(MethodReference method, int index) => Translator.TypeSystem.GetMethodVariableType(method, index);
     protected FieldDefinition GetObjectTypeField() => Translator.TypeSystem.GetObjectTypeField();
     protected FieldDefinition GetTypeRuntimeTypeIdField() => Translator.TypeSystem.GetTypeRuntimeTypeIdField();
-    protected FieldDefinition GetTypeGCDescriptorField() => Translator.TypeSystem.GetTypeGCDescriptorField();
     protected FieldDefinition GetEnumValueField() => Translator.TypeSystem.GetEnumValueField();
     protected int GetObjectHeaderSize() => Translator.TypeSystem.GetObjectHeaderSize();
     protected FieldDefinition GetLocalField(FieldReference field) => Translator.TypeSystem.GetLocalField(field);
@@ -199,12 +197,11 @@ abstract class TranslationComponent(Translator translator)
     protected ulong GetEnumConstantValue(object? value, TypeReference? underlyingType) => Translator.Runtime.GetEnumConstantValue(value, underlyingType);
     protected LLVMValueRef GetStaticString(string value) => Translator.Runtime.GetStaticString(value);
     protected LLVMValueRef GetStaticStringArray(string[] values) => Translator.Runtime.GetStaticStringArray(values);
+    protected LLVMValueRef GetStaticInt32Array(int[] values) => Translator.Runtime.GetStaticInt32Array(values);
     protected LLVMValueRef GetStaticUInt64Array(ulong[] values) => Translator.Runtime.GetStaticUInt64Array(values);
     protected LLVMValueRef GetObjectRuntimeType(LLVMBuilderRef builder, LLVMValueRef obj) => Translator.Runtime.GetObjectRuntimeType(builder, obj);
     protected LLVMValueRef GetObjectRuntimeTypeId(LLVMBuilderRef builder, LLVMValueRef obj) => Translator.Runtime.GetObjectRuntimeTypeId(builder, obj);
     protected (LLVMValueRef Function, LLVMValueRef State)? GetCctorGuard(TypeReference type) => Translator.Runtime.GetCctorGuard(type);
-    protected LLVMValueRef GetGCDescriptor(TypeReference type) => Translator.Runtime.GetGCDescriptor(type);
-    protected void ValidateGCReferenceOffsets(TypeReference type, IEnumerable<int> offsets, string region) => Translator.Runtime.ValidateGCReferenceOffsets(type, offsets, region);
     protected IEnumerable<int> GetGCReferenceOffsets(TypeReference type) => Translator.Runtime.GetGCReferenceOffsets(type);
     protected TypeReference? GetClosedBaseType(TypeReference type) => Translator.Runtime.GetClosedBaseType(type);
     protected bool IsRuntimeTypeCompatible(TypeReference runtimeType, TypeReference targetType) => Translator.Runtime.IsRuntimeTypeCompatible(runtimeType, targetType);
