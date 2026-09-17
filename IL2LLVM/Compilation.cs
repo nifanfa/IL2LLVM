@@ -1536,14 +1536,32 @@ sealed class Compilation : TranslationComponent
             if (codeModel == LLVMCodeModel.LLVMCodeModelKernel)
             {
                 ReadOnlySpan<byte> noRedZoneName = "noredzone"u8;
+                ReadOnlySpan<byte> noImplicitFloatName = "noimplicitfloat"u8;
+                ReadOnlySpan<byte> stackRealignName = "stackrealign"u8;
                 unsafe
                 {
-                    fixed (byte* name = noRedZoneName)
+                    fixed (byte* noRedZone = noRedZoneName)
+                    fixed (byte* noImplicitFloat = noImplicitFloatName)
+                    fixed (byte* stackRealign = stackRealignName)
                     {
-                        var kind = LLVM.GetEnumAttributeKindForName((sbyte*)name, (nuint)noRedZoneName.Length);
-                        var attribute = context.CreateEnumAttribute(kind, 0);
+                        var noRedZoneKind = LLVM.GetEnumAttributeKindForName((sbyte*)noRedZone,
+                            (nuint)noRedZoneName.Length);
+                        var noRedZoneAttribute = context.CreateEnumAttribute(noRedZoneKind, 0);
+                        var noImplicitFloatKind = LLVM.GetEnumAttributeKindForName((sbyte*)noImplicitFloat,
+                            (nuint)noImplicitFloatName.Length);
+                        var noImplicitFloatAttribute = context.CreateEnumAttribute(noImplicitFloatKind, 0);
+                        var stackRealignAttribute = new LLVMAttributeRef((IntPtr)LLVM.CreateStringAttribute(
+                            (LLVMOpaqueContext*)context.Handle, (sbyte*)stackRealign,
+                            (uint)stackRealignName.Length, null, 0));
                         foreach (var function in module.Functions)
-                            function.AddAttributeAtIndex(LLVMAttributeIndex.LLVMAttributeFunctionIndex, attribute);
+                        {
+                            function.AddAttributeAtIndex(LLVMAttributeIndex.LLVMAttributeFunctionIndex,
+                                noRedZoneAttribute);
+                            function.AddAttributeAtIndex(LLVMAttributeIndex.LLVMAttributeFunctionIndex,
+                                noImplicitFloatAttribute);
+                            function.AddAttributeAtIndex(LLVMAttributeIndex.LLVMAttributeFunctionIndex,
+                                stackRealignAttribute);
+                        }
                     }
                 }
             }
