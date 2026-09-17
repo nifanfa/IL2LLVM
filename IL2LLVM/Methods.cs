@@ -1198,7 +1198,28 @@ sealed class Methods(Translator translator) : TranslationComponent(translator)
             var array = BuildAllocationSize(builder, builder.BuildAdd(baseSize, dataSize));
             StoreField(builder, array, GetArrayLengthField(), total);
             InitializeRuntimeType(builder, array, arrayType);
+
+            var rootSlot = builder.BuildAlloca(pointerType);
+            rootSlot.Alignment = (uint)pointerSize;
+            builder.BuildStore(array, rootSlot);
+            var rootEntriesType = LLVMTypeRef.CreateArray(pointerType, 2);
+            var rootEntries = builder.BuildAlloca(rootEntriesType);
+            rootEntries.Alignment = (uint)pointerSize;
+            var zero = LLVMValueRef.CreateConstInt(sizeType, 0, false);
+            builder.BuildStore(builder.BuildBitCast(rootSlot, pointerType),
+                builder.BuildGEP2(rootEntriesType, rootEntries, [zero, zero]));
+            builder.BuildStore(LLVMValueRef.CreateConstNull(pointerType),
+                builder.BuildGEP2(rootEntriesType, rootEntries,
+                    [zero, LLVMValueRef.CreateConstInt(sizeType, 1, false)]));
+            var rootFrameType = LLVMTypeRef.CreateArray(int8Type, (uint)GetTypeSize(coreLib.GCFrame));
+            var rootFrame = builder.BuildAlloca(rootFrameType);
+            rootFrame.Alignment = (uint)pointerSize;
+            var gcPush = EnsureMethodRegistered(coreLib.GCPushMethod);
+            var gcPop = EnsureMethodRegistered(coreLib.GCPopMethod);
+            builder.BuildCall2(gcPush.Item2, gcPush.Item1,
+                [rootFrame, rootEntries, LLVMValueRef.CreateConstInt(int32Type, 1, false)]);
             StoreField(builder, array, GetArrayLengthsField(), BuildArrayLengthTable(builder, dimensions));
+            builder.BuildCall2(gcPop.Item2, gcPop.Item1, [rootFrame]);
             builder.BuildRet(array);
             builder.Dispose();
             return;
