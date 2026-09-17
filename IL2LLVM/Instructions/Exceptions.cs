@@ -12,9 +12,19 @@ sealed class Exceptions(Translator translator) : TranslationComponent(translator
         LLVMTypeRef exceptionPopType, LLVMValueRef exceptionPopFunction)
     {
         var pointerType = LLVMTypeRef.CreatePointer(int8Type, 0);
+
+        void ValidateRuntimeCall(LLVMTypeRef functionType, LLVMValueRef functionValue, string runtimeMethod)
+        {
+            if (functionType == default || functionValue == default)
+                throw new InvalidProgramException(
+                    $"Cannot translate '{instruction.OpCode.Code}' in method '{method?.FullName}' at IL_{instruction.Offset:X4}: " +
+                    $"runtime method '{runtimeMethod}' has not been initialized.");
+        }
+
         switch (instruction.OpCode.Code)
         {
             case Code.Throw:
+                ValidateRuntimeCall(exceptionThrowType, exceptionThrowFunction, "ExceptionRuntime.Throw");
                 builder.BuildCall2(exceptionThrowType, exceptionThrowFunction,
                     [stack.Count == 0 ? LLVMValueRef.CreateConstNull(pointerType) : ConvertValue(builder, stack.Pop(), pointerType)]);
                 builder.BuildUnreachable();
@@ -22,6 +32,8 @@ sealed class Exceptions(Translator translator) : TranslationComponent(translator
                 return true;
             case Code.Rethrow:
                 {
+                    ValidateRuntimeCall(exceptionThrowType, exceptionThrowFunction, "ExceptionRuntime.Throw");
+                    ValidateRuntimeCall(exceptionCurrentType, exceptionCurrentFunction, "ExceptionRuntime.GetCurrent");
                     var activeCatch = method?.Body.ExceptionHandlers
                         .Where(handler => handler.HandlerType is ExceptionHandlerType.Catch or ExceptionHandlerType.Filter &&
                             handler.HandlerStart.Offset <= instruction.Offset &&
@@ -85,7 +97,10 @@ sealed class Exceptions(Translator translator) : TranslationComponent(translator
                         .OrderBy(region => region.End - region.Start)
                         .ToList();
                     foreach (var region in exitedRegions)
+                    {
+                        ValidateRuntimeCall(exceptionPopType, exceptionPopFunction, "ExceptionRuntime.Pop");
                         builder.BuildCall2(exceptionPopType, exceptionPopFunction, [region.Frame]);
+                    }
                     var handlers = method?.Body.ExceptionHandlers.Where(handler =>
                             handler.HandlerType == ExceptionHandlerType.Finally &&
                             handler.TryStart.Offset <= instruction.Offset && instruction.Offset < handler.TryEnd.Offset &&

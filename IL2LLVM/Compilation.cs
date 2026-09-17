@@ -1405,7 +1405,7 @@ sealed class Compilation : TranslationComponent
                         foreach (var instr in method.Value.Item4)
                         {
                             EnsureExceptionThrow();
-                            if (instr.OpCode.Code == Code.Rethrow)
+                            if (instr.OpCode.Code is Code.Rethrow or Code.Leave or Code.Leave_S)
                                 EnsureExceptionSetupFunctions();
                             if (label.ContainsKey(instr.Offset))
                             {
