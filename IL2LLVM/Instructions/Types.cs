@@ -118,7 +118,7 @@ sealed class Types(Translator translator) : TranslationComponent(translator)
                         var result = builder.BuildPhi(pointerType, "nullable.box");
                         result.AddIncoming([nullableBox, nullValue], [valueBlock, nullBlock], 2);
                         stack.Push(result);
-                        trackType(result, nullableElementType);
+                        trackType(result, coreLib.Object);
                         return true;
                     }
                     if (IsManagedReferenceType(valueType))
@@ -130,7 +130,7 @@ sealed class Types(Translator translator) : TranslationComponent(translator)
                     }
                     var box = BuildBoxedValue(builder, value, valueType);
                     stack.Push(box);
-                    trackType(box, valueType);
+                    trackType(box, coreLib.Object);
                     return true;
                 }
             case Code.Unbox:
@@ -138,6 +138,38 @@ sealed class Types(Translator translator) : TranslationComponent(translator)
                 {
                     var value = stack.Pop();
                     var valueType = SubstituteGenericParameter((TypeReference)instruction.Operand, method);
+                    if (instruction.OpCode.Code == Code.Unbox_Any &&
+                        TryGetNullableElementType(valueType, out var nullableElementType))
+                    {
+                        var nullableDefinition = valueType.Resolve() ??
+                            throw new NotSupportedException($"Nullable type is not defined: {valueType.FullName}");
+                        var storage = buildEntryAlloca(LLVMTypeRef.CreateArray(int8Type,
+                            (uint)Math.Max(1, GetTypeSize(valueType))));
+                        var nullable = builder.BuildBitCast(storage, pointerType);
+                        FillMemory(builder, nullable, LLVMValueRef.CreateConstNull(int8Type),
+                            LLVMValueRef.CreateConstInt(sizeType, (ulong)Math.Max(1, GetTypeSize(valueType)), false));
+
+                        var valueBlock = context.AppendBasicBlock(function, $"nullable.unbox.value.{nextVirtualDispatchId++}");
+                        var continuation = context.AppendBasicBlock(function, $"nullable.unbox.cont.{nextVirtualDispatchId++}");
+                        var sourceBlock = builder.InsertBlock;
+                        builder.BuildCondBr(builder.BuildICmp(LLVMIntPredicate.LLVMIntNE, value,
+                            LLVMValueRef.CreateConstNull(pointerType)), valueBlock, continuation);
+                        terminatedBlocks.Add(sourceBlock);
+
+                        builder.PositionAtEnd(valueBlock);
+                        var valueField = coreLib.GetNullableValueField(nullableDefinition);
+                        CopyValue(builder, GetFieldAddress(builder, nullable, valueField, valueType),
+                            GetBoxedValueAddress(builder, value, nullableElementType), GetTypeSize(nullableElementType));
+                        var hasValueField = coreLib.GetNullableHasValueField(nullableDefinition);
+                        builder.BuildStore(LLVMValueRef.CreateConstInt(GetLLVMTypeRef(hasValueField.FieldType), 1, false),
+                            GetFieldAddress(builder, nullable, hasValueField, valueType));
+                        builder.BuildBr(continuation);
+
+                        builder.PositionAtEnd(continuation);
+                        stack.Push(nullable);
+                        trackType(nullable, valueType);
+                        return true;
+                    }
                     var boxedValue = !IsManagedReferenceType(valueType) ? GetBoxedValueAddress(builder, value, valueType) : value;
                     LLVMValueRef result;
                     if (instruction.OpCode.Code == Code.Unbox_Any && valueType.MetadataType is MetadataType.Boolean or
@@ -151,6 +183,8 @@ sealed class Types(Translator translator) : TranslationComponent(translator)
                         result = ConvertValue(builder, value, GetLLVMTypeRef(valueType));
                     else
                         result = boxedValue;
+                    if (instruction.OpCode.Code == Code.Unbox_Any)
+                        result = PromoteSmallIntegerLoad(builder, result, valueType);
                     stack.Push(result);
                     trackType(result, valueType);
                     return true;

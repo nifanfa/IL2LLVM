@@ -85,7 +85,6 @@ sealed class Compilation : TranslationComponent
         runtimeFieldData = new(StringComparer.Ordinal);
         missingVirtualFunctionPointers = new(StringComparer.Ordinal);
         delegateThunks = new(StringComparer.Ordinal);
-        arrayEnumeratorAdapters = new(StringComparer.Ordinal);
         runtimeGeneratedMethods = [];
         pendingMethodTranslations = new();
         queuedMethodTranslations = new(StringComparer.Ordinal);
@@ -143,7 +142,6 @@ sealed class Compilation : TranslationComponent
             var exceptionPointerType = LLVMTypeRef.CreatePointer(int8Type, 0);
             var gcPushMethod = coreLib.GCPushMethod;
             var gcPopMethod = coreLib.GCPopMethod;
-            arrayEnumeratorTypes = [coreLib.ArrayEnumerator];
             stringConstructor = coreLib.StringCharArrayConstructor;
             void EnsureExceptionThrow()
             {
@@ -321,10 +319,6 @@ sealed class Compilation : TranslationComponent
 
             Progress($"[3/7] Resolved method graph: {moduleMethods.Count} methods.");
 
-            foreach (var arrayEnumeratorType in arrayEnumeratorTypes)
-                foreach (var method in arrayEnumeratorType.Methods.Where(method => method.HasBody))
-                    RegisterMethodFunction(module, method, method.Body.Instructions);
-
             bool RegisterClosedVirtualMethods()
             {
                 bool added = false;
@@ -336,6 +330,7 @@ sealed class Compilation : TranslationComponent
                     .ToList();
                 foreach (var declaringType in moduleMethods.Values
                              .Select(method => method.Item3.DeclaringType)
+                             .Concat(runtimeTypes.Values)
                              .OfType<GenericInstanceType>()
                              .Where(type => !ContainsGenericParameter(type))
                              .DistinctBy(GetRuntimeTypeKey)
@@ -356,37 +351,49 @@ sealed class Compilation : TranslationComponent
                 return added;
             }
 
-            while (RegisterClosedVirtualMethods())
-            {
-            }
-
             foreach (var type in localTypes.Values)
                 GetRuntimeTypeId(type);
-            foreach (var method in moduleMethods.Values)
+
+            void DiscoverRuntimeTypes()
             {
-                foreach (var instruction in method.Item4 ?? [])
+                foreach (var method in moduleMethods.Values.ToArray())
                 {
-                    switch (instruction.OpCode.Code)
+                    foreach (var instruction in method.Item4 ?? [])
                     {
-                        case Code.Newarr:
-                            GetRuntimeTypeId(
-                                new ArrayType(SubstituteGenericParameter((TypeReference)instruction.Operand, method.Item3)),
-                                coreLib.Array);
-                            break;
-                        case Code.Newobj:
-                            var constructor = SpecializeMethodReference((MethodReference)instruction.Operand, method.Item3);
-                            GetRuntimeTypeId(constructor.DeclaringType,
-                                GetArrayRuntimeMethodKind(constructor) == ArrayRuntimeMethodKind.Constructor
-                                    ? coreLib.Array
-                                    : null);
-                            break;
-                        case Code.Box:
-                        case Code.Ldtoken when instruction.Operand is TypeReference:
-                            GetRuntimeTypeId(SubstituteGenericParameter((TypeReference)instruction.Operand, method.Item3));
-                            break;
+                        switch (instruction.OpCode.Code)
+                        {
+                            case Code.Newarr:
+                                GetRuntimeTypeId(
+                                    new ArrayType(SubstituteGenericParameter((TypeReference)instruction.Operand, method.Item3)),
+                                    coreLib.Array);
+                                break;
+                            case Code.Newobj:
+                                var constructor = SpecializeMethodReference((MethodReference)instruction.Operand, method.Item3);
+                                GetRuntimeTypeId(constructor.DeclaringType,
+                                    GetArrayRuntimeMethodKind(constructor) == ArrayRuntimeMethodKind.Constructor
+                                        ? coreLib.Array
+                                        : null);
+                                break;
+                            case Code.Box:
+                            case Code.Ldtoken when instruction.Operand is TypeReference:
+                                GetRuntimeTypeId(SubstituteGenericParameter((TypeReference)instruction.Operand, method.Item3));
+                                break;
+                        }
                     }
                 }
             }
+
+            bool graphChanged;
+            do
+            {
+                var methodCount = moduleMethods.Count;
+                var runtimeTypeCount = runtimeTypes.Count;
+                DiscoverRuntimeTypes();
+                RegisterClosedVirtualMethods();
+                graphChanged = moduleMethods.Count != methodCount || runtimeTypes.Count != runtimeTypeCount;
+            }
+            while (graphChanged);
+
             GetRuntimeTypeId(new ArrayType(coreLib.Char), coreLib.Array);
             GetRuntimeTypeId(new ArrayType(coreLib.String), coreLib.Array);
             GetRuntimeTypeId(new ArrayType(coreLib.UInt64), coreLib.Array);
@@ -544,8 +551,8 @@ sealed class Compilation : TranslationComponent
                         }
 
                         LLVMValueRef BuildVirtualDispatch(MethodReference targetMethod, LLVMValueRef[] targetArgs,
-                            LLVMTypeRef targetFunctionType, LLVMValueRef targetFunction, List<(TypeReference RuntimeType, MethodReference Implementation)> implementations,
-                            bool allowArrayRuntimeDispatch = true)
+                            LLVMTypeRef targetFunctionType, LLVMValueRef targetFunction,
+                            List<(TypeReference RuntimeType, MethodReference Implementation)> implementations)
                         {
                             LLVMValueRef[] ConvertCallArguments(LLVMValueRef function, LLVMValueRef[] arguments)
                             {
@@ -571,51 +578,18 @@ sealed class Compilation : TranslationComponent
                                 return implementationArgs;
                             }
 
-                            if (allowArrayRuntimeDispatch && TryGetArrayEnumerator(targetMethod, out var enumerableElementType,
-                                    out var arrayEnumeratorDefinition, out var constructor))
-                            {
-                                var arrayReceiverValue = targetArgs[0];
-                                var arrayTypeId = GetObjectRuntimeTypeId(builder, arrayReceiverValue);
-                                var arrayType = new ArrayType(enumerableElementType);
-                                var arrayId = LLVMValueRef.CreateConstInt(sizeType, (ulong)GetRuntimeTypeId(arrayType), false);
-                                var arrayBlock = context.AppendBasicBlock(method.Value.Item1, $"array.enum.{nextVirtualDispatchId++}");
-                                var fallbackBlock = context.AppendBasicBlock(method.Value.Item1, $"array.enum.next.{nextVirtualDispatchId++}");
-                                var arrayContinuation = context.AppendBasicBlock(method.Value.Item1, $"array.enum.cont.{nextVirtualDispatchId++}");
-                                var arraySourceBlock = builder.InsertBlock;
-                                builder.BuildCondBr(builder.BuildICmp(LLVMIntPredicate.LLVMIntEQ, arrayTypeId, arrayId), arrayBlock, fallbackBlock);
-                                terminatedBlocks.Add(arraySourceBlock);
-                                builder.PositionAtEnd(arrayBlock);
-                                var adapter = GetArrayEnumeratorAdapter(enumerableElementType,
-                                    arrayEnumeratorDefinition, constructor);
-                                var enumerator = builder.BuildCall2(adapter.FunctionType, adapter.Function,
-                                    [arrayReceiverValue]);
-                                builder.BuildBr(arrayContinuation);
-                                builder.PositionAtEnd(fallbackBlock);
-                                var arrayFallback = BuildVirtualDispatch(targetMethod, targetArgs, targetFunctionType, targetFunction, implementations, false);
-                                var arrayFallbackSource = builder.InsertBlock;
-                                if (terminatedBlocks.Contains(arrayFallbackSource))
-                                {
-                                    builder.PositionAtEnd(arrayContinuation);
-                                    return enumerator;
-                                }
-                                builder.BuildBr(arrayContinuation);
-                                builder.PositionAtEnd(arrayContinuation);
-                                var result = builder.BuildPhi(LLVMTypeRef.CreatePointer(int8Type, 0), "array.enum.result");
-                                result.AddIncoming([enumerator, arrayFallback], [arrayBlock, arrayFallbackSource], 2);
-                                return result;
-                            }
-
                             var registeredImplementations = implementations
                                 .Select(candidate => (candidate.RuntimeType, Method: GetRegisteredMethod(candidate.Implementation)))
-                                .Where(candidate => candidate.Method is not null)
                                 .ToList();
+                            var allImplementationsRegistered = registeredImplementations.All(candidate => candidate.Method is not null);
                             var distinctImplementations = registeredImplementations
+                                .Where(candidate => candidate.Method is not null)
                                 .Select(candidate => candidate.Method!.Item1)
                                 .Distinct()
                                 .ToList();
-                            if (implementations.Count == 0 || distinctImplementations.Count <= 1)
+                            if (implementations.Count == 0 || allImplementationsRegistered && distinctImplementations.Count <= 1)
                             {
-                                if (distinctImplementations.Count == 1)
+                                if (allImplementationsRegistered && distinctImplementations.Count == 1)
                                 {
                                     var implementation = registeredImplementations[0];
                                     var result = builder.BuildCall2(implementation.Method!.Item2, implementation.Method.Item1,

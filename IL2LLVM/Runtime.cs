@@ -10,70 +10,6 @@ sealed class Runtime(Translator translator) : TranslationComponent(translator)
         }
     }
 
-    internal new bool TryGetArrayEnumerator(MethodReference targetMethod, out TypeReference elementType,
-        out TypeDefinition definition, out MethodDefinition constructor)
-    {
-        elementType = null!;
-        definition = null!;
-        constructor = null!;
-        if (!targetMethod.HasThis || targetMethod.Parameters.Count != 0 ||
-            targetMethod.DeclaringType.Resolve()?.IsInterface != true ||
-            targetMethod.Resolve() is not { HasBody: false, IsAbstract: true })
-            return false;
-        var returnType = SubstituteGenericParameter(targetMethod.ReturnType, targetMethod);
-        if (returnType.Resolve()?.IsInterface != true)
-            return false;
-        foreach (var candidate in arrayEnumeratorTypes)
-        {
-            if (!TryCloseRuntimeType(candidate, returnType, out var closedType) ||
-                closedType is not GenericInstanceType genericType)
-                continue;
-            var candidateConstructor = candidate.Methods.FirstOrDefault(method =>
-                method.IsConstructor && !method.IsStatic && method.Parameters.Count == 1 &&
-                method.Parameters[0].ParameterType is ArrayType array &&
-                array.ElementType is GenericParameter parameter && parameter.Type == GenericParameterType.Type &&
-                parameter.Owner is TypeReference owner && SameTypeDefinition(owner, candidate));
-            if (candidateConstructor?.Parameters[0].ParameterType is not ArrayType constructorArray ||
-                constructorArray.ElementType is not GenericParameter elementParameter ||
-                elementParameter.Position >= genericType.GenericArguments.Count)
-                continue;
-            elementType = genericType.GenericArguments[elementParameter.Position];
-            definition = candidate;
-            constructor = candidateConstructor;
-            return true;
-        }
-        return false;
-    }
-
-    internal new (LLVMValueRef Function, LLVMTypeRef FunctionType) GetArrayEnumeratorAdapter(
-        TypeReference elementType, TypeDefinition definition, MethodDefinition constructor)
-    {
-        var key = GetRuntimeTypeKey(elementType);
-        if (arrayEnumeratorAdapters.TryGetValue(key, out var existing))
-            return existing;
-
-        var pointerType = LLVMTypeRef.CreatePointer(int8Type, 0);
-        var functionType = LLVMTypeRef.CreateFunction(pointerType, [pointerType]);
-        var function = module.AddFunction($"__array_enumerator_{GetStableSymbolSuffix(key)}", functionType);
-        function.FunctionCallConv = (uint)LLVMCallConv.LLVMCCallConv;
-        function.Linkage = LLVMLinkage.LLVMInternalLinkage;
-        arrayEnumeratorAdapters.Add(key, (function, functionType));
-
-        var enumeratorType = new GenericInstanceType(definition);
-        enumeratorType.GenericArguments.Add(elementType);
-        var boundConstructor = BindMethodToDeclaringType(constructor, enumeratorType);
-        var registeredConstructor = EnsureMethodRegistered(boundConstructor);
-        var builder = context.CreateBuilder();
-        builder.PositionAtEnd(function.AppendBasicBlock("entry"));
-        var enumerator = BuildAllocation(builder, GetObjectSize(enumeratorType));
-        InitializeRuntimeType(builder, enumerator, enumeratorType);
-        builder.BuildCall2(registeredConstructor.Item2, registeredConstructor.Item1,
-            [enumerator, function.GetParam(0)]);
-        builder.BuildRet(enumerator);
-        builder.Dispose();
-        return (function, functionType);
-    }
-
     internal new LLVMValueRef GetArrayElementAddress(LLVMBuilderRef builder, LLVMValueRef array, LLVMValueRef index,
         LLVMTypeRef elementType, int? elementSize = null)
     {
@@ -822,10 +758,12 @@ sealed class Runtime(Translator translator) : TranslationComponent(translator)
     internal new IEnumerable<int> GetGCReferenceOffsets(TypeReference type)
     {
         var references = new List<int>();
+        var objectHeaderSize = IsManagedReferenceType(type) ? GetObjectHeaderSize() : 0;
         if (type is ArrayType)
             type = coreLib.Array;
         Collect(type, 0, true);
-        return references;
+        return references.Where(offset => offset >= objectHeaderSize)
+            .Select(offset => offset - objectHeaderSize);
 
         void Collect(TypeReference currentType, int baseOffset, bool includeBaseType)
         {

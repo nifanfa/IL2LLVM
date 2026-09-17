@@ -45,11 +45,9 @@ abstract class TranslationComponent(Translator translator)
     protected Dictionary<string, LLVMValueRef> runtimeFieldData { get => Translator.runtimeFieldData; set => Translator.runtimeFieldData = value; }
     protected Dictionary<string, LLVMValueRef> missingVirtualFunctionPointers { get => Translator.missingVirtualFunctionPointers; set => Translator.missingVirtualFunctionPointers = value; }
     protected Dictionary<string, LLVMValueRef> delegateThunks { get => Translator.delegateThunks; set => Translator.delegateThunks = value; }
-    protected Dictionary<string, (LLVMValueRef Function, LLVMTypeRef FunctionType)> arrayEnumeratorAdapters { get => Translator.arrayEnumeratorAdapters; set => Translator.arrayEnumeratorAdapters = value; }
     protected List<(LLVMValueRef Function, LLVMTypeRef FunctionType, MethodReference Method)> runtimeGeneratedMethods { get => Translator.runtimeGeneratedMethods; set => Translator.runtimeGeneratedMethods = value; }
     protected Queue<string> pendingMethodTranslations { get => Translator.pendingMethodTranslations; set => Translator.pendingMethodTranslations = value; }
     protected HashSet<string> queuedMethodTranslations { get => Translator.queuedMethodTranslations; set => Translator.queuedMethodTranslations = value; }
-    protected List<TypeDefinition> arrayEnumeratorTypes { get => Translator.arrayEnumeratorTypes; set => Translator.arrayEnumeratorTypes = value; }
     protected MethodDefinition? entryPoint { get => Translator.entryPoint; set => Translator.entryPoint = value; }
     protected MethodDefinition stringConstructor { get => Translator.stringConstructor; set => Translator.stringConstructor = value; }
     protected LLVMTypeRef gcAllocateType { get => Translator.gcAllocateType; set => Translator.gcAllocateType = value; }
@@ -157,8 +155,6 @@ abstract class TranslationComponent(Translator translator)
     protected unsafe LLVMTypeRef GetFunctionType(LLVMValueRef function) => Translator.Methods.GetFunctionType(function);
 
     protected IEnumerable<TypeDefinition> GetAllTypes(IEnumerable<TypeDefinition> types) => Translator.Runtime.GetAllTypes(types);
-    protected bool TryGetArrayEnumerator(MethodReference targetMethod, out TypeReference elementType, out TypeDefinition definition, out MethodDefinition constructor) => Translator.Runtime.TryGetArrayEnumerator(targetMethod, out elementType, out definition, out constructor);
-    protected (LLVMValueRef Function, LLVMTypeRef FunctionType) GetArrayEnumeratorAdapter(TypeReference elementType, TypeDefinition definition, MethodDefinition constructor) => Translator.Runtime.GetArrayEnumeratorAdapter(elementType, definition, constructor);
     protected LLVMValueRef GetArrayElementAddress(LLVMBuilderRef builder, LLVMValueRef array, LLVMValueRef index, LLVMTypeRef elementType, int? elementSize = null) => Translator.Runtime.GetArrayElementAddress(builder, array, index, elementType, elementSize);
     protected LLVMValueRef GetMultiArrayElementAddress(LLVMBuilderRef builder, LLVMValueRef array, LLVMValueRef[] indices, LLVMTypeRef elementType, int? elementSize = null) => Translator.Runtime.GetMultiArrayElementAddress(builder, array, indices, elementType, elementSize);
     protected LLVMValueRef BuildStringValue(LLVMBuilderRef builder, string value, Action<LLVMValueRef, TypeReference>? storeTemporaryRoot = null) => Translator.Runtime.BuildStringValue(builder, value, storeTemporaryRoot);

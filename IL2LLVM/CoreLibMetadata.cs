@@ -21,7 +21,6 @@ sealed class CoreLibMetadata
     public TypeDefinition Func => GetType("System.Func`1");
     public TypeDefinition Nullable => GetType("System.Nullable`1");
     public TypeDefinition Activator => GetType("System.Activator");
-    public TypeDefinition ArrayEnumerator => GetType("System.ArrayEnumerator`1");
     public TypeDefinition IntPtr => GetType("System.IntPtr");
     public TypeDefinition Exception => GetType("System.Exception");
     public TypeDefinition InvalidCastException => GetType("System.InvalidCastException");

@@ -15,7 +15,7 @@ sealed class MethodContext
     public required Func<LLVMTypeRef, LLVMValueRef> BuildEntryAlloca { get; init; }
     public required Func<TypeReference, MethodReference, LLVMValueRef, LLVMValueRef> GetDelegateFunctionPointer { get; init; }
     public required Func<MethodReference, LLVMValueRef[], LLVMTypeRef, LLVMValueRef,
-        List<(TypeReference RuntimeType, MethodReference Implementation)>, bool, LLVMValueRef> BuildVirtualDispatch
+        List<(TypeReference RuntimeType, MethodReference Implementation)>, LLVMValueRef> BuildVirtualDispatch
     { get; init; }
     public required Func<MethodReference, LLVMValueRef, LLVMValueRef> BuildVirtualFunctionPointer { get; init; }
     public TypeReference? ConstrainedType { get; set; }

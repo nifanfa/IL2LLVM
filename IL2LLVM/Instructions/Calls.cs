@@ -112,7 +112,8 @@ sealed class Calls(Translator translator) : TranslationComponent(translator)
                         {
                             callTarget = ResolveVirtualTarget(targetMethod, receiverType);
                             virtualContractType = receiverType;
-                            useRuntimeDispatch = IsKnownRuntimeType(receiverType) && receiverType.Resolve()?.IsSealed != true;
+                            useRuntimeDispatch = IsKnownRuntimeType(receiverType) &&
+                                receiverType.Resolve()?.IsSealed != true;
                         }
                         else
                             useRuntimeDispatch = true;
@@ -395,8 +396,7 @@ sealed class Calls(Translator translator) : TranslationComponent(translator)
                         (useRuntimeDispatch || targetFunc == default);
                     var result = useVirtualDispatch
                         ? BuildVirtualDispatch(targetMethod, callArgs, targetFuncCreated, targetFunc,
-                            GetVirtualImplementations(targetMethod, virtualContractType ?? targetMethod.DeclaringType),
-                            true)
+                            GetVirtualImplementations(targetMethod, virtualContractType ?? targetMethod.DeclaringType))
                         : builder.BuildCall2(targetFuncCreated, targetFunc, callArgs);
                     if (result != default && returnsParameterAddress &&
                         returnedParameterIndex >= 0 && returnedParameterIndex < targetMethod.Parameters.Count)
