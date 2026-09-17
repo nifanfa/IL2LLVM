@@ -105,12 +105,21 @@ sealed class Variables(Translator translator) : TranslationComponent(translator)
                     if (parameterIndex < 0 || parameterIndex >= method.Parameters.Count)
                         return true;
                     var parameterType = SubstituteGenericParameter(method.Parameters[parameterIndex].ParameterType, method);
-                    var argument = locals.TryGetValue(-1 - index, out var storage)
-                        ? builder.BuildLoad2(storage.Item2, storage.Item1)
+                    var hasStorage = locals.TryGetValue(-1 - index, out var storage);
+                    var argument = hasStorage
+                        ? builder.BuildLoad2(storage!.Item2, storage.Item1)
                         : getMethodParameter(index);
-                    argument = IsValueType(parameterType) && !IsByReferenceValue(parameterType)
-                        ? LoadValue(builder, entryBuilder, argument, parameterType)
-                        : PromoteSmallIntegerLoad(builder, argument, parameterType);
+                    if (IsValueType(parameterType) && !IsByReferenceValue(parameterType))
+                    {
+                        var address = hasStorage && storage!.Item2.Kind != LLVMTypeKind.LLVMPointerTypeKind
+                            ? storage.Item1
+                            : argument;
+                        argument = LoadValue(builder, entryBuilder, address, parameterType);
+                    }
+                    else
+                    {
+                        argument = PromoteSmallIntegerLoad(builder, argument, parameterType);
+                    }
                     trackType(argument, parameterType);
                     stack.Push(argument);
                     return true;
@@ -127,10 +136,11 @@ sealed class Variables(Translator translator) : TranslationComponent(translator)
                         ? existing
                         : new Tuple<LLVMValueRef, LLVMTypeRef>(entryBuilder.BuildAlloca(llvmType), llvmType);
                     locals[-1 - index] = storage;
-                    if (IsValueType(parameterType) && !IsByReferenceValue(parameterType) &&
-                        storage.Item2.Kind == LLVMTypeKind.LLVMPointerTypeKind)
+                    if (IsValueType(parameterType) && !IsByReferenceValue(parameterType))
                     {
-                        var destination = builder.BuildLoad2(storage.Item2, storage.Item1);
+                        var destination = storage.Item2.Kind == LLVMTypeKind.LLVMPointerTypeKind
+                            ? builder.BuildLoad2(storage.Item2, storage.Item1)
+                            : storage.Item1;
                         StoreValue(builder, destination, value, parameterType);
                     }
                     else

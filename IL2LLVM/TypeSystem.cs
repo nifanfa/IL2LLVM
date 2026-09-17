@@ -126,8 +126,8 @@ sealed class TypeSystem(Translator translator) : TranslationComponent(translator
         {
             if (field.Offset < offset)
             {
-                var bytes = LLVMTypeRef.CreateArray(int8Type, (uint)Math.Max(1, GetTypeSize(type)));
-                return context.GetStructType([bytes], true);
+                var overlappingSize = Math.Max(1, GetTypeSize(type));
+                return context.GetIntType((uint)(overlappingSize * 8));
             }
             if (field.Offset > offset)
                 elements.Add(LLVMTypeRef.CreateArray(int8Type, (uint)(field.Offset - offset)));
