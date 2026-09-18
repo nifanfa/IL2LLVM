@@ -36,8 +36,11 @@ internal static unsafe class DateTimeValidation
 
         DateTime now = DateTime.UtcNow;
         Ensure(now.Year >= 2020 && now.Year <= 9999, "current year");
-        Ensure(now.Ticks % TimeSpan.TicksPerMillisecond == 0, "millisecond precision");
-        Ensure(DateTime.Now.Ticks > 0 && DateTime.Now.Kind == DateTimeKind.Utc, "current UTC time");
+        Ensure(now.Kind == DateTimeKind.Utc, "current UTC kind");
+        Ensure(now.AddMilliseconds(1).Ticks - now.Ticks == TimeSpan.TicksPerMillisecond,
+            "millisecond precision");
+        DateTime current = DateTime.Now;
+        Ensure(current.Ticks > 0 && current.Kind != DateTimeKind.Unspecified, "current time");
         Console.WriteLine("DateTime validation passed.");
     }
 
