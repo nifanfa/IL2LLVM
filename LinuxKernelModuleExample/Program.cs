@@ -8,6 +8,7 @@ internal static class Program
         Console.WriteLine("Hello, World!");
         Console.WriteLine("Hello, World!(u8)"u8);
         LanguageFeatureValidation.Run();
+        DateTimeValidation.Run();
         GarbageCollectionValidation.Run();
     }
 }

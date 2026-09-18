@@ -8,6 +8,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="..\ConsoleAppExample\DateTimeValidation.cs" Link="DateTimeValidation.cs" />
     <Compile Include="..\ConsoleAppExample\GarbageCollectionValidation.cs" Link="GarbageCollectionValidation.cs" />
     <Compile Include="..\ConsoleAppExample\LanguageFeatureValidation.cs" Link="LanguageFeatureValidation.cs" />
   </ItemGroup>

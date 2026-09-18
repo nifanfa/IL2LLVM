@@ -24,6 +24,7 @@ The following symbols are the runtime boundary implemented by the host. They are
 - `longjmp`
 - `Enter`
 - `Exit`
+- `GetCurrentTimeMilliseconds`
 
 The current `setjmp` entry has an additional stack-pointer argument so the generated exception machinery can restore the managed stack state. It therefore requires a target-specific implementation even though `setjmp` and `longjmp` have standard C counterparts. Console output symbols such as `System_Console_WriteLine_Int32` are optional host conveniences, not requirements of the translator.
 

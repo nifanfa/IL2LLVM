@@ -1,10 +1,27 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <time.h>
 
 #ifdef _WIN32
+#include <windows.h>
 #include <wchar.h>
 #endif
+
+long long GetCurrentTimeMilliseconds(void)
+{
+#ifdef _WIN32
+    FILETIME fileTime;
+    GetSystemTimeAsFileTime(&fileTime);
+    uint64_t ticks = ((uint64_t)fileTime.dwHighDateTime << 32) | fileTime.dwLowDateTime;
+    return (long long)(ticks / 10000ULL - 11644473600000ULL);
+#else
+    struct timespec time;
+    if (timespec_get(&time, TIME_UTC) == 0)
+        return 0;
+    return (long long)time.tv_sec * 1000LL + time.tv_nsec / 1000000L;
+#endif
+}
 
 void System_Console_Write_System_ByReference_System_Byte(const char* str) { if (str != NULL) printf("%s", str); }
 void System_Console_WriteLine_System_ByReference_System_Byte(const char* str) { printf("%s\n", str == NULL ? "" : str); }

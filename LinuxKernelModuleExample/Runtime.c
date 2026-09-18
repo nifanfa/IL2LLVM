@@ -1,7 +1,15 @@
 #include <linux/kernel.h>
+#include <linux/ktime.h>
 #include <linux/nls.h>
 #include <linux/string.h>
 #include <linux/vmalloc.h>
+
+long long GetCurrentTimeMilliseconds(void)
+{
+    struct timespec64 time;
+    ktime_get_real_ts64(&time);
+    return (long long)time.tv_sec * 1000LL + time.tv_nsec / 1000000L;
+}
 
 static void write_utf16(const unsigned short* value)
 {
