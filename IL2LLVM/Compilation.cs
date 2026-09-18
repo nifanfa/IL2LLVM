@@ -1422,7 +1422,7 @@ sealed class Compilation : TranslationComponent
                                 prefixes.TryTranslatePrefixInstruction(methodContext, instr, ref unalignedAlignment,
                                     ref volatileAccess) ||
                                 returns.TryTranslateReturnInstruction(builder, instr, method.Value.Item3, stack, PopGCFrame, terminatedBlocks) ||
-                                strings.TryTranslateStringInstruction(builder, instr, stack, SynchronizeEvaluationStackRoots, StoreTemporaryRoot, TrackType) ||
+                                strings.TryTranslateStringInstruction(builder, instr, stack, TrackType) ||
                                 calls.TryTranslateMethodCallInstruction(methodContext, instr) ||
                                 this.stack.TryTranslateStackInstruction(instr, stack) ||
                                 memory.TryTranslateMemoryInstruction(builder, entryBuilder, instr, method.Value.Item3, stack,
