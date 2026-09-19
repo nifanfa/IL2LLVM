@@ -12,13 +12,19 @@
 
   <ItemGroup>
     <AssemblyMetadata Include="BuildTimestamp" Value="$([System.DateTime]::Now.ToString())" />
+    <RuntimeHostConfigurationOption Include="LLVMSharp.Interop.DisableResolveLibraryHook" Value="true" />
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="libLLVM" Version="21.1.8" />
-    <PackageReference Include="libLLVM.runtime.win-x64" Version="21.1.8" />
     <PackageReference Include="LLVMSharp" Version="21.1.8.1" />
     <PackageReference Include="Mono.Cecil" Version="0.11.6" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="native\win-x64\libLLVM.dll"
+          Link="libLLVM.dll"
+          CopyToOutputDirectory="PreserveNewest"
+          CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

@@ -15,6 +15,10 @@
     "Build LinuxKernelModuleExample(x86_64)": {
       "commandName": "Project",
       "commandLineArgs": "../../../../LinuxKernelModuleExample/bin/Debug/net10.0/LinuxKernelModuleExample.dll ../../../../LinuxKernelModuleExample/bin/Debug/net10.0/LinuxKernelModuleExample.obj x86_64-unknown-linux-gnu;kernel"
+    },
+    "Build ESP32S3Example(Xtensa)": {
+      "commandName": "Project",
+      "commandLineArgs": "../../../../ESP32S3Example/bin/Debug/net10.0/ESP32S3Example.dll ../../../../ESP32S3Example/ESP32S3Example.S xtensa-esp32s3-none-elf;default;generic;+windowed"
     }
   }
 }

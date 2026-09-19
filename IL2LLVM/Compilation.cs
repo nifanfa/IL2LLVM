@@ -45,7 +45,7 @@ sealed class Compilation : TranslationComponent
 
         string fileName = Path.GetFullPath(args[0]);
         string outputFileName = Path.GetFullPath(args[1]);
-        var (targetTriple, codeModel) = Target.ParseTargetSpecification(args[2]);
+        var (targetTriple, codeModel, cpu, features) = Target.ParseTargetSpecification(args[2]);
         Translator.codeModel = codeModel;
 
         context = LLVMContextRef.Create();
@@ -53,7 +53,7 @@ sealed class Compilation : TranslationComponent
 
         Translator.module.Target = targetTriple;
 
-        machine = Target.CreateTargetMachine(targetTriple, codeModel);
+        machine = Target.CreateTargetMachine(targetTriple, codeModel, cpu, features);
 
         int1Type = context.Int1Type;
         int8Type = context.Int8Type;
@@ -1556,8 +1556,12 @@ sealed class Compilation : TranslationComponent
             if (!module.TryVerify(LLVMVerifierFailureAction.LLVMReturnStatusAction, out var verificationError))
                 throw new InvalidOperationException(verificationError);
 
-            machine.EmitToFile(module, outputFileName, LLVMCodeGenFileType.LLVMObjectFile);
-            Progress($"[7/7] Wrote object file: {outputFileName} (total {compilationStopwatch.Elapsed.TotalSeconds:F3}s)");
+            var fileType = Path.GetExtension(outputFileName).Equals(".s", StringComparison.OrdinalIgnoreCase)
+                ? LLVMCodeGenFileType.LLVMAssemblyFile
+                : LLVMCodeGenFileType.LLVMObjectFile;
+            machine.EmitToFile(module, outputFileName, fileType);
+            var outputKind = fileType == LLVMCodeGenFileType.LLVMAssemblyFile ? "assembly" : "object file";
+            Progress($"[7/7] Wrote {outputKind}: {outputFileName} (total {compilationStopwatch.Elapsed.TotalSeconds:F3}s)");
         }
     }
 

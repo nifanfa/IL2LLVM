@@ -15,11 +15,11 @@ static class Target
         }
     }
 
-    internal static (string TargetTriple, LLVMCodeModel CodeModel) ParseTargetSpecification(string target)
+    internal static (string TargetTriple, LLVMCodeModel CodeModel, string Cpu, string Features) ParseTargetSpecification(string target)
     {
         var specification = target.Split(';', StringSplitOptions.TrimEntries);
-        if (specification.Length is < 1 or > 2 || string.IsNullOrEmpty(specification[0]))
-            throw new ArgumentException("Target must be a target triple optionally followed by a code model.");
+        if (specification.Length is < 1 or > 4 || string.IsNullOrEmpty(specification[0]))
+            throw new ArgumentException("Target must be a target triple optionally followed by a code model, CPU, and target features.");
         var codeModel = specification.Length == 1 ? LLVMCodeModel.LLVMCodeModelDefault : specification[1] switch
         {
             "default" => LLVMCodeModel.LLVMCodeModelDefault,
@@ -30,13 +30,18 @@ static class Target
             "large" => LLVMCodeModel.LLVMCodeModelLarge,
             _ => throw new ArgumentException($"Unsupported LLVM code model '{specification[1]}'.")
         };
-        return (specification[0], codeModel);
+        var cpu = specification.Length >= 3 && !string.IsNullOrEmpty(specification[2])
+            ? specification[2]
+            : "generic";
+        var features = specification.Length >= 4 ? specification[3] : "";
+        return (specification[0], codeModel, cpu, features);
     }
 
-    internal static LLVMTargetMachineRef CreateTargetMachine(string targetTriple, LLVMCodeModel codeModel)
+    internal static LLVMTargetMachineRef CreateTargetMachine(string targetTriple, LLVMCodeModel codeModel,
+                                                              string cpu, string features)
     {
         var target = LLVMTargetRef.GetTargetFromTriple(targetTriple);
-        return target.CreateTargetMachine(targetTriple, "generic", "",
+        return target.CreateTargetMachine(targetTriple, cpu, features,
 #if DEBUG
             LLVMCodeGenOptLevel.LLVMCodeGenLevelNone,
 #else

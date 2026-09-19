@@ -75,26 +75,35 @@ dotnet build IL2LLVM\IL2LLVM.csproj --no-restore
 IL2LLVM requires exactly three arguments:
 
 ```text
-IL2LLVM <input-assembly> <output-object> <target>[;<code-model>]
+IL2LLVM <input-assembly> <output-file> <target>[;<code-model>[;<cpu>[;<features>]]]
 ```
 
-`target` is an LLVM target triple. The optional code model is one of `default`, `tiny`, `small`, `kernel`, `medium`, or `large`.
+`target` is an LLVM target triple. The optional code model is one of `default`, `tiny`, `small`, `kernel`, `medium`, or `large`. CPU defaults to `generic`; target features use LLVM's comma-separated `+feature,-feature` syntax.
 
 Examples:
 
 ```powershell
-dotnet IL2LLVM\bin\Debug\net10.0\IL2LLVM.dll `
+IL2LLVM\bin\Debug\net10.0\IL2LLVM.exe `
   ConsoleAppExample\bin\Debug\net10.0\ConsoleAppExample.dll `
   ConsoleAppExample\bin\Debug\net10.0\ConsoleAppExample.obj `
   x86_64-pc-windows-msvc
 
-dotnet IL2LLVM\bin\Debug\net10.0\IL2LLVM.dll `
+IL2LLVM\bin\Debug\net10.0\IL2LLVM.exe `
   LinuxKernelModuleExample\bin\Debug\net10.0\LinuxKernelModuleExample.dll `
   LinuxKernelModuleExample\bin\Debug\net10.0\LinuxKernelModuleExample.obj `
   "x86_64-unknown-linux-gnu;kernel"
 ```
 
-The output uses static relocation. Globals created by the translator for managed static fields, GC descriptors, field data, and compiler-generated helpers use internal linkage. Managed entry points and `[DllImport("*")]` imports remain external symbols for the host linker.
+The second argument is the native object-file output path. IL2LLVM always asks
+LLVM to emit one relocatable object; archive creation and final native linking
+are separate build steps. The output uses static relocation. Globals created by
+the translator for managed static fields, GC descriptors, field data, and
+compiler-generated helpers use internal linkage. Managed entry points and
+`[DllImport("*")]` imports remain external symbols for the host linker.
+
+The Windows build uses the repository's `IL2LLVM/native/win-x64/libLLVM.dll`.
+It is built from LLVM 21.1.8 with the experimental Xtensa backend enabled, in
+addition to the regular LLVM targets.
 
 ### Calling convention
 
@@ -232,6 +241,24 @@ sudo rmmod my_module
 The `kernel` code model is required because modules are loaded in the high kernel address range. It emits signed 32-bit and other kernel-supported relocations instead of `R_X86_64_32` or GOT-relative relocations that the Linux 5.4 module loader rejects.
 
 This example is not portable to another architecture without a matching native host, exception-transfer implementation, target triple, and code-model choice. It also must be built against headers compatible with the kernel that loads it.
+
+## ESP32-S3
+
+`ESP32S3Example` contains an Arduino sketch and its native runtime boundary.
+The `Build ESP32S3Example(Xtensa)` launch profile emits
+`ESP32S3Example/ESP32S3Example.S`. Arduino can compile the assembly source when
+the Xtensa assembler is configured with `-Wa,--text-section-literals`.
+Other output paths continue to produce one relocatable object; IL2LLVM does not
+create archives.
+
+Run `ESP32S3Example/ConfigureArduinoXtensa.bat` once to locate the installed
+ESP32 Arduino core and create or update its `platform.local.txt` with
+`-Wa,--text-section-literals`. The script preserves the core's existing
+assembly flags and does not modify `platform.txt`. Restart Arduino IDE after
+running the script so it reloads the platform configuration.
+
+The launch profile enables LLVM's `+windowed` Xtensa feature so generated code
+uses the same windowed ABI as the ESP32 Arduino toolchain.
 
 ## Scope and limitations
 

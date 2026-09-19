@@ -1044,8 +1044,6 @@ sealed class Methods(Translator translator) : TranslationComponent(translator)
                 funcValue.Comdat = comdat;
             }
         }
-        if (method.Resolve()?.HasBody == true)
-            funcValue.Section = $".text${GetStableSymbolSuffix(friendlyName)}";
         ApplyInliningAttributes(funcValue, method, method.Resolve()?.HasBody == true, pinvoke is not null,
             directExport, isEntryPoint);
         moduleMethods.Add(friendlyName, new(funcValue, funcType, method, instructions));
