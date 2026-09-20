@@ -4,6 +4,8 @@
 
 IL2LLVM translates a managed assembly built with this repository's CoreLib into a native object file through LLVM. It is not a .NET runtime, NativeAOT frontend, or a general-purpose replacement for the .NET SDK.
 
+<img width="640" height="318" alt="QQ_1789867398271" src="https://github.com/user-attachments/assets/541d775a-f146-4a9f-a00a-24d826574926" />
+
 ## Project purpose
 
 The purpose of this project is to support any processor architecture for which LLVM can emit an object file. IL2LLVM does not contain x86, ARM, Windows, Linux, or kernel-specific translation logic. The project supplies the LLVM target triple and the native host supplies the ABI-dependent entry point, exception transfer, and linker configuration.
