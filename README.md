@@ -123,13 +123,13 @@ The built-in collector uses GC descriptors emitted by IL2LLVM and registers stat
 
 `System.Threading.Monitor.Enter` and `Exit` are currently host hooks. The supplied hosts contain placeholders, not a complete synchronization implementation.
 
-### Single-threaded runtime
+### Cooperative green threads
 
-The current runtime supports one managed execution thread only. GC frames, exception state, the allocation list, task continuations, and other runtime state are process-global and are not synchronized for concurrent managed execution.
+`System.Threading.Thread` implements stackful green threads on one native execution thread. A context switch saves the active stack with `setjmp` and `memcpy`, snapshots its precise GC roots, restores another saved stack, and resumes it with `longjmp`. The collector remains precise and non-moving; suspended threads are marked from their root snapshots rather than by conservatively scanning copied stack bytes.
 
-`Task` support is cooperative and does not imply thread-pool or multithreading support. Asynchronous work must be resumed by the same managed thread at an explicit scheduler or event-loop boundary. A native timer, signal handler, interrupt handler, or worker thread must not call into managed code concurrently or inject a managed callback at an arbitrary instruction. Hosts that need timers should wake the main event loop and let the main managed thread process the pending work.
+Scheduling is cooperative, not parallel. `Thread.Yield`, `Thread.Sleep`, and `Thread.Join` are explicit scheduling points. IL2LLVM also inserts an automatic yield check at IL loop back edges so a managed loop cannot permanently starve other green threads. The hot check uses only a static integer counter and does not create a GC frame; it enters the object-aware scheduler only when the scheduling interval expires.
 
-Single-threaded does not mean that asynchronous code is unavailable. `await` can return to the event loop and resume later on the same managed thread. Native code can queue an event, and the managed thread can process it and complete the pending task.
+`Task` support uses the same cooperative execution model and does not imply a native thread pool. A native timer, signal handler, interrupt handler, or worker thread must not call into managed code concurrently or inject a managed callback at an arbitrary instruction. Native event sources must queue work for the single native execution thread, which can then complete a task or resume a green thread at a normal managed scheduling boundary.
 
 ### Minimal `TaskCompletionSource<T>` example
 
@@ -194,7 +194,7 @@ int main(void)
 
 The program prints `42`. `managed_Main()` starts `RunAsync()` and returns when it reaches `await`; `OnValue(42)` then calls `SetResult`, which resumes the `await`. In a real host, `process_event` would be an event-loop step. The callback must run on the same managed/event-loop thread; an interrupt or native worker must queue the event instead of calling managed code directly. A source should be completed only once.
 
-The `Monitor.Enter` and `Monitor.Exit` host hooks do not change this restriction. Their supplied no-op implementations are sufficient only for single-threaded execution; they are not locks and do not make the GC or managed runtime thread-safe.
+The `Monitor.Enter` and `Monitor.Exit` host hooks do not make the runtime safe for concurrent native execution. Within the green-thread scheduler they also suppress context switches while a monitor region is active.
 
 ## Console host
 
@@ -266,7 +266,7 @@ uses the same windowed ABI as the ESP32 Arduino toolchain.
 
 - IL2LLVM translates methods with bodies in the input assembly. It does not link arbitrary .NET framework assemblies.
 - Unsupported IL or unresolved managed methods stop translation with an error; they are not silently replaced by runtime stubs.
-- The current CoreLib runtime is single-threaded. Concurrent or asynchronously injected managed execution is unsupported, including callbacks entered from native timer or worker threads.
+- CoreLib green threads share one native execution thread. Concurrent or asynchronously injected managed execution remains unsupported, including callbacks entered from native timer or worker threads.
 - There is no automatic executable or module linker step in the MSBuild targets. Object generation and native linking are separate steps.
 - Linux kernel code must not rely on the C standard library. The kernel example provides its own implementations for the external symbols it uses.
 - Native runtime code is target-specific by design; CoreLib and IL2LLVM do not select runtime layouts or exception buffers from the target triple.

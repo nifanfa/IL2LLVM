@@ -415,55 +415,6 @@ sealed class Methods(Translator translator) : TranslationComponent(translator)
         return true;
     }
 
-    void AddFunctionEnumAttribute(LLVMValueRef function, string name)
-    {
-        var utf8Name = System.Text.Encoding.UTF8.GetBytes(name);
-        unsafe
-        {
-            fixed (byte* namePointer = utf8Name)
-            {
-                var kind = LLVM.GetEnumAttributeKindForName((sbyte*)namePointer, (nuint)utf8Name.Length);
-                function.AddAttributeAtIndex(LLVMAttributeIndex.LLVMAttributeFunctionIndex,
-                    context.CreateEnumAttribute(kind, 0));
-            }
-        }
-    }
-
-    void ApplyInliningAttributes(LLVMValueRef function, MethodReference method, bool hasBody,
-        bool hasNativeImport, bool isDirectExport, bool isEntryPoint)
-    {
-        if (!hasBody || hasNativeImport || isDirectExport || isEntryPoint)
-            return;
-
-        const int noInlining = 8;
-        const int aggressiveInlining = 256;
-        var options = method.Resolve() is { } definition
-            ? (int?)coreLib.GetMethodImplOptions(definition)
-            : null;
-        if (options is { } value && (value & noInlining) != 0)
-        {
-            AddFunctionEnumAttribute(function, "noinline");
-            return;
-        }
-        if (options is { } aggressive && (aggressive & aggressiveInlining) != 0)
-        {
-            AddFunctionEnumAttribute(function, "alwaysinline");
-            return;
-        }
-
-        // Methods that can carry managed roots stay out-of-line. Inlining them
-        // would duplicate the bookkeeping that this compiler uses for GC.
-        if (!IsGCFrameFree(method))
-        {
-            AddFunctionEnumAttribute(function, "noinline");
-            return;
-        }
-
-        // Let LLVM inline ordinary managed helpers when its cost model says it is
-        // profitable. Explicit AggressiveInlining above bypasses that cost model.
-        AddFunctionEnumAttribute(function, "inlinehint");
-    }
-
     internal new int GetGenericMethodArity(MethodReference method)
     {
         return method is GenericInstanceMethod genericMethod
@@ -1044,8 +995,6 @@ sealed class Methods(Translator translator) : TranslationComponent(translator)
                 funcValue.Comdat = comdat;
             }
         }
-        ApplyInliningAttributes(funcValue, method, method.Resolve()?.HasBody == true, pinvoke is not null,
-            directExport, isEntryPoint);
         moduleMethods.Add(friendlyName, new(funcValue, funcType, method, instructions));
         if (isRuntimeGenerated)
         {

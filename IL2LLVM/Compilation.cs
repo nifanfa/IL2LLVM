@@ -142,6 +142,7 @@ sealed class Compilation : TranslationComponent
             var exceptionPointerType = LLVMTypeRef.CreatePointer(int8Type, 0);
             var gcPushMethod = coreLib.GCPushMethod;
             var gcPopMethod = coreLib.GCPopMethod;
+            var threadAutomaticYieldMethod = coreLib.ThreadAutomaticYieldMethod;
             stringConstructor = coreLib.StringCharArrayConstructor;
             void EnsureExceptionThrow()
             {
@@ -420,11 +421,12 @@ sealed class Compilation : TranslationComponent
                 if (method.Value.Item4?.Any() == true)
                 {
                     var allocaBlock = context.AppendBasicBlock(method.Value.Item1, "alloca");
+                    var prologue = context.AppendBasicBlock(method.Value.Item1, "prologue");
                     var entry = context.AppendBasicBlock(method.Value.Item1, GetLabelName(method.Value.Item4.First()));
                     var builder = context.CreateBuilder();
                     entryBuilder = context.CreateBuilder();
                     entryBuilder.PositionAtEnd(allocaBlock);
-                    builder.PositionAtEnd(entry);
+                    builder.PositionAtEnd(prologue);
                     var methodDefinition = FindLocalMethod(method.Value.Item3, localMethods) ?? method.Value.Item3.Resolve();
                     var cctorGuard = methodDefinition is not { IsConstructor: true } &&
                         !method.Value.Item3.HasThis && methodDefinition?.DeclaringType.IsBeforeFieldInit != true
@@ -998,6 +1000,13 @@ sealed class Compilation : TranslationComponent
                         bool CanFallThrough(Instruction instruction) => instruction.OpCode.Code is not
                             (Code.Br or Code.Br_S or Code.Leave or Code.Leave_S or Code.Ret or Code.Throw or Code.Rethrow or Code.Endfinally or Code.Endfilter or Code.Switch);
 
+                        static bool IsBackwardBranch(Instruction instruction) => instruction.Operand switch
+                        {
+                            Instruction target => target.Offset <= instruction.Offset,
+                            Instruction[] targets => targets.Any(target => target.Offset <= instruction.Offset),
+                            _ => false
+                        };
+
                         if (methodDefinition?.HasBody == true)
                         {
                             for (int i = 0; i < methodDefinition.Body.Variables.Count; i++)
@@ -1355,6 +1364,12 @@ sealed class Compilation : TranslationComponent
                         if (cctorGuard is not null)
                             builder.BuildCall2(LLVMTypeRef.CreateFunction(voidType, []), cctorGuard.Value.Function, []);
 
+                        var insertAutomaticYields = !SameTypeDefinition(method.Value.Item3.DeclaringType, coreLib.Thread) &&
+                            !SameTypeDefinition(method.Value.Item3.DeclaringType, coreLib.GCHeap);
+                        var threadAutomaticYield = insertAutomaticYields
+                            ? EnsureMethodRegistered(threadAutomaticYieldMethod)
+                            : null;
+
                         var emittedExceptionSetups = new HashSet<ExceptionRegion>();
                         var methodContext = new MethodContext
                         {
@@ -1409,6 +1424,11 @@ sealed class Compilation : TranslationComponent
                                 previousInstruction = instr;
                                 continue;
                             }
+                            if (threadAutomaticYield is not null && IsBackwardBranch(instr))
+                            {
+                                SynchronizeEvaluationStackRoots();
+                                builder.BuildCall2(threadAutomaticYield.Item2, threadAutomaticYield.Item1, []);
+                            }
                             if (constants.TryTranslateConstantInstruction(builder, instr, stack) ||
                                 arguments.TryTranslateArgumentInstruction(builder, method.Value.Item1, method.Value.Item3, instr, stack, TrackType) ||
                                 fields.TryTranslateFieldInstruction(builder, entryBuilder, instr, method.Value.Item3,
@@ -1436,7 +1456,7 @@ sealed class Compilation : TranslationComponent
                         }
 
                         entryBuilder.PositionAtEnd(allocaBlock);
-                        entryBuilder.BuildBr(entry);
+                        entryBuilder.BuildBr(prologue);
 
                         foreach (var block in label.Values.Distinct())
                         {
@@ -1543,9 +1563,7 @@ sealed class Compilation : TranslationComponent
             var passOptions = LLVMPassBuilderOptionsRef.Create();
             try
             {
-                // Keep the existing conservative cleanup pass. Inlining is expressed
-                // through LLVM function attributes and can be performed by a later
-                // target/link-time optimizer without rewriting the GC protocol here.
+                // Remove unreachable globals without changing method bodies.
                 module.RunPasses("globaldce", machine, passOptions);
             }
             finally

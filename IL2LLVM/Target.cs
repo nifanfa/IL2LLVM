@@ -11,6 +11,7 @@ static class Target
             LLVM.InitializeAllTargetMCs();
             LLVM.InitializeAllAsmParsers();
             LLVM.InitializeAllAsmPrinters();
+            ConfigureCodeGeneration();
             Translator.llvmInitialized = true;
         }
     }
@@ -42,13 +43,23 @@ static class Target
     {
         var target = LLVMTargetRef.GetTargetFromTriple(targetTriple);
         return target.CreateTargetMachine(targetTriple, cpu, features,
-#if DEBUG
-            LLVMCodeGenOptLevel.LLVMCodeGenLevelNone,
-#else
-            LLVMCodeGenOptLevel.LLVMCodeGenLevelAggressive,
-#endif
+            LLVMCodeGenOptLevel.LLVMCodeGenLevelDefault,
             codeModel == LLVMCodeModel.LLVMCodeModelKernel ? LLVMRelocMode.LLVMRelocStatic : LLVMRelocMode.LLVMRelocPIC,
             codeModel);
+    }
+
+    static unsafe void ConfigureCodeGeneration()
+    {
+        ReadOnlySpan<byte> programName = "IL2LLVM\0"u8;
+        ReadOnlySpan<byte> registerAllocator = "-regalloc=basic\0"u8;
+        fixed (byte* programNamePointer = programName)
+        fixed (byte* registerAllocatorPointer = registerAllocator)
+        {
+            sbyte** arguments = stackalloc sbyte*[2];
+            arguments[0] = (sbyte*)programNamePointer;
+            arguments[1] = (sbyte*)registerAllocatorPointer;
+            LLVM.ParseCommandLineOptions(2, arguments, null);
+        }
     }
 
 }

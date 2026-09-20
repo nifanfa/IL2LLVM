@@ -40,8 +40,6 @@ sealed class CoreLibMetadata
     public TypeDefinition RuntimeFieldHandle => GetType("System.RuntimeFieldHandle");
     public TypeDefinition FlagsAttribute => GetType("System.FlagsAttribute");
     public TypeDefinition RuntimeExportAttribute => GetType("System.Runtime.RuntimeExportAttribute");
-    public TypeDefinition MethodImplAttribute => GetType("System.Runtime.CompilerServices.MethodImplAttribute");
-    public TypeDefinition MethodImplOptions => GetType("System.Runtime.CompilerServices.MethodImplOptions");
     public TypeDefinition ExceptionRuntime => GetType("System.Runtime.ExceptionRuntime");
     public TypeDefinition MemoryRuntime => GetType("System.Runtime.MemoryRuntime");
     public TypeDefinition ExceptionFrame => GetType("System.Runtime.ExceptionFrame");
@@ -51,6 +49,7 @@ sealed class CoreLibMetadata
     public TypeDefinition GCFrame => GetType("System.Runtime.GCFrame");
     public TypeDefinition GCRoot => GetType("System.Runtime.GCRoot");
     public TypeDefinition GCStaticRoot => GetType("System.Runtime.GCStaticRoot");
+    public TypeDefinition Thread => GetType("System.Threading.Thread");
 
     public FieldDefinition ObjectTypeField => GetInstanceField(Object, "m_pType");
     public FieldDefinition StringLengthField => GetInstanceField(String, "Length");
@@ -116,6 +115,7 @@ sealed class CoreLibMetadata
         new PointerType(GCFrame), new PointerType(GCRoot), Int32);
     public MethodDefinition GCPopMethod => GetRequiredMethod(GCHeap, "Pop", false, Void,
         new PointerType(GCFrame));
+    public MethodDefinition ThreadAutomaticYieldMethod => GetRequiredMethod(Thread, "AutomaticYield", false, Void);
 
     public bool IsObject(TypeReference type) => IsType(type, Object);
     public bool IsValueType(TypeReference type) => IsType(type, ValueType);
@@ -125,30 +125,6 @@ sealed class CoreLibMetadata
     public bool IsNativeInteger(TypeReference type) => IsType(type, IntPtr) || IsType(type, UIntPtr);
     public bool IsFlagsAttribute(TypeReference type) => IsType(type, FlagsAttribute);
     public bool IsRuntimeExportAttribute(TypeReference type) => IsType(type, RuntimeExportAttribute);
-    public bool IsMethodImplAttribute(TypeReference type) => IsType(type, MethodImplAttribute);
-
-    public int GetMethodImplOptions(MethodDefinition method)
-    {
-        var options = (int)method.ImplAttributes;
-        var attribute = method.CustomAttributes.FirstOrDefault(attribute =>
-            IsMethodImplAttribute(attribute.AttributeType));
-        if (attribute?.ConstructorArguments.Count != 1)
-            return options;
-
-        return options | attribute.ConstructorArguments[0].Value switch
-        {
-            byte value => value,
-            sbyte value => value,
-            ushort value => value,
-            short value => value,
-            uint value => unchecked((int)value),
-            int value => value,
-            ulong value => unchecked((int)value),
-            long value => unchecked((int)value),
-            _ => 0
-        };
-    }
-
     public FieldDefinition? GetEnumUnderlyingValueField(TypeDefinition type) =>
         type.Fields.FirstOrDefault(field => !field.IsStatic && field.Name == EnumUnderlyingValueFieldName);
 

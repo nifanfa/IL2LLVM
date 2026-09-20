@@ -11,6 +11,7 @@
     <Compile Include="..\ConsoleAppExample\DateTimeValidation.cs" Link="DateTimeValidation.cs" />
     <Compile Include="..\ConsoleAppExample\GarbageCollectionValidation.cs" Link="GarbageCollectionValidation.cs" />
     <Compile Include="..\ConsoleAppExample\LanguageFeatureValidation.cs" Link="LanguageFeatureValidation.cs" />
+    <Compile Include="..\ConsoleAppExample\ThreadValidation.cs" Link="ThreadValidation.cs" />
   </ItemGroup>
 
 </Project>
