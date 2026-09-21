@@ -989,10 +989,9 @@ sealed class Methods(Translator translator) : TranslationComponent(translator)
             }
             else
             {
+                // Let each object-file backend lower linkonce_odr to its native
+                // coalescing mechanism. Explicit COMDAT groups are not portable.
                 funcValue.Linkage = LLVMLinkage.LLVMLinkOnceODRLinkage;
-                var comdat = module.GetOrInsertComdat(friendlyName);
-                comdat.SelectionKind = LLVMComdatSelectionKind.LLVMAnyComdatSelectionKind;
-                funcValue.Comdat = comdat;
             }
         }
         moduleMethods.Add(friendlyName, new(funcValue, funcType, method, instructions));
