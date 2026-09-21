@@ -476,6 +476,7 @@ sealed class Runtime(Translator translator) : TranslationComponent(translator)
         var factoryType = LLVMTypeRef.CreateFunction(returnType, [pointerType]);
         var factory = module.AddFunction($"__type_factory_{GetStableSymbolSuffix(key)}", factoryType);
         factory.FunctionCallConv = (uint)LLVMCallConv.LLVMCCallConv;
+        factory.Linkage = LLVMLinkage.LLVMInternalLinkage;
         var builder = context.CreateBuilder();
         builder.PositionAtEnd(factory.AppendBasicBlock("entry"));
 
@@ -733,7 +734,7 @@ sealed class Runtime(Translator translator) : TranslationComponent(translator)
         var guardType = LLVMTypeRef.CreateFunction(voidType, []);
         var guard = module.AddFunction($"__cctor_guard_{suffix}", guardType);
         guard.FunctionCallConv = (uint)LLVMCallConv.LLVMCCallConv;
-        guard.Linkage = LLVMLinkage.LLVMExternalLinkage;
+        guard.Linkage = LLVMLinkage.LLVMInternalLinkage;
         cctorGuards.Add(key, (guard, state));
 
         var guardBuilder = context.CreateBuilder();

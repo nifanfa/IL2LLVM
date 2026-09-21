@@ -928,12 +928,36 @@ sealed class Methods(Translator translator) : TranslationComponent(translator)
             method.Resolve()?.HasBody != true && method.Resolve()?.PInvokeInfo is null)
             return;
 
+        var runtimeExportName = GetRuntimeExportName(method);
+        var directExport = runtimeExportName is not null;
+        var isEntryPoint = entryPoint is not null && SameMethodDefinition(method, entryPoint);
+        var hasDiscardableBody = (instructions?.Count > 0 || isRuntimeGenerated) && !directExport && !isEntryPoint;
+
+        void SetBodyLinkage(LLVMValueRef function)
+        {
+            if (!hasDiscardableBody)
+                return;
+            if (codeModel == LLVMCodeModel.LLVMCodeModelKernel)
+            {
+                // Kernel module loaders do not support GOTPCRELX relocations.
+                // Keep same-module managed bodies local instead of weak/linkonce.
+                function.Linkage = LLVMLinkage.LLVMInternalLinkage;
+            }
+            else
+            {
+                // Let each object-file backend lower linkonce_odr to its native
+                // coalescing mechanism. Explicit COMDAT groups are not portable.
+                function.Linkage = LLVMLinkage.LLVMLinkOnceODRLinkage;
+            }
+        }
+
         TypeReference declareType = method.DeclaringType;
         string friendlyName = GetFriendlyMethodName(method, declareType);
         if (moduleMethods.TryGetValue(friendlyName, out var existing))
         {
             if (SameMethodInstantiation(existing.Item3, method))
             {
+                SetBodyLinkage(existing.Item1);
                 if (existing.Item4 is null && instructions is not null)
                 {
                     moduleMethods[friendlyName] = new(existing.Item1, existing.Item2, existing.Item3, instructions);
@@ -948,6 +972,7 @@ sealed class Methods(Translator translator) : TranslationComponent(translator)
             {
                 if (!SameMethodInstantiation(existing.Item3, method))
                     throw new InvalidOperationException($"LLVM method symbol collision: {existing.Item3.FullName} and {method.FullName}.");
+                SetBodyLinkage(existing.Item1);
                 if (existing.Item4 is null && instructions is not null)
                 {
                     moduleMethods[friendlyName] = new(existing.Item1, existing.Item2, existing.Item3, instructions);
@@ -960,9 +985,6 @@ sealed class Methods(Translator translator) : TranslationComponent(translator)
 
         var pinvoke = method.Resolve()?.PInvokeInfo;
         var nativeSymbolName = pinvoke is null ? null : GetPInvokeNativeSymbolName(method, friendlyName, pinvoke);
-        var runtimeExportName = GetRuntimeExportName(method);
-        var directExport = runtimeExportName is not null;
-        var isEntryPoint = entryPoint is not null && SameMethodDefinition(method, entryPoint);
         var funcType = CreateLLVMFunction(module, method);
         var exportedName = isEntryPoint
             ? "managed_Main"
@@ -978,22 +1000,7 @@ sealed class Methods(Translator translator) : TranslationComponent(translator)
             throw new InvalidOperationException($"Native symbol '{exportedName}' has incompatible signatures.");
         }
         funcValue.FunctionCallConv = (uint)LLVMCallConv.LLVMCCallConv;
-        var hasDiscardableBody = method.Resolve()?.HasBody == true && !directExport && !isEntryPoint;
-        if (hasDiscardableBody)
-        {
-            if (codeModel == LLVMCodeModel.LLVMCodeModelKernel)
-            {
-                // Kernel module loaders do not support GOTPCRELX relocations.
-                // Keep same-module managed bodies local instead of weak/linkonce.
-                funcValue.Linkage = LLVMLinkage.LLVMInternalLinkage;
-            }
-            else
-            {
-                // Let each object-file backend lower linkonce_odr to its native
-                // coalescing mechanism. Explicit COMDAT groups are not portable.
-                funcValue.Linkage = LLVMLinkage.LLVMLinkOnceODRLinkage;
-            }
-        }
+        SetBodyLinkage(funcValue);
         moduleMethods.Add(friendlyName, new(funcValue, funcType, method, instructions));
         if (isRuntimeGenerated)
         {
