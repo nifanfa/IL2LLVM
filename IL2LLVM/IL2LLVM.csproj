@@ -20,11 +20,10 @@
     <PackageReference Include="Mono.Cecil" Version="0.11.6" />
   </ItemGroup>
 
-  <ItemGroup>
-    <None Include="native\win-x64\libLLVM.dll"
-          Link="libLLVM.dll"
-          CopyToOutputDirectory="PreserveNewest"
-          CopyToPublishDirectory="PreserveNewest" />
-  </ItemGroup>
+  <Target Name="CopyLibLLVM" AfterTargets="Build">
+    <Copy SourceFiles="native\win-x64\libLLVM.dll"
+          DestinationFiles="$(TargetDir)libLLVM.dll"
+          SkipUnchangedFiles="true" />
+  </Target>
 
 </Project>

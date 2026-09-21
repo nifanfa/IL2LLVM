@@ -3229,7 +3229,7 @@ namespace System.Threading
                 return;
 
             GCFrame* gcFrame = GCHeap.GetTopFrame();
-            byte* stackBottom = (byte*)((nuint)GetStackPointer() & ~(nuint)(sizeof(nuint) - 1));
+            byte* stackBottom = stackalloc byte[1];
             if (_stackTop == null)
                 _stackTop = FindStackTop(stackBottom, stackTopHint, gcFrame,
                     ExceptionRuntime.GetTop());
@@ -3411,12 +3411,6 @@ namespace System.Threading
             ExceptionRuntime.Restore(thread._exceptionFrame, thread._currentException);
             GCHeap.UnwindTo(thread._gcFrame);
             ExceptionRuntime.LongJump(thread._context, 1);
-        }
-
-        private static byte* GetStackPointer()
-        {
-            byte* marker = stackalloc byte[1];
-            return marker;
         }
 
         [DllImport("*", EntryPoint = "calloc")]
