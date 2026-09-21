@@ -87,5 +87,3 @@ void System_Console_WriteLine_System_ByReference_System_Char(const uint16_t* str
 
 void System_Console_WriteLine_Int32(int value) { printf("%d\n", value); }
 void System_Console_WriteLine_IntPtr(size_t value) { printf("%zu\n", value); }
-void Enter(void* value) { (void)value; }
-void Exit(void* value) { (void)value; }

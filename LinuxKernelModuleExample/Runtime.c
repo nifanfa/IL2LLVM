@@ -46,18 +46,7 @@ void System_Console_WriteLine_System_ByReference_System_Char(const unsigned shor
 
 void System_Console_WriteLine_Int32(int value) { printk(KERN_INFO "%d\n", value); }
 void System_Console_WriteLine_IntPtr(size_t value) { printk(KERN_INFO "%zu\n", value); }
-void Enter(void* value) { (void)value; }
-void Exit(void* value) { (void)value; }
 void* malloc(size_t size) { return vmalloc(size == 0 ? 1 : size); }
-
-void* calloc(size_t count, size_t size)
-{
-    size_t total;
-    if (size != 0 && count > (~(size_t)0) / size)
-        return NULL;
-    total = count * size;
-    return vzalloc(total == 0 ? 1 : total);
-}
 
 void free(void* value) { vfree(value); }
 void abort(void) { panic("Managed runtime aborted"); }

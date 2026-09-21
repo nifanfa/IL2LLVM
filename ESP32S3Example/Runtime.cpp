@@ -99,14 +99,4 @@ void System_Console_WriteLine_System_ByReference_System_Char(const uint16_t* val
     fputc('\n', stdout);
 }
 
-void Enter(void* value)
-{
-    (void)value;
-}
-
-void Exit(void* value)
-{
-    (void)value;
-}
-
 }

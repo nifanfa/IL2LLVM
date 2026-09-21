@@ -30,6 +30,7 @@ sealed class CoreLibMetadata
     public TypeDefinition DivideByZeroException => GetType("System.DivideByZeroException");
     public TypeDefinition Char => GetType("System.Char");
     public TypeDefinition Int32 => GetType("System.Int32");
+    public TypeDefinition UInt32 => GetType("System.UInt32");
     public TypeDefinition UInt64 => GetType("System.UInt64");
     public TypeDefinition UIntPtr => GetType("System.UIntPtr");
     public TypeDefinition Void => GetType("System.Void");
@@ -41,7 +42,7 @@ sealed class CoreLibMetadata
     public TypeDefinition FlagsAttribute => GetType("System.FlagsAttribute");
     public TypeDefinition RuntimeExportAttribute => GetType("System.Runtime.RuntimeExportAttribute");
     public TypeDefinition ExceptionRuntime => GetType("System.Runtime.ExceptionRuntime");
-    public TypeDefinition MemoryRuntime => GetType("System.Runtime.MemoryRuntime");
+    public TypeDefinition Unsafe => GetType("System.Runtime.CompilerServices.Unsafe");
     public TypeDefinition ExceptionFrame => GetType("System.Runtime.ExceptionFrame");
     public TypeDefinition JumpBuffer => GetType("System.Runtime.JumpBuffer");
     public TypeDefinition StackPointer => GetType("System.Runtime.StackPointer");
@@ -105,10 +106,10 @@ sealed class CoreLibMetadata
     public MethodDefinition ExceptionAbortMethod => GetRequiredMethod(ExceptionRuntime, "Abort", false, Void);
     public MethodDefinition ExceptionThrowMethod => GetRequiredMethod(ExceptionRuntime, "Throw", false, Void,
         Exception);
-    public MethodDefinition MemoryCopyMethod => GetRequiredMethod(MemoryRuntime, "Copy", false, Void,
-        new PointerType(GetType("System.Byte")), new PointerType(GetType("System.Byte")), UIntPtr);
-    public MethodDefinition MemoryFillMethod => GetRequiredMethod(MemoryRuntime, "Fill", false, Void,
-        new PointerType(GetType("System.Byte")), GetType("System.Byte"), UIntPtr);
+    public MethodDefinition UnsafeCopyBlockMethod => GetRequiredMethod(Unsafe, "CopyBlock", false, Void,
+        new PointerType(Void), new PointerType(Void), UInt32);
+    public MethodDefinition UnsafeInitBlockMethod => GetRequiredMethod(Unsafe, "InitBlock", false, Void,
+        new PointerType(Void), GetType("System.Byte"), UInt32);
     public MethodDefinition GCAllocateMethod => GetRequiredMethod(GCHeap, "Allocate", false,
         new PointerType(Object), UIntPtr);
     public MethodDefinition GCPushMethod => GetRequiredMethod(GCHeap, "Push", false, Void,

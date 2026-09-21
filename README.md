@@ -13,7 +13,7 @@ The purpose of this project is to support any processor architecture for which L
 
 The managed runtime is deliberately small. A user-mode host only needs a small ISO C library surface:
 
-- `calloc`
+- `malloc`
 - `free`
 - `memcpy`
 - `memset`
@@ -25,8 +25,6 @@ The following symbols are the runtime boundary implemented by the host. They are
 
 - `setjmp`
 - `longjmp`
-- `Enter`
-- `Exit`
 - `GetCurrentTimeMilliseconds`
 
 The current `setjmp` entry has an additional stack-pointer argument so the generated exception machinery can restore the managed stack state. It therefore requires a target-specific implementation even though `setjmp` and `longjmp` have standard C counterparts. Console output symbols such as `System_Console_WriteLine_Int32` are optional host conveniences, not requirements of the translator.
@@ -118,11 +116,11 @@ The Visual Studio launch profiles in `IL2LLVM/Properties/launchSettings.json` pr
 
 `CoreLib` is source compiled into each managed program. It provides the managed definitions used by generated code, including object layout, arrays, strings, exceptions, collections, delegates, tasks, and GC metadata.
 
-Platform-specific operations remain external. Methods marked with `[DllImport("*")]` are native symbols. The final host must provide every imported symbol that the managed program reaches. Examples include allocation, deallocation, non-local exception transfer, abort, console output, and synchronization. GC and exception frame tracking are implemented in `CoreLib`.
+Platform-specific operations remain external. Methods marked with `[DllImport("*")]` are native symbols. The final host must provide every imported symbol that the managed program reaches. Examples include allocation, deallocation, block memory operations, non-local exception transfer, abort, console output, and wall-clock time. GC, exception frame tracking, and green-thread synchronization are implemented in `CoreLib`.
 
-The built-in collector uses GC descriptors emitted by IL2LLVM and registers static fields as roots. It is not a replacement for the host allocator: the current runtime imports `calloc` and `free`.
+The built-in collector uses GC descriptors emitted by IL2LLVM and registers static fields as roots. It is not a replacement for the host allocator: `Marshal.AllocHGlobal` and `FreeHGlobal` import `malloc` and `free`, while new managed allocations are cleared through `Unsafe.InitBlock`. Block copies use `Unsafe.CopyBlock`; these methods import `memset` and `memcpy` respectively.
 
-`System.Threading.Monitor.Enter` and `Exit` are currently host hooks. The supplied hosts contain placeholders, not a complete synchronization implementation.
+`System.Threading.Monitor.Enter` and `Exit` are implemented entirely in `CoreLib`. A managed side table records the lock object, owning green thread, and recursion count. Contending green threads yield until the owner releases the object; recursive entry by the owner is supported, and an invalid `Exit` throws `SynchronizationLockException`. No native monitor hook or atomic instruction is needed while all managed execution remains on one native thread.
 
 ### Cooperative green threads
 
@@ -195,7 +193,7 @@ int main(void)
 
 The program prints `42`. `managed_Main()` starts `RunAsync()` and returns when it reaches `await`; `OnValue(42)` then calls `SetResult`, which resumes the `await`. In a real host, `process_event` would be an event-loop step. The callback must run on the same managed/event-loop thread; an interrupt or native worker must queue the event instead of calling managed code directly. A source should be completed only once.
 
-The `Monitor.Enter` and `Monitor.Exit` host hooks do not make the runtime safe for concurrent native execution. Within the green-thread scheduler they also suppress context switches while a monitor region is active.
+Managed monitors do not make the runtime safe for concurrent native execution. They rely on the cooperative scheduler's single native execution thread: monitor table updates briefly suppress context switches, while code holding a monitor may otherwise yield or sleep. A contender for the same object waits, but green threads using unrelated monitor objects can continue running.
 
 ## Console host
 
