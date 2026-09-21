@@ -1451,6 +1451,22 @@ namespace System
 
     [AttributeUsage(AttributeTargets.Parameter)]
     public sealed class ParamArrayAttribute : Attribute { }
+    [AttributeUsage(AttributeTargets.All, Inherited = false)]
+    public sealed class ObsoleteAttribute : Attribute
+    {
+        public ObsoleteAttribute() { }
+        public ObsoleteAttribute(string message) { Message = message; }
+        public ObsoleteAttribute(string message, bool error)
+        {
+            Message = message;
+            IsError = error;
+        }
+
+        public string Message { get; }
+        public bool IsError { get; }
+        public string DiagnosticId { get; set; }
+        public string UrlFormat { get; set; }
+    }
     public static partial class Console
     {
         [DllImport("*")]
@@ -3058,6 +3074,7 @@ namespace System.Threading
 {
     public delegate void ThreadStart();
 
+    [Obsolete("Use Task-based APIs instead. Thread is a cooperative green-thread implementation.")]
     public sealed unsafe class Thread
     {
         private const int AutomaticYieldInterval = 65536;
