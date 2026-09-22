@@ -937,18 +937,7 @@ sealed class Methods(Translator translator) : TranslationComponent(translator)
         {
             if (!hasDiscardableBody)
                 return;
-            if (codeModel == LLVMCodeModel.LLVMCodeModelKernel)
-            {
-                // Kernel module loaders do not support GOTPCRELX relocations.
-                // Keep same-module managed bodies local instead of weak/linkonce.
-                function.Linkage = LLVMLinkage.LLVMInternalLinkage;
-            }
-            else
-            {
-                // Let each object-file backend lower linkonce_odr to its native
-                // coalescing mechanism. Explicit COMDAT groups are not portable.
-                function.Linkage = LLVMLinkage.LLVMLinkOnceODRLinkage;
-            }
+            function.Linkage = LLVMLinkage.LLVMInternalLinkage;
         }
 
         TypeReference declareType = method.DeclaringType;
