@@ -114,10 +114,6 @@ sealed class Compilation : TranslationComponent
         LLVMValueRef exceptionThrowFunction = default;
         gcAllocateType = default;
         gcAllocateFunction = default;
-        memoryCopyType = default;
-        memoryCopyFunction = default;
-        memoryFillType = default;
-        memoryFillFunction = default;
         LLVMTypeRef gcPushType = default;
         LLVMValueRef gcPushFunction = default;
         LLVMTypeRef gcPopType = default;
@@ -142,7 +138,7 @@ sealed class Compilation : TranslationComponent
             var exceptionPointerType = LLVMTypeRef.CreatePointer(int8Type, 0);
             var gcPushMethod = coreLib.GCPushMethod;
             var gcPopMethod = coreLib.GCPopMethod;
-            var threadAutomaticYieldMethod = coreLib.ThreadAutomaticYieldMethod;
+            var threadYieldMethod = coreLib.ThreadYieldMethod;
             stringConstructor = coreLib.StringCharArrayConstructor;
             void EnsureExceptionThrow()
             {
@@ -1364,10 +1360,10 @@ sealed class Compilation : TranslationComponent
                         if (cctorGuard is not null)
                             builder.BuildCall2(LLVMTypeRef.CreateFunction(voidType, []), cctorGuard.Value.Function, []);
 
-                        var insertAutomaticYields = !SameTypeDefinition(method.Value.Item3.DeclaringType, coreLib.Thread) &&
+                        var insertGeneratedYields = !SameTypeDefinition(method.Value.Item3.DeclaringType, coreLib.Thread) &&
                             !SameTypeDefinition(method.Value.Item3.DeclaringType, coreLib.GCHeap);
-                        var threadAutomaticYield = insertAutomaticYields
-                            ? EnsureMethodRegistered(threadAutomaticYieldMethod)
+                        var generatedThreadYield = insertGeneratedYields
+                            ? EnsureMethodRegistered(threadYieldMethod)
                             : null;
 
                         var emittedExceptionSetups = new HashSet<ExceptionRegion>();
@@ -1424,10 +1420,11 @@ sealed class Compilation : TranslationComponent
                                 previousInstruction = instr;
                                 continue;
                             }
-                            if (threadAutomaticYield is not null && IsBackwardBranch(instr))
+                            if (generatedThreadYield is not null && IsBackwardBranch(instr))
                             {
                                 SynchronizeEvaluationStackRoots();
-                                builder.BuildCall2(threadAutomaticYield.Item2, threadAutomaticYield.Item1, []);
+                                builder.BuildCall2(generatedThreadYield.Item2, generatedThreadYield.Item1,
+                                    [LLVMValueRef.CreateConstInt(GetCallType(coreLib.Boolean), 1, false)]);
                             }
                             if (constants.TryTranslateConstantInstruction(builder, instr, stack) ||
                                 arguments.TryTranslateArgumentInstruction(builder, method.Value.Item1, method.Value.Item3, instr, stack, TrackType) ||

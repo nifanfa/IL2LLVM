@@ -52,10 +52,6 @@ abstract class TranslationComponent(Translator translator)
     protected MethodDefinition stringConstructor { get => Translator.stringConstructor; set => Translator.stringConstructor = value; }
     protected LLVMTypeRef gcAllocateType { get => Translator.gcAllocateType; set => Translator.gcAllocateType = value; }
     protected LLVMValueRef gcAllocateFunction { get => Translator.gcAllocateFunction; set => Translator.gcAllocateFunction = value; }
-    protected LLVMTypeRef memoryCopyType { get => Translator.memoryCopyType; set => Translator.memoryCopyType = value; }
-    protected LLVMValueRef memoryCopyFunction { get => Translator.memoryCopyFunction; set => Translator.memoryCopyFunction = value; }
-    protected LLVMTypeRef memoryFillType { get => Translator.memoryFillType; set => Translator.memoryFillType = value; }
-    protected LLVMValueRef memoryFillFunction { get => Translator.memoryFillFunction; set => Translator.memoryFillFunction = value; }
     protected int nextRuntimeTypeId { get => Translator.nextRuntimeTypeId; set => Translator.nextRuntimeTypeId = value; }
     protected int nextVirtualDispatchId { get => Translator.nextVirtualDispatchId; set => Translator.nextVirtualDispatchId = value; }
 

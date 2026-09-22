@@ -3144,27 +3144,30 @@ namespace System.Threading
                 Yield();
         }
 
-        public static bool Yield()
+        public static bool Yield(bool generated = false)
         {
-            Thread current = _current;
-            if (current == null || current._next == current || current._criticalRegionCount != 0)
-                return false;
+            if (generated)
+            {
+                if (++_automaticYieldCounter < AutomaticYieldInterval)
+                    return false;
+                _automaticYieldCounter = 0;
+            }
 
-            Thread next = FindRunnable(current._next, false);
-            if (next == current)
-                return false;
-            byte* stackTopMarker = stackalloc byte[1];
-            SwitchTo(next, stackTopMarker + 1);
-            return true;
-        }
+            return YieldCore();
 
-        internal static void AutomaticYield()
-        {
-            if (++_automaticYieldCounter < AutomaticYieldInterval)
-                return;
+            static bool YieldCore()
+            {
+                Thread current = _current;
+                if (current == null || current._next == current || current._criticalRegionCount != 0)
+                    return false;
 
-            _automaticYieldCounter = 0;
-            Yield();
+                Thread next = FindRunnable(current._next, false);
+                if (next == current)
+                    return false;
+                byte* stackTopMarker = stackalloc byte[1];
+                SwitchTo(next, stackTopMarker + 1);
+                return true;
+            }
         }
 
         internal static void EnterCriticalRegion()

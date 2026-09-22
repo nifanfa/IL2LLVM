@@ -53,10 +53,6 @@ sealed class Translator
     internal MethodDefinition stringConstructor = null!;
     internal LLVMTypeRef gcAllocateType;
     internal LLVMValueRef gcAllocateFunction;
-    internal LLVMTypeRef memoryCopyType;
-    internal LLVMValueRef memoryCopyFunction;
-    internal LLVMTypeRef memoryFillType;
-    internal LLVMValueRef memoryFillFunction;
     internal int nextRuntimeTypeId;
     internal int nextVirtualDispatchId;
 

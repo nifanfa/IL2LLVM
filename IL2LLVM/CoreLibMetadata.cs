@@ -28,9 +28,9 @@ sealed class CoreLibMetadata
     public TypeDefinition IndexOutOfRangeException => GetType("System.IndexOutOfRangeException");
     public TypeDefinition OverflowException => GetType("System.OverflowException");
     public TypeDefinition DivideByZeroException => GetType("System.DivideByZeroException");
+    public TypeDefinition Boolean => GetType("System.Boolean");
     public TypeDefinition Char => GetType("System.Char");
     public TypeDefinition Int32 => GetType("System.Int32");
-    public TypeDefinition UInt32 => GetType("System.UInt32");
     public TypeDefinition UInt64 => GetType("System.UInt64");
     public TypeDefinition UIntPtr => GetType("System.UIntPtr");
     public TypeDefinition Void => GetType("System.Void");
@@ -42,7 +42,6 @@ sealed class CoreLibMetadata
     public TypeDefinition FlagsAttribute => GetType("System.FlagsAttribute");
     public TypeDefinition RuntimeExportAttribute => GetType("System.Runtime.RuntimeExportAttribute");
     public TypeDefinition ExceptionRuntime => GetType("System.Runtime.ExceptionRuntime");
-    public TypeDefinition Unsafe => GetType("System.Runtime.CompilerServices.Unsafe");
     public TypeDefinition ExceptionFrame => GetType("System.Runtime.ExceptionFrame");
     public TypeDefinition JumpBuffer => GetType("System.Runtime.JumpBuffer");
     public TypeDefinition StackPointer => GetType("System.Runtime.StackPointer");
@@ -106,17 +105,13 @@ sealed class CoreLibMetadata
     public MethodDefinition ExceptionAbortMethod => GetRequiredMethod(ExceptionRuntime, "Abort", false, Void);
     public MethodDefinition ExceptionThrowMethod => GetRequiredMethod(ExceptionRuntime, "Throw", false, Void,
         Exception);
-    public MethodDefinition UnsafeCopyBlockMethod => GetRequiredMethod(Unsafe, "CopyBlock", false, Void,
-        new PointerType(Void), new PointerType(Void), UInt32);
-    public MethodDefinition UnsafeInitBlockMethod => GetRequiredMethod(Unsafe, "InitBlock", false, Void,
-        new PointerType(Void), GetType("System.Byte"), UInt32);
     public MethodDefinition GCAllocateMethod => GetRequiredMethod(GCHeap, "Allocate", false,
         new PointerType(Object), UIntPtr);
     public MethodDefinition GCPushMethod => GetRequiredMethod(GCHeap, "Push", false, Void,
         new PointerType(GCFrame), new PointerType(GCRoot), Int32);
     public MethodDefinition GCPopMethod => GetRequiredMethod(GCHeap, "Pop", false, Void,
         new PointerType(GCFrame));
-    public MethodDefinition ThreadAutomaticYieldMethod => GetRequiredMethod(Thread, "AutomaticYield", false, Void);
+    public MethodDefinition ThreadYieldMethod => GetRequiredMethod(Thread, "Yield", false, Boolean, Boolean);
 
     public bool IsObject(TypeReference type) => IsType(type, Object);
     public bool IsValueType(TypeReference type) => IsType(type, ValueType);
