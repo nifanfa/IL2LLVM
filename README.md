@@ -4,8 +4,11 @@
 
 IL2LLVM translates a managed assembly built with this repository's CoreLib into a native object file through LLVM. It is not a .NET runtime, NativeAOT frontend, or a general-purpose replacement for the .NET SDK.
 
-<img alt="QQ_1789867398271" src="https://github.com/user-attachments/assets/541d775a-f146-4a9f-a00a-24d826574926" />
-<img alt="image (3)" src="https://github.com/user-attachments/assets/4031dbc3-0b7b-470e-8807-6ff9aa4ca4fa" />
+<img alt="QQ_1789867398271" src="https://github.com/user-attachments/assets/541d775a-f146-4a9f-a00a-24d826574926" />  
+<img alt="image (3)" src="https://github.com/user-attachments/assets/4031dbc3-0b7b-470e-8807-6ff9aa4ca4fa" />  
+<img alt="IMG_4850" src="https://github.com/user-attachments/assets/a108db9b-2dad-4887-b563-c14c790dc711" />  
+
+> Running on Mac OS, Linux, Windows, ESP32-S3  
 
 ## Project purpose
 
