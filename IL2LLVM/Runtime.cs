@@ -294,7 +294,12 @@ sealed class Runtime(Translator translator) : TranslationComponent(translator)
     internal new string GetRuntimeTypeKey(TypeReference type)
     {
         if (type is GenericInstanceType generic)
+        {
+            if (generic.GenericArguments.Count > 0 &&
+                generic.GenericArguments.All(argument => argument is GenericParameter))
+                return generic.ElementType.FullName;
             return generic.ElementType.FullName + "<" + string.Join(",", generic.GenericArguments.Select(GetRuntimeTypeKey)) + ">";
+        }
         return type.FullName;
     }
 
@@ -365,7 +370,9 @@ sealed class Runtime(Translator translator) : TranslationComponent(translator)
             pointerType,
             .. fields.Select(field => GetLLVMTypeRef(field.FieldType))
         ], false);
-        typeObject = AddInternalGlobal(storageType, $"__runtime_type_{GetStableSymbolSuffix(key)}");
+        var suffix = GetFriendlyTypeName(type);
+        typeObject = AddInternalGlobal(storageType,
+            RegisterGeneratedSymbol($"__runtime_type_{suffix}", key));
         runtimeTypeObjects.Add(key, typeObject);
 
         var definition = type.Resolve();
@@ -474,7 +481,9 @@ sealed class Runtime(Translator translator) : TranslationComponent(translator)
         var pointerType = LLVMTypeRef.CreatePointer(int8Type, 0);
         var returnType = GetCallType(type);
         var factoryType = LLVMTypeRef.CreateFunction(returnType, [pointerType]);
-        var factory = module.AddFunction($"__type_factory_{GetStableSymbolSuffix(key)}", factoryType);
+        var suffix = GetFriendlyTypeName(type);
+        var factory = module.AddFunction(
+            RegisterGeneratedSymbol($"__type_factory_{suffix}", key), factoryType);
         factory.FunctionCallConv = (uint)LLVMCallConv.LLVMCCallConv;
         factory.Linkage = LLVMLinkage.LLVMInternalLinkage;
         var builder = context.CreateBuilder();
@@ -520,7 +529,8 @@ sealed class Runtime(Translator translator) : TranslationComponent(translator)
             var fields = GetObjectLayoutFields(coreLib.Func);
             var storageType = context.GetStructType(
                 fields.Select(field => GetLLVMTypeRef(field.FieldType)).ToArray(), false);
-            var storage = AddInternalGlobal(storageType, $"__type_factory_delegate_{GetStableSymbolSuffix(key)}");
+            var storage = AddInternalGlobal(storageType,
+                RegisterGeneratedSymbol($"__type_factory_delegate_{suffix}", key));
             runtimeTypeFactories.Add(key, storage);
             storage.Initializer = LLVMValueRef.CreateConstNamedStruct(storageType,
                 fields.Select(field =>
@@ -563,11 +573,12 @@ sealed class Runtime(Translator translator) : TranslationComponent(translator)
         var arrayFields = GetObjectLayoutFields(coreLib.Array);
         var arrayStorageType = context.GetStructType(
             [.. arrayFields.Select(field => GetLLVMTypeRef(field.FieldType)), charDataType], false);
-        var arrayStorage = AddInternalGlobal(arrayStorageType, $"__static_chars_{GetStableSymbolSuffix(value)}");
+        var index = staticStrings.Count;
+        var arrayStorage = AddInternalGlobal(arrayStorageType, $"__static_chars_{index}");
         var stringFields = GetObjectLayoutFields(coreLib.String);
         var stringStorageType = context.GetStructType(
             stringFields.Select(field => GetLLVMTypeRef(field.FieldType)).ToArray(), false);
-        var stringStorage = AddInternalGlobal(stringStorageType, $"__static_string_{GetStableSymbolSuffix(value)}");
+        var stringStorage = AddInternalGlobal(stringStorageType, $"__static_string_{index}");
         staticStrings.Add(value, stringStorage);
         var zero = LLVMValueRef.CreateConstInt(int32Type, 0, false);
         var dataIndex = LLVMValueRef.CreateConstInt(int32Type, (ulong)arrayFields.Length, false);
@@ -603,7 +614,7 @@ sealed class Runtime(Translator translator) : TranslationComponent(translator)
         var arrayFields = GetObjectLayoutFields(coreLib.Array);
         var storageType = context.GetStructType(
             [.. arrayFields.Select(field => GetLLVMTypeRef(field.FieldType)), dataType], false);
-        result = AddInternalGlobal(storageType, $"__static_string_array_{GetStableSymbolSuffix(key)}");
+        result = AddInternalGlobal(storageType, $"__static_string_array_{staticStringArrays.Count}");
         staticStringArrays.Add(key, result);
         var zero = LLVMValueRef.CreateConstInt(int32Type, 0, false);
         var dataPointer = LLVMValueRef.CreateConstGEP2(storageType, result,
@@ -626,7 +637,7 @@ sealed class Runtime(Translator translator) : TranslationComponent(translator)
         var arrayFields = GetObjectLayoutFields(coreLib.Array);
         var storageType = context.GetStructType(
             [.. arrayFields.Select(field => GetLLVMTypeRef(field.FieldType)), dataType], false);
-        result = AddInternalGlobal(storageType, $"__static_uint64_array_{GetStableSymbolSuffix(key)}");
+        result = AddInternalGlobal(storageType, $"__static_uint64_array_{staticUInt64Arrays.Count}");
         staticUInt64Arrays.Add(key, result);
         var zero = LLVMValueRef.CreateConstInt(int32Type, 0, false);
         var dataPointer = LLVMValueRef.CreateConstGEP2(storageType, result,
@@ -648,7 +659,7 @@ sealed class Runtime(Translator translator) : TranslationComponent(translator)
         var arrayFields = GetObjectLayoutFields(coreLib.Array);
         var storageType = context.GetStructType(
             [.. arrayFields.Select(field => GetLLVMTypeRef(field.FieldType)), dataType], false);
-        result = AddInternalGlobal(storageType, $"__static_int32_array_{GetStableSymbolSuffix(key)}");
+        result = AddInternalGlobal(storageType, $"__static_int32_array_{staticInt32Arrays.Count}");
         staticInt32Arrays.Add(key, result);
         var zero = LLVMValueRef.CreateConstInt(int32Type, 0, false);
         var dataPointer = LLVMValueRef.CreateConstGEP2(storageType, result,
@@ -728,11 +739,11 @@ sealed class Runtime(Translator translator) : TranslationComponent(translator)
         if (cctor is null || cctor.Item1 == default)
             return null;
 
-        var suffix = GetStableSymbolSuffix(GetRuntimeTypeKey(type));
-        var state = AddInternalGlobal(int8Type, $"__cctor_state_{suffix}");
+        var suffix = GetFriendlyTypeName(type);
+        var state = AddInternalGlobal(int8Type, RegisterGeneratedSymbol($"__cctor_state_{suffix}", key));
         state.Initializer = LLVMValueRef.CreateConstNull(int8Type);
         var guardType = LLVMTypeRef.CreateFunction(voidType, []);
-        var guard = module.AddFunction($"__cctor_guard_{suffix}", guardType);
+        var guard = module.AddFunction(RegisterGeneratedSymbol($"__cctor_guard_{suffix}", key), guardType);
         guard.FunctionCallConv = (uint)LLVMCallConv.LLVMCCallConv;
         guard.Linkage = LLVMLinkage.LLVMInternalLinkage;
         cctorGuards.Add(key, (guard, state));

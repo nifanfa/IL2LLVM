@@ -46,6 +46,7 @@ sealed class Translator
     internal Dictionary<string, LLVMValueRef> runtimeFieldData = new(StringComparer.Ordinal);
     internal Dictionary<string, LLVMValueRef> missingVirtualFunctionPointers = new(StringComparer.Ordinal);
     internal Dictionary<string, LLVMValueRef> delegateThunks = new(StringComparer.Ordinal);
+    internal Dictionary<string, string> generatedSymbolIdentities = new(StringComparer.Ordinal);
     internal List<(LLVMValueRef Function, LLVMTypeRef FunctionType, MethodReference Method)> runtimeGeneratedMethods = [];
     internal Queue<string> pendingMethodTranslations = new();
     internal HashSet<string> queuedMethodTranslations = new(StringComparer.Ordinal);

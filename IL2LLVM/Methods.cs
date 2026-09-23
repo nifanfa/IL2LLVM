@@ -766,32 +766,49 @@ sealed class Methods(Translator translator) : TranslationComponent(translator)
         if (method is GenericInstanceMethod genericMethod)
             names.AddRange(genericMethod.GenericArguments.Select(argument => GetFriendlyTypeName(argument)));
         else if (method.GenericParameters.Count != 0)
-            names.Add($"G{method.GenericParameters.Count}");
+            names.AddRange(method.GenericParameters.Select(parameter =>
+                string.IsNullOrEmpty(parameter.Name)
+                    ? $"M{parameter.Position}"
+                    : SanitizeSymbolPart(parameter.Name)));
         names.AddRange(method.Parameters.Select(parameter =>
             GetFriendlyParameterTypeName(SubstituteGenericParameter(parameter.ParameterType, method))));
         return string.Join("_", names);
     }
 
     internal new string GetFriendlyTypeName(TypeReference type, bool includeGenericMarker = true)
+        => GetFriendlyTypeName(type, includeGenericMarker, false);
+
+    string GetFriendlyTypeName(TypeReference type, bool includeGenericMarker, bool nested)
     {
         if (type is RequiredModifierType requiredModifier)
-            return GetFriendlyTypeName(requiredModifier.ElementType, includeGenericMarker);
+            return GetFriendlyTypeName(requiredModifier.ElementType, includeGenericMarker, nested);
         if (type is OptionalModifierType optionalModifier)
-            return GetFriendlyTypeName(optionalModifier.ElementType, includeGenericMarker);
+            return GetFriendlyTypeName(optionalModifier.ElementType, includeGenericMarker, nested);
         if (type is PinnedType pinned)
-            return GetFriendlyTypeName(pinned.ElementType, includeGenericMarker);
+            return GetFriendlyTypeName(pinned.ElementType, includeGenericMarker, nested);
         if (type is GenericInstanceType generic)
-            return GetFriendlyTypeName(generic.ElementType, false) + "_" + string.Join("_", generic.GenericArguments.Select(argument => GetFriendlyTypeName(argument)));
+            return GetFriendlyTypeName(generic.ElementType, false, nested) + "_" +
+                string.Join("_", generic.GenericArguments.Select(argument =>
+                    GetFriendlyTypeName(argument, true, true)));
         if (type is ArrayType array)
-            return $"{GetFriendlyTypeName(array.ElementType)}_Array{array.Rank}";
+            return nested
+                ? $"{GetFriendlyTypeName(array.ElementType, true, true)}__Array{array.Rank}"
+                : $"{GetFriendlyTypeName(array.ElementType)}_Array{array.Rank}";
         if (type is ByReferenceType byReference)
-            return GetFriendlyTypeName(byReference.ElementType) + "_ByReference";
+            return nested
+                ? $"{GetFriendlyTypeName(byReference.ElementType, true, true)}__ByReference"
+                : $"{GetFriendlyTypeName(byReference.ElementType)}_ByReference";
         if (type is PointerType pointer)
-            return GetFriendlyTypeName(pointer.ElementType) + "_Pointer";
+            return nested
+                ? $"{GetFriendlyTypeName(pointer.ElementType, true, true)}__Pointer"
+                : $"{GetFriendlyTypeName(pointer.ElementType)}_Pointer";
         if (type is GenericParameter parameter)
-            return $"{parameter.Type}{parameter.Position}";
+            return string.IsNullOrEmpty(parameter.Name)
+                ? $"{parameter.Type}{parameter.Position}"
+                : SanitizeSymbolPart(parameter.Name);
         var name = RemoveGenericArity(type.FullName);
-        if (includeGenericMarker && localTypes.TryGetValue(type.FullName, out var definition) &&
+        if (includeGenericMarker && !type.FullName.Contains('/') &&
+            localTypes.TryGetValue(type.FullName, out var definition) &&
             definition.GenericParameters.Count > 0)
             name += "_" + string.Join("_", definition.GenericParameters.Select(parameter => SanitizeSymbolPart(parameter.Name)));
         return SanitizeSymbolPart(name);
@@ -834,15 +851,17 @@ sealed class Methods(Translator translator) : TranslationComponent(translator)
             : '_').ToArray());
     }
 
-    internal new string GetStableSymbolSuffix(string value)
+    internal new string RegisterGeneratedSymbol(string name, string identity)
     {
-        uint hash = 2166136261;
-        foreach (var character in value)
+        if (generatedSymbolIdentities.TryGetValue(name, out var existingIdentity))
         {
-            hash ^= character;
-            hash *= 16777619;
+            if (existingIdentity != identity)
+                throw new InvalidOperationException(
+                    $"LLVM generated symbol collision: '{name}' represents both '{existingIdentity}' and '{identity}'.");
+            return name;
         }
-        return $"{SanitizeSymbolPart(RemoveGenericArity(value))}_{hash:X8}";
+        generatedSymbolIdentities.Add(name, identity);
+        return name;
     }
 
     internal new Tuple<LLVMValueRef, LLVMTypeRef> GetStaticField(FieldReference field, MethodReference? context = null)
@@ -896,7 +915,8 @@ sealed class Methods(Translator translator) : TranslationComponent(translator)
         var dataType = LLVMTypeRef.CreateArray(int8Type, (uint)Math.Max(1, initialValue.Length));
         if (!runtimeFieldData.TryGetValue(key, out var data))
         {
-            data = AddInternalGlobal(dataType, $"__field_data_{GetStableSymbolSuffix(key)}");
+            var name = $"__field_data_{GetFriendlyTypeName(definition.DeclaringType)}_{SanitizeSymbolPart(definition.Name)}";
+            data = AddInternalGlobal(dataType, RegisterGeneratedSymbol(name, key));
             data.Initializer = LLVMValueRef.CreateConstArray(int8Type,
                 initialValue.Length == 0
                     ? [LLVMValueRef.CreateConstNull(int8Type)]

@@ -45,6 +45,7 @@ abstract class TranslationComponent(Translator translator)
     protected Dictionary<string, LLVMValueRef> runtimeFieldData { get => Translator.runtimeFieldData; set => Translator.runtimeFieldData = value; }
     protected Dictionary<string, LLVMValueRef> missingVirtualFunctionPointers { get => Translator.missingVirtualFunctionPointers; set => Translator.missingVirtualFunctionPointers = value; }
     protected Dictionary<string, LLVMValueRef> delegateThunks { get => Translator.delegateThunks; set => Translator.delegateThunks = value; }
+    protected Dictionary<string, string> generatedSymbolIdentities { get => Translator.generatedSymbolIdentities; set => Translator.generatedSymbolIdentities = value; }
     protected List<(LLVMValueRef Function, LLVMTypeRef FunctionType, MethodReference Method)> runtimeGeneratedMethods { get => Translator.runtimeGeneratedMethods; set => Translator.runtimeGeneratedMethods = value; }
     protected Queue<string> pendingMethodTranslations { get => Translator.pendingMethodTranslations; set => Translator.pendingMethodTranslations = value; }
     protected HashSet<string> queuedMethodTranslations { get => Translator.queuedMethodTranslations; set => Translator.queuedMethodTranslations = value; }
@@ -142,7 +143,7 @@ abstract class TranslationComponent(Translator translator)
     protected static string RemoveGenericArity(string value) => Methods.RemoveGenericArity(value);
     protected string GetFriendlyParameterTypeName(TypeReference type) => Translator.Methods.GetFriendlyParameterTypeName(type);
     protected string SanitizeSymbolPart(string value) => Translator.Methods.SanitizeSymbolPart(value);
-    protected string GetStableSymbolSuffix(string value) => Translator.Methods.GetStableSymbolSuffix(value);
+    protected string RegisterGeneratedSymbol(string name, string identity) => Translator.Methods.RegisterGeneratedSymbol(name, identity);
     protected Tuple<LLVMValueRef, LLVMTypeRef> GetStaticField(FieldReference field, MethodReference? context = null) => Translator.Methods.GetStaticField(field, context);
     protected LLVMValueRef GetRuntimeFieldHandle(LLVMBuilderRef builder, LLVMBuilderRef allocationBuilder, FieldReference field) => Translator.Methods.GetRuntimeFieldHandle(builder, allocationBuilder, field);
     protected void RegisterMethodFunction(LLVMModuleRef llvmModule, MethodReference method, Collection<Instruction>? instructions, string? symbolName = null) => Translator.Methods.RegisterMethodFunction(llvmModule, method, instructions, symbolName);

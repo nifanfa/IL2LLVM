@@ -489,7 +489,8 @@ sealed class Compilation : TranslationComponent
                             parameterTypes.AddRange(invokeMethod.Parameters.Select(parameter =>
                                 GetCallType(SubstituteGenericParameter(parameter.ParameterType, invokeMethod))));
                             var thunkType = LLVMTypeRef.CreateFunction(GetCallType(invokeReturnType), parameterTypes.ToArray());
-                            var thunk = module.AddFunction($"__delegate_thunk_{GetStableSymbolSuffix(key)}", thunkType);
+                            var thunk = module.AddFunction(
+                                RegisterGeneratedSymbol($"__delegate_thunk_{SanitizeSymbolPart(key)}", key), thunkType);
                             thunk.FunctionCallConv = (uint)LLVMCallConv.LLVMCCallConv;
                             thunk.Linkage = LLVMLinkage.LLVMInternalLinkage;
                             delegateThunks.Add(key, thunk);
@@ -692,7 +693,7 @@ sealed class Compilation : TranslationComponent
                                 if (!missingVirtualFunctionPointers.TryGetValue(key, out var missingFunction))
                                 {
                                     var abortMethod = EnsureExceptionAbort();
-                                    missingFunction = module.AddFunction($"__missing_virtual_{GetStableSymbolSuffix(key)}",
+                                    missingFunction = module.AddFunction(RegisterGeneratedSymbol($"__missing_virtual_{key}", key),
                                         CreateLLVMFunction(module, targetMethod));
                                     missingFunction.FunctionCallConv = (uint)LLVMCallConv.LLVMCCallConv;
                                     missingFunction.Linkage = LLVMLinkage.LLVMInternalLinkage;
