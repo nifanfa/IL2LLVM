@@ -1,23 +1,32 @@
 #pragma once
 #include <Arduino.h>
 #include <SPI.h>
-#define LCD_WIDTH   172 // LCD width
-#define LCD_HEIGHT  320 // LCD height
+#define VERTICAL 0 // 0: landscape (320x240); 1: portrait (240x320)
+#if VERTICAL
+#define EXAMPLE_LCD_H_RES 240
+#define EXAMPLE_LCD_V_RES 320
+#define LCD_MADCTL 0x00
+#else
+#define EXAMPLE_LCD_H_RES 320
+#define EXAMPLE_LCD_V_RES 240
+#define LCD_MADCTL 0x60
+#endif
+#define LCD_WIDTH  EXAMPLE_LCD_H_RES
+#define LCD_HEIGHT EXAMPLE_LCD_V_RES
 
-#define SPIFreq                        80000000
-#define EXAMPLE_PIN_NUM_MISO           -1
-#define EXAMPLE_PIN_NUM_MOSI           45
-#define EXAMPLE_PIN_NUM_SCLK           40
-#define EXAMPLE_PIN_NUM_LCD_CS         42
-#define EXAMPLE_PIN_NUM_LCD_DC         41
-#define EXAMPLE_PIN_NUM_LCD_RST        39
-#define EXAMPLE_PIN_NUM_BK_LIGHT       46
-#define Frequency       1000                    // PWM frequencyconst 
-#define Resolution      10                         
-#define Backlight_MAX   100     
+#define SPIFreq 40000000
+#define EXAMPLE_PIN_NUM_LCD_SCLK 39
+#define EXAMPLE_PIN_NUM_LCD_MOSI 38
+#define EXAMPLE_PIN_NUM_LCD_MISO 40
+#define EXAMPLE_PIN_NUM_LCD_DC   42
+#define EXAMPLE_PIN_NUM_LCD_RST  -1
+#define EXAMPLE_PIN_NUM_LCD_CS   45
+#define EXAMPLE_PIN_NUM_LCD_BL   1
+#define Frequency       1000
+#define Resolution      10
+#define Backlight_MAX   100
 
-#define VERTICAL   0
-#define Offset_X 34
+#define Offset_X 0
 #define Offset_Y 0
 
 extern uint8_t LCD_Backlight;

@@ -5,7 +5,8 @@ SPIClass LCDspi(FSPI);
 #define SPI_WRITE_Word(_dat)    LCDspi.transfer16(_dat)
 void SPI_Init()
 {
-  LCDspi.begin(EXAMPLE_PIN_NUM_SCLK,EXAMPLE_PIN_NUM_MISO,EXAMPLE_PIN_NUM_MOSI); 
+  LCDspi.begin(EXAMPLE_PIN_NUM_LCD_SCLK, EXAMPLE_PIN_NUM_LCD_MISO,
+               EXAMPLE_PIN_NUM_LCD_MOSI, -1);
 }
 
 void LCD_WriteCommand(uint8_t Cmd)  
@@ -47,18 +48,26 @@ void LCD_WriteData_nbyte(uint8_t* SetData,uint8_t* ReadData,uint32_t Size)
 
 void LCD_Reset(void)
 {
-  digitalWrite(EXAMPLE_PIN_NUM_LCD_CS, LOW);       
-  delay(50);
-  digitalWrite(EXAMPLE_PIN_NUM_LCD_RST, LOW); 
-  delay(50);
-  digitalWrite(EXAMPLE_PIN_NUM_LCD_RST, HIGH); 
-  delay(50);
+  if (EXAMPLE_PIN_NUM_LCD_RST >= 0) {
+    digitalWrite(EXAMPLE_PIN_NUM_LCD_RST, LOW);
+    delay(50);
+    digitalWrite(EXAMPLE_PIN_NUM_LCD_RST, HIGH);
+    delay(120);
+  } else {
+    LCD_WriteCommand(0x01); // SWRESET: RST is not wired
+    delay(150);
+  }
 }
 void LCD_Init(void)
 {
   pinMode(EXAMPLE_PIN_NUM_LCD_CS, OUTPUT);
+  digitalWrite(EXAMPLE_PIN_NUM_LCD_CS, HIGH);
   pinMode(EXAMPLE_PIN_NUM_LCD_DC, OUTPUT);
-  pinMode(EXAMPLE_PIN_NUM_LCD_RST, OUTPUT); 
+  digitalWrite(EXAMPLE_PIN_NUM_LCD_DC, HIGH);
+  if (EXAMPLE_PIN_NUM_LCD_RST >= 0) {
+    pinMode(EXAMPLE_PIN_NUM_LCD_RST, OUTPUT);
+    digitalWrite(EXAMPLE_PIN_NUM_LCD_RST, HIGH);
+  }
   Backlight_Init();
   SPI_Init();
 
@@ -67,7 +76,7 @@ void LCD_Init(void)
   LCD_WriteCommand(0x11);
   delay(120);
   LCD_WriteCommand(0x36);
-  LCD_WriteData(0x00);
+  LCD_WriteData(LCD_MADCTL);
 
   LCD_WriteCommand(0x3A);
   LCD_WriteData(0x05);
@@ -159,8 +168,8 @@ parameter :
 ******************************************************************************/
 void LCD_SetCursor(uint16_t Xstart, uint16_t Ystart, uint16_t Xend, uint16_t  Yend)
 { 
-  uint16_t colStart = Xstart + 34;
-  uint16_t colEnd = Xend + 34;
+  uint16_t colStart = Xstart + Offset_X;
+  uint16_t colEnd = Xend + Offset_X;
 
   LCD_WriteCommand(0x2A);
   LCD_WriteData(colStart >> 8);
@@ -169,10 +178,12 @@ void LCD_SetCursor(uint16_t Xstart, uint16_t Ystart, uint16_t Xend, uint16_t  Ye
   LCD_WriteData(colEnd);
 
   LCD_WriteCommand(0x2B);
-  LCD_WriteData(Ystart >> 8);
-  LCD_WriteData(Ystart);
-  LCD_WriteData(Yend >> 8);
-  LCD_WriteData(Yend);
+  uint16_t rowStart = Ystart + Offset_Y;
+  uint16_t rowEnd = Yend + Offset_Y;
+  LCD_WriteData(rowStart >> 8);
+  LCD_WriteData(rowStart);
+  LCD_WriteData(rowEnd >> 8);
+  LCD_WriteData(rowEnd);
 
   LCD_WriteCommand(0x2C);
 }
@@ -198,7 +209,7 @@ void LCD_addWindow(uint16_t Xstart, uint16_t Ystart, uint16_t Xend, uint16_t Yen
 uint8_t LCD_Backlight = 90;
 void Backlight_Init(void)
 {
-  ledcAttach(EXAMPLE_PIN_NUM_BK_LIGHT, Frequency, Resolution);    
+  ledcAttach(EXAMPLE_PIN_NUM_LCD_BL, Frequency, Resolution);
   Set_Backlight(LCD_Backlight);      //0~100    
 }
 
@@ -211,7 +222,7 @@ void Set_Backlight(uint8_t Light)                        //
     uint32_t Backlight = Light*10;
     if(Backlight == 1000)
       Backlight = 1024;
-    ledcWrite(EXAMPLE_PIN_NUM_BK_LIGHT, Backlight);
+    ledcWrite(EXAMPLE_PIN_NUM_LCD_BL, Backlight);
   }
 }
 
