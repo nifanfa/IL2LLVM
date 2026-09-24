@@ -102,9 +102,11 @@ sealed class Fields(Translator translator) : TranslationComponent(translator)
 
     void EmitStaticConstructorGuard(LLVMBuilderRef builder, MethodReference method, TypeReference type)
     {
-        if (IsTypeInitializer(method))
+        var declaringType = ResolveGenericType(type, method);
+        if (IsTypeInitializer(method) &&
+            GetRuntimeTypeKey(ResolveGenericType(method.DeclaringType, method)) == GetRuntimeTypeKey(declaringType))
             return;
-        var guard = GetCctorGuard(ResolveGenericType(type, method));
+        var guard = GetCctorGuard(declaringType);
         if (guard is not null)
             builder.BuildCall2(LLVMTypeRef.CreateFunction(voidType, []), guard.Value.Function, []);
     }

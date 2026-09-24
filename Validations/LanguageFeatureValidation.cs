@@ -270,6 +270,26 @@ public static class LanguageFeatureValidation
         }
     }
 
+    private static class CrossTypeStaticFieldSource
+    {
+        public static int Value;
+
+        static CrossTypeStaticFieldSource()
+        {
+            Value = 42;
+        }
+    }
+
+    private static class CrossTypeStaticFieldConsumer
+    {
+        public static int Observed;
+
+        static CrossTypeStaticFieldConsumer()
+        {
+            Observed = CrossTypeStaticFieldSource.Value;
+        }
+    }
+
     private static class GenericStaticStorage<T>
     {
         public static readonly object[] Handles = new object[2];
@@ -571,6 +591,9 @@ public static class LanguageFeatureValidation
             ExplicitStaticInitialization.ConstructorRuns != RuntimeValue(1) ||
             ExplicitStaticInitialization.ConstructorPhase != RuntimeValue(4))
             Fail("static field initializer and constructor order");
+
+        if (CrossTypeStaticFieldConsumer.Observed != RuntimeValue(42))
+            Fail("static constructor dependency across types");
 
         object integerHandle = new StaticHandleFeature(RuntimeValue(51));
         object stringHandle = new StaticHandleFeature(RuntimeValue(52));
