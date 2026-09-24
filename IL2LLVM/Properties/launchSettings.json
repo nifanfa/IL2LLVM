@@ -23,6 +23,10 @@
     "Build ESP32S3Example(Xtensa)": {
       "commandName": "Project",
       "commandLineArgs": "../../../../ESP32S3Example/bin/Debug/net10.0/ESP32S3Example.dll ../../../../ESP32S3Example/ESP32S3Example.S xtensa-esp32s3-none-elf;default;generic;+windowed"
+    },
+    "Build ESP32S3LVGLExample(Xtensa)": {
+      "commandName": "Project",
+      "commandLineArgs": "../../../../ESP32S3LVGLExample/bin/Debug/net10.0/ESP32S3LVGLExample.dll ../../../../ESP32S3LVGLExample/ESP32S3LVGLExample.S xtensa-esp32s3-none-elf;default;generic;+windowed"
     }
   }
 }

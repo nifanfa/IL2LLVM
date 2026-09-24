@@ -10,7 +10,8 @@
   <Project Path="apphost/apphost.vcxproj" Id="0b0b4474-bfaf-4227-b2c4-c7258e73d299" />
   <Project Path="ConsoleAppExample/ConsoleAppExample.csproj" />
   <Project Path="CoreLib/CoreLib.shproj" Id="d04e297f-240e-43a9-b12c-8d25570a8c94" />
-  <Project Path="ESP32S3Example/ESP32S3Example.csproj" Id="93da8eee-fea0-4535-96ec-d1914f30eb00" />
+  <Project Path="ESP32S3Example/ESP32S3Example.csproj" />
+  <Project Path="ESP32S3LVGLExample/ESP32S3LVGLExample.csproj" />
   <Project Path="IL2LLVM/IL2LLVM.csproj" />
   <Project Path="LinuxKernelModuleExample/LinuxKernelModuleExample.csproj" Id="48722b83-b692-40cb-aa11-ad45acbc7936" />
   <Project Path="Validations/Validations.shproj" Id="df7abefe-502f-4cb7-b288-46743d1110d2" />

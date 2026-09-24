@@ -12,7 +12,7 @@
   </PropertyGroup>
 
   <Import Project="CoreLib\CoreLib.projitems" Label="Shared" Condition="'$(MSBuildProjectExtension)' == '.csproj'"/>
-  <Import Project="Validations\Validations.projitems" Label="Shared" Condition="'$(MSBuildProjectExtension)' == '.csproj'"/>
+
   <Target Name="CustomizeReferences" BeforeTargets="BeforeCompile" AfterTargets="FindReferenceAssembliesForReferences" Condition="'$(MSBuildProjectExtension)' == '.csproj'">
     <ItemGroup>
       <ReferencePathWithRefAssemblies Remove="@(ReferencePathWithRefAssemblies)" />

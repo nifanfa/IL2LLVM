@@ -7,4 +7,6 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
+  <Import Project="..\Validations\Validations.projitems" Label="Shared" />
+
 </Project>
