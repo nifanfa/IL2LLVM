@@ -995,9 +995,10 @@ sealed class Methods(Translator translator) : TranslationComponent(translator)
         var pinvoke = method.Resolve()?.PInvokeInfo;
         var nativeSymbolName = pinvoke is null ? null : GetPInvokeNativeSymbolName(method, friendlyName, pinvoke);
         var funcType = CreateLLVMFunction(module, method);
-        var exportedName = isEntryPoint
+        // Explicit exports take precedence; preserve managed_Main for unannotated entry points.
+        var exportedName = runtimeExportName ?? (isEntryPoint
             ? "managed_Main"
-            : runtimeExportName ?? symbolName ?? nativeSymbolName ?? friendlyName;
+            : symbolName ?? nativeSymbolName ?? friendlyName);
         var reusableNativeSymbol = pinvoke is not null || directExport || isEntryPoint;
         var funcValue = reusableNativeSymbol ? module.GetNamedFunction(exportedName) : default;
         if (funcValue == default)

@@ -69,7 +69,7 @@ sealed class CoreLibMetadata
     public FieldDefinition TypeIsSignedEnumField => GetInstanceField(Type, "IsSignedEnum");
     public FieldDefinition TypeFactoryField => GetInstanceField(Type, "Factory");
     public FieldDefinition EnumValueField => GetInstanceField(Enum, "m_value");
-    public FieldDefinition ArrayLengthField => GetInstanceField(Array, "Length");
+    public FieldDefinition ArrayLengthField => GetInstanceField(Array, "_length");
     public FieldDefinition ArrayLengthsField => GetInstanceField(Array, "_lengths");
     public FieldDefinition ArrayElementSizeField => GetInstanceField(Array, "m_elementSize");
     public FieldDefinition ArrayDataField => GetInstanceField(Array, "m_pData");

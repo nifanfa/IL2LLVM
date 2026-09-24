@@ -1,6 +1,6 @@
 <Project>
 	
-  <PropertyGroup>
+  <PropertyGroup Condition="'$(MSBuildProjectExtension)' != '.shproj'">
     <NoStdLib>true</NoStdLib>
     <NoConfig>true</NoConfig>
     <ImplicitUsings>disable</ImplicitUsings>
@@ -11,9 +11,9 @@
     <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
   </PropertyGroup>
 
-  <Import Project="CoreLib\CoreLib.projitems" Label="Shared" />
-
-  <Target Name="CustomizeReferences" BeforeTargets="BeforeCompile" AfterTargets="FindReferenceAssembliesForReferences">
+  <Import Project="CoreLib\CoreLib.projitems" Label="Shared" Condition="'$(MSBuildProjectExtension)' == '.csproj'"/>
+  <Import Project="Validations\Validations.projitems" Label="Shared" Condition="'$(MSBuildProjectExtension)' == '.csproj'"/>
+  <Target Name="CustomizeReferences" BeforeTargets="BeforeCompile" AfterTargets="FindReferenceAssembliesForReferences" Condition="'$(MSBuildProjectExtension)' == '.csproj'">
     <ItemGroup>
       <ReferencePathWithRefAssemblies Remove="@(ReferencePathWithRefAssemblies)" />
       <ReferencePath Remove="@(ReferencePath)" />

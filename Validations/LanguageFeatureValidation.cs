@@ -1743,6 +1743,27 @@ public static class LanguageFeatureValidation
         if (!negativeIndex || !upperIndex || !nullArray || !negativeLength ||
             !multidimensionalUpperIndex || !multidimensionalNegativeLength)
             Fail("array exceptions");
+
+        VerifyMultidimensionalPointer();
+    }
+
+    private static unsafe void VerifyMultidimensionalPointer()
+    {
+        // A rectangular array is contiguous in row-major order (last dimension varies fastest).
+        ushort[,] pixels = new ushort[3, 2];
+        pixels[0, 0] = 0x0102;
+        pixels[1, 0] = 0x0304;
+        pixels[2, 1] = 0x0506;
+
+        fixed (ushort* pointer = pixels)
+        {
+            if (pointer[0] != 0x0102 || pointer[1] != 0 || pointer[2] != 0x0304 ||
+                pointer[3] != 0 || pointer[4] != 0 || pointer[5] != 0x0506)
+                Fail("multidimensional array pointer layout");
+            pointer[3] = 0x0708;
+        }
+        if (pixels[1, 1] != 0x0708)
+            Fail("multidimensional array pointer write");
     }
 
     private static int EvaluateBase(FeatureBase feature) => feature.Evaluate();
