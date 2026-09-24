@@ -3612,6 +3612,8 @@ namespace System.Threading.Tasks
         }
         public void Wait()
         {
+            // Without an implementation, C# removes only the partial-method call, not the loop.
+            // IL2LLVM inserts a cooperative yield at the loop's backward branch.
             while (_state == Pending)
                 WaitForCompletion();
             if (_state == Faulted)
