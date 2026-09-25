@@ -1,5 +1,5 @@
 <Screen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-        xsi:noNamespaceSchemaLocation="../ESP32XamlGenerator/LvglPage.xsd"
+        xsi:noNamespaceSchemaLocation="../LVGLXAMLGenerator/LVGLPage.xsd"
         Class="BrightnessUI" Method="BuildBrightnessScreen">
 	
   <Object Name="panel" Width="90%" Height="76%" Align="TopMid" OffsetY="8"

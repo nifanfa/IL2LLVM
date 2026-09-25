@@ -6,7 +6,7 @@ using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.Text;
 
 [Generator]
-public sealed class LvglXamlGenerator : IIncrementalGenerator
+public sealed class LVGLXAMLGenerator : IIncrementalGenerator
 {
     private static readonly DiagnosticDescriptor InvalidXaml = new(
         "LVGLXAML001", "Invalid LVGL XAML", "{0}", "LVGL XAML", DiagnosticSeverity.Error, true);

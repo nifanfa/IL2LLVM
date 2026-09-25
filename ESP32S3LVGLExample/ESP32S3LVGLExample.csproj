@@ -12,7 +12,7 @@
     <Compile Include="..\ESP32S3Example\Thread.cs" Link="Thread.cs" />
     <Compile Remove="*.xaml.g.cs" />
     <AdditionalFiles Include="*.xaml" />
-    <ProjectReference Include="..\ESP32XamlGenerator\ESP32XAMLGenerator.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\LVGLXAMLGenerator\LVGLXAMLGenerator.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
   </ItemGroup>
 
 </Project>

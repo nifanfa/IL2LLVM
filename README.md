@@ -6,7 +6,7 @@ IL2LLVM translates a managed assembly built with this repository's CoreLib into 
 
 <img alt="QQ_1789867398271" src="https://github.com/user-attachments/assets/541d775a-f146-4a9f-a00a-24d826574926" />  
 <img alt="image (3)" src="https://github.com/user-attachments/assets/4031dbc3-0b7b-470e-8807-6ff9aa4ca4fa" />  
-<img alt="IMG_4850" src="https://github.com/user-attachments/assets/a108db9b-2dad-4887-b563-c14c790dc711" />  
+<img alt="新建项目" src="https://github.com/user-attachments/assets/79fcbf6f-8310-4cbc-927c-9045caa576ff" />  
 
 > Running on Mac OS, Linux, Windows, ESP32-S3(WAVESHARE ESP32-S3-Touch-LCD-2, Screen: 320x240 LT7789, Touch: CST816)  
 
@@ -278,7 +278,7 @@ Regenerate `ESP32S3LVGLExample/ESP32S3LVGLExample.S` with the
 
 The two layouts live in `ESP32S3LVGLExample/BrightnessPage.xaml` and
 `ESP32S3LVGLExample/AboutPage.xaml`. The example includes `*.xaml` as
-`AdditionalFiles` for `ESP32XamlGenerator`, a Roslyn incremental source
+`AdditionalFiles` for `LVGLXAMLGenerator`, a Roslyn incremental source
 generator. The compiler generates and compiles a `.xaml.g.cs` for each page;
 new pages need no per-page project edits. Generated sources appear under the
 analyzer's generated files in Visual Studio, rather than beside the XAML.
@@ -294,7 +294,7 @@ the attributes shown in the example pages. The generated method takes
 `[UnmanagedCallersOnly]` static callback, `Filter` names a supported LVGL event,
 and `EventData` passes a named widget's handle or `navigationTarget.Handle`.
 Unsupported controls or attributes fail generation instead of being ignored.
-The pages specify the local `ESP32XamlGenerator/LvglPage.xsd` directly with
+The pages specify the local `LVGLXAMLGenerator/LVGLPage.xsd` directly with
 `xsi:noNamespaceSchemaLocation`; no LVGL XML namespace or IDE-specific schema
 selection is needed. The `xmlns:xsi` value is an XML identifier, not a network
 request. Open `.xaml` with Visual Studio's XML editor rather than its WPF
