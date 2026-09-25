@@ -8,10 +8,12 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <!-- Prevent this project from importing Directory.Build.targets -->
     <ImportDirectoryBuildTargets>false</ImportDirectoryBuildTargets>
+    <ApplicationIcon>Logo.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>
     <AssemblyMetadata Include="BuildTimestamp" Value="$([System.DateTime]::Now.ToString())" />
+    <Content Include="Logo.ico" />
     <RuntimeHostConfigurationOption Include="LLVMSharp.Interop.DisableResolveLibraryHook" Value="true" />
   </ItemGroup>
 
@@ -21,9 +23,7 @@
   </ItemGroup>
 
   <Target Name="CopyLibLLVM" AfterTargets="Build">
-    <Copy SourceFiles="native\win-x64\libLLVM.dll"
-          DestinationFiles="$(TargetDir)libLLVM.dll"
-          SkipUnchangedFiles="true" />
+    <Copy SourceFiles="native\win-x64\libLLVM.dll" DestinationFiles="$(TargetDir)libLLVM.dll" SkipUnchangedFiles="true" />
   </Target>
 
 </Project>
