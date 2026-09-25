@@ -12,11 +12,12 @@ internal static unsafe class BrightnessUI
     [RuntimeExport("lvgl_brightness_ui_init")]
     private static void Initialize(IntPtr parentHandle)
     {
-        LVObject screen = new LVObject(parentHandle);
+        LVObject brightnessScreen = new LVObject(parentHandle);
+        LVObject aboutScreen = CreateScreen();
 
-        LVObject panel = CreateObject(screen);
-        panel.SetSizePercent(90, 90);
-        panel.Center();
+        LVObject panel = CreateObject(brightnessScreen);
+        panel.SetSizePercent(90, 76);
+        panel.Align(LVAlign.TopMid, 0, 8);
         panel.SetStylePadAll(0);
         panel.SetStylePadTop(24);
         panel.SetStylePadBottom(24);
@@ -66,6 +67,54 @@ internal static unsafe class BrightnessUI
         resetLabel.SetText("Reset"u8);
         resetLabel.Align(LVAlign.Center);
         resetButton.AddEventCallback(&ResetBrightness, LV_EVENT_CLICKED);
+
+        AddNavigationButton(brightnessScreen, "About"u8, aboutScreen);
+        CreateAboutScreen(aboutScreen, brightnessScreen);
+    }
+
+    private static void CreateAboutScreen(LVObject screen, LVObject brightnessScreen)
+    {
+        LVObject panel = CreateObject(screen);
+        panel.SetSizePercent(90, 76);
+        panel.Align(LVAlign.TopMid, 0, 8);
+
+        LVLabel title = CreateLabel(panel);
+        title.SetText("About this demo"u8);
+        title.Align(LVAlign.TopMid, 0, 12);
+
+        LVLabel platform = CreateLabel(panel);
+        platform.SetText("IL2LLVM + LVGL"u8);
+        platform.Object.AlignTo(title.Object, LVAlign.OutBottomMid, 0, 32);
+
+        LVLabel device = CreateLabel(panel);
+        device.SetText("ESP32-S3 touch display"u8);
+        device.Object.AlignTo(platform.Object, LVAlign.OutBottomMid, 0, 24);
+
+        LVLabel hint = CreateLabel(panel);
+        hint.SetText("Brightness on page 1"u8);
+        hint.Object.AlignTo(device.Object, LVAlign.OutBottomMid, 0, 24);
+
+        AddNavigationButton(screen, "Brightness"u8, brightnessScreen);
+    }
+
+    private static void AddNavigationButton(LVObject screen, ReadOnlySpan<byte> text, LVObject destination)
+    {
+        LVButton button = CreateButton(screen);
+        button.SetSize(110, 36);
+        button.Object.SetStylePadTop(8);
+        button.Object.Align(LVAlign.BottomMid, 0, -8);
+        LVLabel label = button.CreateLabel();
+        label.SetText(text);
+        label.Align(LVAlign.Center);
+        button.AddEventCallback(&SwitchScreen, LV_EVENT_CLICKED, destination.Handle);
+    }
+
+    [UnmanagedCallersOnly]
+    private static void SwitchScreen(IntPtr eventHandle)
+    {
+        LVEvent evt = new LVEvent(eventHandle);
+        if (evt.Code == LV_EVENT_CLICKED)
+            LoadScreen(new LVObject(evt.UserData));
     }
 
     [UnmanagedCallersOnly]

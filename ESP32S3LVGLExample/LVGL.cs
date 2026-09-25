@@ -244,6 +244,8 @@ public static unsafe class LVGL
     public static int Percentage(int value) => (value < 0 ? 1000 - value : value) | (1 << 13);
 
     public static LVObject CreateObject(LVObject parent) => new LVObject(lv_obj_create(parent.Handle));
+    public static LVObject CreateScreen() => new LVObject(lv_obj_create(IntPtr.Zero));
+    public static void LoadScreen(LVObject screen) => lv_disp_load_scr(screen.Handle);
     public static LVLabel CreateLabel(LVObject parent) => new LVLabel(lv_label_create(parent.Handle));
     public static LVButton CreateButton(LVObject parent) => new LVButton(lv_btn_create(parent.Handle));
     public static LVCheckbox CreateCheckbox(LVObject parent) => new LVCheckbox(lv_checkbox_create(parent.Handle));
@@ -362,6 +364,7 @@ public static unsafe class LVGL
     internal static void StopEventProcessing(IntPtr e) => lv_event_stop_processing(e);
 
     [DllImport("*", EntryPoint = "lv_obj_create")] private static extern IntPtr lv_obj_create(IntPtr p);
+    [DllImport("*", EntryPoint = "lv_disp_load_scr")] private static extern void lv_disp_load_scr(IntPtr screen);
     [DllImport("*", EntryPoint = "lv_obj_set_pos")] private static extern void lv_obj_set_pos(IntPtr o, int x, int y);
     [DllImport("*", EntryPoint = "lv_obj_set_x")] private static extern void lv_obj_set_x(IntPtr o, int v);
     [DllImport("*", EntryPoint = "lv_obj_set_y")] private static extern void lv_obj_set_y(IntPtr o, int v);

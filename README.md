@@ -121,6 +121,12 @@ The Visual Studio launch profiles in `IL2LLVM/Properties/launchSettings.json` pr
 
 Platform-specific operations remain external. Methods marked with `[DllImport("*")]` are native symbols. The final host must provide every imported symbol that the managed program reaches. Examples include allocation, deallocation, block memory operations, non-local exception transfer, abort, console output, and wall-clock time. GC, exception frame tracking, and green-thread synchronization are implemented in `CoreLib`.
 
+### Native arguments and callbacks
+
+Unlike CLR P/Invoke, IL2LLVM does not marshal managed `string` or array arguments into native character or element pointers. A `[DllImport("*")]` signature must describe the actual native ABI; passing a `string` or `T[]` directly passes a managed object reference, not its contents. Use the `ByReference<T>` implicit conversions in `CoreLib` to pass a pointer to the first element instead: `string` converts to `ByReference<char>` (UTF-16 characters), and `T[]` converts to `ByReference<T>`. For example, the `Console.WriteLine(ByReference<char>)` import accepts a string through that conversion. Match the native character width, provide a length when needed, and note that empty strings or arrays convert to a null reference; arrays do not acquire a terminator automatically. Keep the underlying managed data alive for the duration of the native call.
+
+Do not pass a managed `Delegate` object or its raw function pointer directly as an unmanaged callback. Delegate invocation supplies the bound target (`this`) as a leading argument, but a native caller does not supply that argument automatically; even static-method delegate thunks use this internal calling shape. The resulting signature mismatch is unsafe. Use a callback with a matching unmanaged function-pointer signature (such as a suitable static `delegate* unmanaged<...>` entry point), or write an explicit native/managed trampoline that passes the target context and manages its lifetime. Native callbacks must also respect the single-native-thread restriction described below.
+
 The built-in collector uses GC descriptors emitted by IL2LLVM and registers static fields as roots. It is not a replacement for the host allocator: `Marshal.AllocHGlobal` and `FreeHGlobal` import `malloc` and `free`, while new managed allocations are cleared through `Unsafe.InitBlock`. Block copies use `Unsafe.CopyBlock`; these methods import `memset` and `memcpy` respectively.
 
 `System.Threading.Monitor.Enter` and `Exit` are implemented entirely in `CoreLib`. A managed side table records the lock object, owning green thread, and recursion count. Contending green threads yield until the owner releases the object; recursive entry by the owner is supported, and an invalid `Exit` throws `SynchronizationLockException`. No native monitor hook or atomic instruction is needed while all managed execution remains on one native thread.
@@ -263,6 +269,12 @@ running the script so it reloads the platform configuration.
 
 The launch profile enables LLVM's `+windowed` Xtensa feature so generated code
 uses the same windowed ABI as the ESP32 Arduino toolchain.
+
+`ESP32S3LVGLExample` uses the touch display for two LVGL screens: brightness
+controls and device information. Tap **About** or **Brightness** at the bottom
+to switch between them; the brightness setting remains unchanged when switching.
+Regenerate `ESP32S3LVGLExample/ESP32S3LVGLExample.S` with the
+`Build ESP32S3LVGLExample(Xtensa)` launch profile before building the Arduino sketch.
 
 ## Scope and limitations
 
