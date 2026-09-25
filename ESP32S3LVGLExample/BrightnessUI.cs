@@ -14,22 +14,20 @@ internal static unsafe partial class BrightnessUI
     }
 
     [UnmanagedCallersOnly]
-    private static void SwitchScreen(IntPtr eventHandle)
+    private static void SwitchScreen(LVEvent evt)
     {
-        LVEvent evt = new LVEvent(eventHandle);
         if (evt.Code == LV_EVENT_CLICKED)
             LoadScreen(new LVObject(evt.UserData));
     }
 
     [UnmanagedCallersOnly]
-    private static void BrightnessSliderChanged(IntPtr eventHandle)
+    private static void BrightnessSliderChanged(LVEvent evt)
     {
-        LVEvent evt = new LVEvent(eventHandle);
         if (evt.Code != LV_EVENT_VALUE_CHANGED && evt.Code != LV_EVENT_PRESSING)
             return;
 
-        LVSlider slider = new LVSlider(evt.Target.Handle);
-        LVLabel valueLabel = new LVLabel(evt.UserData);
+        LVSlider slider = new LVSlider(evt.Target);
+        LVLabel valueLabel = new LVLabel(new LVObject(evt.UserData));
         int value = slider.GetValue();
         brightnessBar.SetValue(value);
         SetBrightnessText(valueLabel, value);
@@ -38,9 +36,8 @@ internal static unsafe partial class BrightnessUI
     }
 
     [UnmanagedCallersOnly]
-    private static void ResetBrightness(IntPtr eventHandle)
+    private static void ResetBrightness(LVEvent evt)
     {
-        LVEvent evt = new LVEvent(eventHandle);
         if (evt.Code != LV_EVENT_CLICKED)
             return;
 
