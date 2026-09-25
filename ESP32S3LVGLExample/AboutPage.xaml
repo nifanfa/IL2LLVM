@@ -14,7 +14,7 @@
 
   <Button Width="90%" Height="36" PadTop="8" Align="BottomMid" OffsetY="-8"
           On="SwitchScreen" Filter="Clicked" EventData="navigationTarget">
-    <Label Text="Brightness" Align="Center" />
+    <Label Text="Widgets" Align="Center" />
   </Button>
 	
 </Screen>

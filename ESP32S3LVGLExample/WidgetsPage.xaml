@@ -1,0 +1,60 @@
+<Screen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:noNamespaceSchemaLocation="../LVGLXAMLGenerator/LVGLPage.xsd"
+        Class="BrightnessUI" Method="BuildWidgetsScreen">
+
+  <Object Name="widgetsPanel" Width="90%" Height="76%" Align="TopMid" OffsetY="8"
+          PadAll="8" ScrollDirection="Vertical">
+    <Label Name="widgetsTitle" Text="LVGL widgets" Align="TopMid" />
+
+    <Arc Name="temperatureArc" Width="120" Height="120" Value="30"
+         RelativeTo="widgetsTitle" RelativeAlign="OutBottomMid" OffsetY="10"
+         On="TemperatureChanged" Filter="ValueChanged">
+      <Style Part="Main" ArcOpacity="50%" />
+      <Style Part="Indicator" ArcColor="#FFFFFF" />
+      <Style Part="Knob" BackgroundColor="#FFFFFF" ShadowWidth="15"
+             ShadowOpacity="40%" ShadowOffsetY="5" />
+      <Label Name="temperatureLabel" Field="true" Text="30 °C" Align="Center">
+        <Style TextFont="Large" />
+      </Label>
+    </Arc>
+
+    <Label Name="sliderTitle" Text="Slider and bar"
+           RelativeTo="temperatureArc" RelativeAlign="OutBottomMid" OffsetY="16" />
+    <Slider Name="gallerySlider" Width="85%" Height="20" RangeMin="0" RangeMax="100" Value="50"
+            RelativeTo="sliderTitle" RelativeAlign="OutBottomMid" OffsetY="10"
+            On="GallerySliderChanged" Filter="ValueChanged" />
+    <Bar Name="galleryBar" Field="true" Width="85%" Height="12" RangeMin="0" RangeMax="100" Value="50"
+         RelativeTo="gallerySlider" RelativeAlign="OutBottomMid" OffsetY="10" />
+
+    <Switch Name="gallerySwitch" RelativeTo="galleryBar" RelativeAlign="OutBottomMid" OffsetX="-60" OffsetY="20" />
+    <Checkbox Name="galleryCheckbox" Text="Checkbox" Checked="true"
+              RelativeTo="gallerySwitch" RelativeAlign="OutRightMid" OffsetX="16" />
+
+    <Button Name="galleryButton" Width="100" Height="36"
+            RelativeTo="gallerySwitch" RelativeAlign="OutBottomMid" OffsetX="60" OffsetY="18">
+      <Label Text="Button" Align="Center" />
+    </Button>
+
+    <Dropdown Name="galleryDropdown" Width="85%" Options="One&#10;Two&#10;Three"
+              RelativeTo="galleryButton" RelativeAlign="OutBottomMid" OffsetY="18" />
+    <Roller Name="galleryRoller" Width="85%" Height="75" Options="One&#10;Two&#10;Three"
+            VisibleRowCount="3" RelativeTo="galleryDropdown" RelativeAlign="OutBottomMid" OffsetY="18" />
+
+    <TextArea Name="galleryTextArea" Width="85%" Height="42" Text="Editable text"
+              RelativeTo="galleryRoller" RelativeAlign="OutBottomMid" OffsetY="18" />
+    <Table Name="galleryTable" Width="85%" RowCount="2" ColumnCount="2"
+           RelativeTo="galleryTextArea" RelativeAlign="OutBottomMid" OffsetY="18">
+      <Column Index="0" Width="80" />
+      <Column Index="1" Width="80" />
+      <Cell Row="0" Column="0" Text="Widget" />
+      <Cell Row="0" Column="1" Text="Value" />
+      <Cell Row="1" Column="0" Text="Arc" />
+      <Cell Row="1" Column="1" Text="30" />
+    </Table>
+  </Object>
+
+  <Button Width="90%" Height="36" PadTop="8" Align="BottomMid" OffsetY="-8"
+          On="SwitchScreen" Filter="Clicked" EventData="navigationTarget">
+    <Label Text="Brightness" Align="Center" />
+  </Button>
+</Screen>

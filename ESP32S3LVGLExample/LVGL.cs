@@ -41,6 +41,13 @@ public readonly unsafe struct LVObject
     public void SetStylePadTop(int value, uint selector = 0) => LVGL.SetStylePadTop(this, value, selector);
     public void SetStylePadBottom(int value, uint selector = 0) => LVGL.SetStylePadBottom(this, value, selector);
     public void SetStylePadAll(int value, uint selector = 0) => LVGL.SetStylePadAll(this, value, selector);
+    public void SetStyleArcOpacity(byte value, uint selector = 0) => LVGL.SetStyleArcOpacity(this, value, selector);
+    public void SetStyleArcColor(uint color, uint selector = 0) => LVGL.SetStyleArcColor(this, color, selector);
+    public void SetStyleBackgroundColor(uint color, uint selector = 0) => LVGL.SetStyleBackgroundColor(this, color, selector);
+    public void SetStyleShadowWidth(int value, uint selector = 0) => LVGL.SetStyleShadowWidth(this, value, selector);
+    public void SetStyleShadowOpacity(byte value, uint selector = 0) => LVGL.SetStyleShadowOpacity(this, value, selector);
+    public void SetStyleShadowOffsetY(int value, uint selector = 0) => LVGL.SetStyleShadowOffsetY(this, value, selector);
+    public void SetStyleThemeFontLarge(uint selector = 0) => LVGL.SetStyleThemeFontLarge(this, selector);
     public void ClearFlag(uint flag) => LVGL.ClearFlag(this, flag);
     public void AddFlag(uint flag) => LVGL.AddFlag(this, flag);
     public bool HasFlag(uint flag) => LVGL.HasFlag(this, flag);
@@ -50,6 +57,7 @@ public readonly unsafe struct LVObject
     public void SetExtClickArea(int value) => LVGL.SetExtClickArea(this, value);
     public void ScrollTo(int x, int y, bool animate = false) => LVGL.ScrollTo(this, x, y, animate ? 1 : 0);
     public void ScrollBy(int x, int y, bool animate = false) => LVGL.ScrollBy(this, x, y, animate ? 1 : 0);
+    public void SetScrollDirection(byte direction) => LVGL.SetScrollDirection(this, direction);
     public void Invalidate() => LVGL.Invalidate(this);
     public void AddEventCallback(delegate* unmanaged<LVEvent, void> callback, uint filter = LV_EVENT_ALL, IntPtr userData = default) => LVGL.AddEventCallback(this, callback, filter, userData);
 }
@@ -233,13 +241,15 @@ public readonly struct LVEvent
 public static unsafe class LVGL
 {
     public const uint LV_EVENT_ALL = 0, LV_EVENT_PRESSED = 1, LV_EVENT_PRESSING = 2, LV_EVENT_CLICKED = 7, LV_EVENT_RELEASED = 8;
-    public const uint LV_EVENT_VALUE_CHANGED = 32, LV_EVENT_READY = 35, LV_EVENT_CANCEL = 36, LV_EVENT_DELETE = 37;
+    public const uint LV_EVENT_VALUE_CHANGED = 28, LV_EVENT_READY = 31, LV_EVENT_CANCEL = 32, LV_EVENT_DELETE = 33;
+    public const byte LV_DIR_NONE = 0, LV_DIR_HOR = 3, LV_DIR_VER = 12, LV_DIR_ALL = 15;
     public const uint LV_STATE_CHECKED = 1, LV_STATE_PRESSED = 1U << 5, LV_STATE_DISABLED = 1U << 7, LV_STATE_ANY = 0xFFFF;
     public const uint LV_OBJ_FLAG_HIDDEN = 1, LV_OBJ_FLAG_CLICKABLE = 1U << 1, LV_OBJ_FLAG_CHECKABLE = 1U << 3;
     public const uint LV_OBJ_FLAG_SCROLLABLE = 1U << 4, LV_OBJ_FLAG_EVENT_BUBBLE = 1U << 14, LV_OBJ_FLAG_GESTURE_BUBBLE = 1U << 15;
     public const byte LV_BAR_MODE_NORMAL = 0, LV_BAR_MODE_SYMMETRICAL = 1, LV_BAR_MODE_RANGE = 2;
     public const byte LV_ROLLER_MODE_NORMAL = 0, LV_ROLLER_MODE_INFINITE = 1;
     public const int LV_ANIM_OFF = 0;
+    public const uint LV_PART_MAIN = 0, LV_PART_INDICATOR = 0x020000, LV_PART_KNOB = 0x030000;
     public const uint LV_DROPDOWN_POS_LAST = 0xFFFF;
     public static int Percentage(int value) => (value < 0 ? 1000 - value : value) | (1 << 13);
 
@@ -283,6 +293,14 @@ public static unsafe class LVGL
         SetStylePadTop(o, v, s);
         SetStylePadBottom(o, v, s);
     }
+    internal static void SetStyleArcOpacity(LVObject o, byte value, uint selector) => lv_obj_set_style_arc_opa(o.Handle, value, selector);
+    internal static void SetStyleArcColor(LVObject o, uint color, uint selector) => lv_obj_set_style_arc_color(o.Handle, Color565(color), selector);
+    internal static void SetStyleBackgroundColor(LVObject o, uint color, uint selector) => lv_obj_set_style_bg_color(o.Handle, Color565(color), selector);
+    internal static void SetStyleShadowWidth(LVObject o, int value, uint selector) => lv_obj_set_style_shadow_width(o.Handle, value, selector);
+    internal static void SetStyleShadowOpacity(LVObject o, byte value, uint selector) => lv_obj_set_style_shadow_opa(o.Handle, value, selector);
+    internal static void SetStyleShadowOffsetY(LVObject o, int value, uint selector) => lv_obj_set_style_shadow_ofs_y(o.Handle, value, selector);
+    internal static void SetStyleThemeFontLarge(LVObject o, uint selector) => lv_obj_set_style_text_font(o.Handle, lv_theme_get_font_large(o.Handle), selector);
+    private static ushort Color565(uint color) => (ushort)(((color & 0xF80000u) >> 8) | ((color & 0xFC00u) >> 5) | ((color & 0xF8u) >> 3));
     internal static void AddFlag(LVObject o, uint f) => lv_obj_add_flag(o.Handle, f);
     internal static void ClearFlag(LVObject o, uint f) => lv_obj_clear_flag(o.Handle, f);
     internal static bool HasFlag(LVObject o, uint f) => lv_obj_has_flag(o.Handle, f) != 0;
@@ -293,6 +311,7 @@ public static unsafe class LVGL
     internal static void SetExtClickArea(LVObject o, int v) => lv_obj_set_ext_click_area(o.Handle, v);
     internal static void ScrollTo(LVObject o, int x, int y, int a) => lv_obj_scroll_to(o.Handle, x, y, a);
     internal static void ScrollBy(LVObject o, int x, int y, int a) => lv_obj_scroll_by(o.Handle, x, y, a);
+    internal static void SetScrollDirection(LVObject o, byte direction) => lv_obj_set_scroll_dir(o.Handle, direction);
     internal static void Invalidate(LVObject o) => lv_obj_invalidate(o.Handle);
 
     internal static void SetLabelLongMode(LVLabel o, byte v) => lv_label_set_long_mode(o.Handle, v);
@@ -374,6 +393,14 @@ public static unsafe class LVGL
     [DllImport("*", EntryPoint = "lv_obj_align")] private static extern void lv_obj_align(IntPtr o, int a, int x, int y);
     [DllImport("*", EntryPoint = "lv_obj_align_to")] private static extern void lv_obj_align_to(IntPtr o, IntPtr b, int a, int x, int y);
     [DllImport("*", EntryPoint = "lv_obj_update_layout")] private static extern void lv_obj_update_layout(IntPtr o);
+    [DllImport("*", EntryPoint = "lv_obj_set_style_arc_opa")] private static extern void lv_obj_set_style_arc_opa(IntPtr o, byte value, uint selector);
+    [DllImport("*", EntryPoint = "lv_obj_set_style_arc_color")] private static extern void lv_obj_set_style_arc_color(IntPtr o, ushort color, uint selector);
+    [DllImport("*", EntryPoint = "lv_obj_set_style_bg_color")] private static extern void lv_obj_set_style_bg_color(IntPtr o, ushort color, uint selector);
+    [DllImport("*", EntryPoint = "lv_obj_set_style_shadow_width")] private static extern void lv_obj_set_style_shadow_width(IntPtr o, int value, uint selector);
+    [DllImport("*", EntryPoint = "lv_obj_set_style_shadow_opa")] private static extern void lv_obj_set_style_shadow_opa(IntPtr o, byte value, uint selector);
+    [DllImport("*", EntryPoint = "lv_obj_set_style_shadow_ofs_y")] private static extern void lv_obj_set_style_shadow_ofs_y(IntPtr o, int value, uint selector);
+    [DllImport("*", EntryPoint = "lv_obj_set_style_text_font")] private static extern void lv_obj_set_style_text_font(IntPtr o, IntPtr font, uint selector);
+    [DllImport("*", EntryPoint = "lv_theme_get_font_large")] private static extern IntPtr lv_theme_get_font_large(IntPtr o);
     [DllImport("*", EntryPoint = "lv_obj_get_x")] private static extern int lv_obj_get_x(IntPtr o);
     [DllImport("*", EntryPoint = "lv_obj_get_y")] private static extern int lv_obj_get_y(IntPtr o);
     [DllImport("*", EntryPoint = "lv_obj_get_width")] private static extern int lv_obj_get_width(IntPtr o);
@@ -392,6 +419,7 @@ public static unsafe class LVGL
     [DllImport("*", EntryPoint = "lv_obj_set_ext_click_area")] private static extern void lv_obj_set_ext_click_area(IntPtr o, int v);
     [DllImport("*", EntryPoint = "lv_obj_scroll_to")] private static extern void lv_obj_scroll_to(IntPtr o, int x, int y, int a);
     [DllImport("*", EntryPoint = "lv_obj_scroll_by")] private static extern void lv_obj_scroll_by(IntPtr o, int x, int y, int a);
+    [DllImport("*", EntryPoint = "lv_obj_set_scroll_dir")] private static extern void lv_obj_set_scroll_dir(IntPtr o, byte direction);
     [DllImport("*", EntryPoint = "lv_obj_invalidate")] private static extern void lv_obj_invalidate(IntPtr o);
     [DllImport("*", EntryPoint = "lv_label_create")] private static extern IntPtr lv_label_create(IntPtr p);
     [DllImport("*", EntryPoint = "lv_label_set_long_mode")] private static extern void lv_label_set_long_mode(IntPtr o, byte v);

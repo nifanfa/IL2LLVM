@@ -68,7 +68,7 @@ internal sealed class PageGenerator
     private static readonly HashSet<string> Attributes = new(StringComparer.Ordinal)
     {
         "Text", "Width", "Height", "Align", "RelativeTo", "RelativeAlign", "OffsetX", "OffsetY",
-        "PadAll", "PadTop", "PadBottom", "ClearFlag", "AddFlag", "UpdateLayout",
+        "PadAll", "PadTop", "PadBottom", "ClearFlag", "AddFlag", "ScrollDirection", "UpdateLayout",
         "RangeMin", "RangeMax", "Value", "Checked", "On", "Filter", "EventData",
         "PadLeft", "PadRight", "X", "Y", "AddState", "ClearState", "ExtClickArea",
         "LongMode", "Recolor", "Mode", "StartValue", "LeftValue",
@@ -130,6 +130,11 @@ internal sealed class PageGenerator
 
     private void Emit(XElement element, string parent, string parentType)
     {
+        if (element.Name == "Style")
+        {
+            EmitStyle(element, parent, parentType);
+            return;
+        }
         if (element.Name.Namespace == XNamespace.None && element.Name.LocalName is "Cell" or "Column")
         {
             if (parentType != "LVTable") Fail(element, "Cell and Column are only supported inside Table.");
@@ -188,6 +193,18 @@ internal sealed class PageGenerator
                     Fail(element, $"Unsupported flag '{value}'.");
                 Line($"{obj}.{flag}(LV_OBJ_FLAG_{value});");
             }
+        if (Get(element, "ScrollDirection") is string scrollDirection)
+        {
+            string direction = scrollDirection switch
+            {
+                "None" => "NONE",
+                "Horizontal" => "HOR",
+                "Vertical" => "VER",
+                "All" => "ALL",
+                _ => throw Error(element, $"Unsupported scroll direction '{scrollDirection}'.")
+            };
+            Line($"{obj}.SetScrollDirection(LV_DIR_{direction});");
+        }
         foreach (string state in new[] { "AddState", "ClearState" })
             if (Get(element, state) is string value)
             {
@@ -337,6 +354,62 @@ internal sealed class PageGenerator
 
         foreach (XElement child in element.Elements())
             Emit(child, variable, type);
+    }
+
+    private void EmitStyle(XElement element, string parent, string parentType)
+    {
+        CheckContent(element);
+        if (element.HasElements)
+            Fail(element, "Style cannot contain child elements.");
+        string part = Get(element, "Part") ?? "Main";
+        if (part is not ("Main" or "Indicator" or "Knob"))
+            Fail(element, $"Unsupported style part '{part}'.");
+        foreach (XAttribute attribute in element.Attributes())
+            if (attribute.Name.Namespace != XNamespace.None || attribute.Name.LocalName is not
+                ("Part" or "ArcOpacity" or "ArcColor" or "BackgroundColor" or "ShadowWidth" or
+                 "ShadowOpacity" or "ShadowOffsetY" or "TextFont"))
+                Fail(attribute, $"Unsupported style attribute '{attribute.Name}'.");
+
+        string target = parentType == "LVObject" ? parent : parent + ".Object";
+        string selector = "LV_PART_" + part.ToUpperInvariant();
+        if (Get(element, "ArcOpacity") is string arcOpacity)
+            Line($"{target}.SetStyleArcOpacity({Opacity(element, arcOpacity)}, {selector});");
+        if (Get(element, "ArcColor") is string arcColor)
+            Line($"{target}.SetStyleArcColor({Color(element, arcColor)}, {selector});");
+        if (Get(element, "BackgroundColor") is string backgroundColor)
+            Line($"{target}.SetStyleBackgroundColor({Color(element, backgroundColor)}, {selector});");
+        if (Get(element, "ShadowWidth") is string shadowWidth)
+            Line($"{target}.SetStyleShadowWidth({Number(element, shadowWidth)}, {selector});");
+        if (Get(element, "ShadowOpacity") is string shadowOpacity)
+            Line($"{target}.SetStyleShadowOpacity({Opacity(element, shadowOpacity)}, {selector});");
+        if (Get(element, "ShadowOffsetY") is string shadowOffsetY)
+            Line($"{target}.SetStyleShadowOffsetY({Number(element, shadowOffsetY)}, {selector});");
+        if (Get(element, "TextFont") is string font)
+        {
+            if (font != "Large") Fail(element, $"Unsupported text font '{font}'.");
+            Line($"{target}.SetStyleThemeFontLarge({selector});");
+        }
+    }
+
+    private string Color(XElement element, string value)
+    {
+        if (value.Length != 7 || value[0] != '#' ||
+            !uint.TryParse(value.Substring(1), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out uint color))
+            throw Error(element, $"'{value}' must be a color in #RRGGBB format.");
+        return "0x" + color.ToString("X6", CultureInfo.InvariantCulture) + "u";
+    }
+
+    private string Opacity(XElement element, string value)
+    {
+        if (value.EndsWith("%", StringComparison.Ordinal))
+        {
+            if (int.TryParse(value.Substring(0, value.Length - 1), NumberStyles.None,
+                    CultureInfo.InvariantCulture, out int percentage) && percentage <= 100)
+                return (percentage * 255 / 100).ToString(CultureInfo.InvariantCulture);
+        }
+        else if (byte.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out byte opacity))
+            return opacity.ToString(CultureInfo.InvariantCulture);
+        throw Error(element, $"'{value}' must be an opacity from 0 to 255 or 0% to 100%.");
     }
 
     private void EmitTableEntry(XElement element, string table)

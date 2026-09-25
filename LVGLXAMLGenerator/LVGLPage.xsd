@@ -42,6 +42,14 @@
       <xs:enumeration value="GESTURE_BUBBLE" />
     </xs:restriction>
   </xs:simpleType>
+  <xs:simpleType name="ScrollDirection">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="None" />
+      <xs:enumeration value="Horizontal" />
+      <xs:enumeration value="Vertical" />
+      <xs:enumeration value="All" />
+    </xs:restriction>
+  </xs:simpleType>
   <xs:simpleType name="State">
     <xs:restriction base="xs:string">
       <xs:enumeration value="CHECKED" />
@@ -71,6 +79,41 @@
       <xs:enumeration value="Delete" />
     </xs:restriction>
   </xs:simpleType>
+  <xs:simpleType name="StylePart">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="Main" />
+      <xs:enumeration value="Indicator" />
+      <xs:enumeration value="Knob" />
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:simpleType name="Color">
+    <xs:restriction base="xs:string">
+      <xs:pattern value="#[0-9a-fA-F]{6}" />
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:simpleType name="Opacity">
+    <xs:restriction base="xs:string">
+      <xs:pattern value="[0-9]+%?" />
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:simpleType name="TextFont">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="Large" />
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:element name="Style">
+    <xs:complexType>
+      <xs:attribute name="Part" type="StylePart" />
+      <xs:attribute name="ArcOpacity" type="Opacity" />
+      <xs:attribute name="ArcColor" type="Color" />
+      <xs:attribute name="BackgroundColor" type="Color" />
+      <xs:attribute name="ShadowWidth" type="xs:int" />
+      <xs:attribute name="ShadowOpacity" type="Opacity" />
+      <xs:attribute name="ShadowOffsetY" type="xs:int" />
+      <xs:attribute name="TextFont" type="TextFont" />
+    </xs:complexType>
+  </xs:element>
 
   <xs:group name="Controls">
     <xs:choice>
@@ -90,9 +133,10 @@
   </xs:group>
 
   <xs:complexType name="Widget">
-    <xs:sequence>
-      <xs:group ref="Controls" minOccurs="0" maxOccurs="unbounded" />
-    </xs:sequence>
+    <xs:choice minOccurs="0" maxOccurs="unbounded">
+      <xs:group ref="Controls" />
+      <xs:element ref="Style" />
+    </xs:choice>
     <xs:attribute name="Name" type="xs:NCName" />
     <xs:attribute name="Field" type="xs:boolean" />
     <xs:attribute name="Text" type="xs:string" />
@@ -113,6 +157,7 @@
     <xs:attribute name="ExtClickArea" type="xs:int" />
     <xs:attribute name="ClearFlag" type="Flag" />
     <xs:attribute name="AddFlag" type="Flag" />
+    <xs:attribute name="ScrollDirection" type="ScrollDirection" />
     <xs:attribute name="ClearState" type="State" />
     <xs:attribute name="AddState" type="State" />
     <xs:attribute name="UpdateLayout" type="xs:boolean" />

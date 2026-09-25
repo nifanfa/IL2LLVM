@@ -9,8 +9,10 @@ internal static unsafe partial class BrightnessUI
     private static void Initialize(LVObject brightnessScreen)
     {
         LVObject aboutScreen = CreateScreen();
+        LVObject widgetsScreen = CreateScreen();
         BuildBrightnessScreen(brightnessScreen, aboutScreen);
-        BuildAboutScreen(aboutScreen, brightnessScreen);
+        BuildAboutScreen(aboutScreen, widgetsScreen);
+        BuildWidgetsScreen(widgetsScreen, brightnessScreen);
     }
 
     [UnmanagedCallersOnly]
@@ -66,6 +68,31 @@ internal static unsafe partial class BrightnessUI
         text[index++] = (byte)'%';
         text[index] = 0;
         label.SetText(text);
+    }
+
+    [UnmanagedCallersOnly]
+    private static void TemperatureChanged(LVEvent evt)
+    {
+        int value = new LVArc(evt.Target).Value;
+        byte* text = stackalloc byte[8];
+        int index = 0;
+        if (value >= 100)
+            text[index++] = (byte)('0' + value / 100);
+        if (value >= 10)
+            text[index++] = (byte)('0' + value / 10 % 10);
+        text[index++] = (byte)('0' + value % 10);
+        text[index++] = (byte)' ';
+        text[index++] = 0xC2;
+        text[index++] = 0xB0;
+        text[index++] = (byte)'C';
+        text[index] = 0;
+        temperatureLabel.SetText(text);
+    }
+
+    [UnmanagedCallersOnly]
+    private static void GallerySliderChanged(LVEvent evt)
+    {
+        galleryBar.SetValue(new LVSlider(evt.Target).GetValue());
     }
 
     [DllImport("*", EntryPoint = "managed_set_lcd_brightness")]

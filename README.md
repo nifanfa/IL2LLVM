@@ -272,14 +272,16 @@ running the script so it reloads the platform configuration.
 The launch profile enables LLVM's `+windowed` Xtensa feature so generated code
 uses the same windowed ABI as the ESP32 Arduino toolchain.
 
-`ESP32S3LVGLExample` uses the touch display for two LVGL screens: brightness
-controls and device information. Tap **About** or **Brightness** at the bottom
-to switch between them; the brightness setting remains unchanged when switching.
+`ESP32S3LVGLExample` uses the touch display for three LVGL screens: brightness
+controls, device information, and a scrollable gallery containing every supported
+XAML control. Tap **About**, **Widgets**, or **Brightness** at the bottom to cycle
+between them; the brightness setting remains unchanged when switching.
 Regenerate `ESP32S3LVGLExample/ESP32S3LVGLExample.S` with the
 `Build ESP32S3LVGLExample(Xtensa)` launch profile before building the Arduino sketch.
 
-The two layouts live in `ESP32S3LVGLExample/BrightnessPage.xaml` and
-`ESP32S3LVGLExample/AboutPage.xaml`. The example includes `*.xaml` as
+The layouts live in `ESP32S3LVGLExample/BrightnessPage.xaml`,
+`ESP32S3LVGLExample/AboutPage.xaml`, and `ESP32S3LVGLExample/WidgetsPage.xaml`.
+The example includes `*.xaml` as
 `AdditionalFiles` for `LVGLXAMLGenerator`, a Roslyn incremental source
 generator. The compiler generates and compiles a `.xaml.g.cs` for each page;
 new pages need no per-page project edits. Generated sources appear under the
@@ -288,6 +290,12 @@ This is a small LVGL-specific XAML subset, not WPF XAML: `<Screen>` declares
 `Class` and `Method` and contains `Object`, `Label`, `Button`, `Checkbox`,
 `Switch`, `Bar`, `Slider`, `Arc`, `Dropdown`, `Roller`, `TextArea`, or `Table`.
 `Table` also supports `Column` and `Cell` child elements. Nesting sets the LVGL parent;
+`Style` children apply part-specific arc, background, shadow, and text font settings.
+`Part` defaults to `Main` and also accepts `Indicator` or `Knob`; colors use
+`#RRGGBB`, and opacities use either `0`-`255` or `0%`-`100%`. The gallery's
+arc demonstrates these styles with the LVGL theme's large font.
+LVGL 8.4 has no subject binding for the arc and label, so callbacks update the
+label and bar when their controls change.
 `Name` gives a widget a name for `RelativeTo`/`EventData`, and
 `Field="true"` exposes it as a static field in the partial class.
 Sizes, alignment, padding, text, ranges, values, flags, and callbacks use
