@@ -58,6 +58,15 @@ extern "C" void managed_set_lcd_brightness(int percent)
 
 static void my_disp_flush(lv_disp_drv_t *displayDriver, const lv_area_t *area, lv_color_t *color)
 {
+#if (LV_COLOR_16_SWAP != 0)
+    gfx->draw16bitBeRGBBitmap(
+        area->x1, area->y1, (uint16_t *)color,
+        area->x2 - area->x1 + 1, area->y2 - area->y1 + 1);
+#else
+    gfx->draw16bitRGBBitmap(
+        area->x1, area->y1, (uint16_t *)color,
+        area->x2 - area->x1 + 1, area->y2 - area->y1 + 1);
+#endif
     lv_disp_flush_ready(displayDriver);
 }
 
@@ -97,13 +106,13 @@ void setup()
 
     screenWidth = gfx->width();
     screenHeight = gfx->height();
-    bufSize = screenWidth * screenHeight;
+    bufSize = screenWidth * 40;
 
     disp_draw_buf = (lv_color_t *)heap_caps_malloc(
-        bufSize * 2,
+        bufSize * sizeof(lv_color_t),
         MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     if (disp_draw_buf == nullptr)
-        disp_draw_buf = (lv_color_t *)heap_caps_malloc(bufSize * 2, MALLOC_CAP_8BIT);
+        disp_draw_buf = (lv_color_t *)heap_caps_malloc(bufSize * sizeof(lv_color_t), MALLOC_CAP_8BIT);
 
     if (disp_draw_buf == nullptr)
     {
@@ -118,7 +127,6 @@ void setup()
     disp_drv.ver_res = screenHeight;
     disp_drv.flush_cb = my_disp_flush;
     disp_drv.draw_buf = &draw_buf;
-    disp_drv.direct_mode = true;
     lv_disp_drv_register(&disp_drv);
 
     static lv_indev_drv_t indev_drv;
@@ -126,6 +134,7 @@ void setup()
     indev_drv.type = LV_INDEV_TYPE_POINTER;
     indev_drv.read_cb = my_touchpad_read;
     lv_indev_drv_register(&indev_drv);
+    lv_timer_set_period(indev_drv.read_timer, 10);
 
     lvgl_brightness_ui_init(lv_scr_act());
     Serial.println("Setup done");
@@ -134,22 +143,5 @@ void setup()
 void loop()
 {
     lv_timer_handler();
-
-#if (LV_COLOR_16_SWAP != 0)
-    gfx->draw16bitBeRGBBitmap(
-        0,
-        0,
-        (uint16_t *)disp_draw_buf,
-        screenWidth,
-        screenHeight);
-#else
-    gfx->draw16bitRGBBitmap(
-        0,
-        0,
-        (uint16_t *)disp_draw_buf,
-        screenWidth,
-        screenHeight);
-#endif
-
     delay(5);
 }
