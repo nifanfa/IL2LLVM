@@ -8,7 +8,7 @@ IL2LLVM translates a managed assembly built with this repository's CoreLib into 
 <img alt="image (3)" src="https://github.com/user-attachments/assets/4031dbc3-0b7b-470e-8807-6ff9aa4ca4fa" />  
 <img alt="IMG_4850" src="https://github.com/user-attachments/assets/a108db9b-2dad-4887-b563-c14c790dc711" />  
 
-> Running on Mac OS, Linux, Windows, ESP32-S3(WAVESHARE ESP32-S3-Touch-LCD-2)  
+> Running on Mac OS, Linux, Windows, ESP32-S3(WAVESHARE ESP32-S3-Touch-LCD-2, Screen: 320x240 LT7789, Touch: CST816)  
 
 ## Project purpose
 
