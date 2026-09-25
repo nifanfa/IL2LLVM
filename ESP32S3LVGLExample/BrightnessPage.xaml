@@ -1,0 +1,38 @@
+<Screen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:noNamespaceSchemaLocation="../ESP32XamlGenerator/LvglPage.xsd"
+        Class="BrightnessUI" Method="BuildBrightnessScreen">
+	
+  <Object Name="panel" Width="90%" Height="76%" Align="TopMid" OffsetY="8"
+          PadAll="0" PadTop="24" PadBottom="24" ClearFlag="GESTURE_BUBBLE"
+          AddFlag="SCROLLABLE" UpdateLayout="true">
+    <Label Name="title" Text="LCD brightness" Align="TopMid" />
+
+    <Label Name="brightnessValue" Field="true" Text="80%"
+           RelativeTo="title" RelativeAlign="OutBottomMid" OffsetY="12" />
+
+    <Slider Name="brightnessSlider" Field="true" RangeMin="0" RangeMax="100" Value="80"
+            Width="80%" Height="24" RelativeTo="brightnessValue" RelativeAlign="OutBottomMid" OffsetY="24"
+            On="BrightnessSliderChanged" Filter="All" EventData="brightnessValue" />
+
+    <Bar Name="brightnessBar" Field="true" RangeMin="0" RangeMax="100" Value="80"
+         Width="80%" Height="14" RelativeTo="brightnessSlider" RelativeAlign="OutBottomMid" OffsetY="16" />
+
+    <Switch Name="autoSwitch" RelativeTo="brightnessBar" RelativeAlign="OutBottomLeft" OffsetX="14" OffsetY="24" />
+
+    <Label Text="Auto brightness" RelativeTo="autoSwitch" RelativeAlign="OutRightMid" OffsetX="8" />
+
+    <Checkbox Name="displayCheckbox" Text="Display enabled" Checked="true"
+              RelativeTo="autoSwitch" RelativeAlign="OutBottomLeft" OffsetX="-6" OffsetY="24" />
+
+    <Button Width="82" Height="34" RelativeTo="displayCheckbox" RelativeAlign="OutBottomRight" OffsetY="16"
+            On="ResetBrightness" Filter="Clicked">
+      <Label Text="Reset" Align="Center" />
+    </Button>
+  </Object>
+
+  <Button Width="110" Height="36" PadTop="8" Align="BottomMid" OffsetY="-8"
+          On="SwitchScreen" Filter="Clicked" EventData="navigationTarget">
+    <Label Text="About" Align="Center" />
+  </Button>
+	
+</Screen>

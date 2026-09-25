@@ -1,0 +1,197 @@
+<?xml version="1.0" encoding="utf-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+
+  <xs:simpleType name="Dimension">
+    <xs:restriction base="xs:string">
+      <xs:pattern value="-?[0-9]+%?" />
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:simpleType name="Alignment">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="Default" />
+      <xs:enumeration value="TopLeft" />
+      <xs:enumeration value="TopMid" />
+      <xs:enumeration value="TopRight" />
+      <xs:enumeration value="BottomLeft" />
+      <xs:enumeration value="BottomMid" />
+      <xs:enumeration value="BottomRight" />
+      <xs:enumeration value="LeftMid" />
+      <xs:enumeration value="RightMid" />
+      <xs:enumeration value="Center" />
+      <xs:enumeration value="OutTopLeft" />
+      <xs:enumeration value="OutTopMid" />
+      <xs:enumeration value="OutTopRight" />
+      <xs:enumeration value="OutBottomLeft" />
+      <xs:enumeration value="OutBottomMid" />
+      <xs:enumeration value="OutBottomRight" />
+      <xs:enumeration value="OutLeftTop" />
+      <xs:enumeration value="OutLeftMid" />
+      <xs:enumeration value="OutLeftBottom" />
+      <xs:enumeration value="OutRightTop" />
+      <xs:enumeration value="OutRightMid" />
+      <xs:enumeration value="OutRightBottom" />
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:simpleType name="Flag">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="HIDDEN" />
+      <xs:enumeration value="CLICKABLE" />
+      <xs:enumeration value="CHECKABLE" />
+      <xs:enumeration value="SCROLLABLE" />
+      <xs:enumeration value="EVENT_BUBBLE" />
+      <xs:enumeration value="GESTURE_BUBBLE" />
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:simpleType name="State">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="CHECKED" />
+      <xs:enumeration value="PRESSED" />
+      <xs:enumeration value="DISABLED" />
+      <xs:enumeration value="ANY" />
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:simpleType name="Mode">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="Normal" />
+      <xs:enumeration value="Symmetrical" />
+      <xs:enumeration value="Range" />
+      <xs:enumeration value="Infinite" />
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:simpleType name="EventFilter">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="All" />
+      <xs:enumeration value="Pressed" />
+      <xs:enumeration value="Pressing" />
+      <xs:enumeration value="Clicked" />
+      <xs:enumeration value="Released" />
+      <xs:enumeration value="ValueChanged" />
+      <xs:enumeration value="Ready" />
+      <xs:enumeration value="Cancel" />
+      <xs:enumeration value="Delete" />
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:group name="Controls">
+    <xs:choice>
+      <xs:element ref="Object" />
+      <xs:element ref="Label" />
+      <xs:element ref="Slider" />
+      <xs:element ref="Bar" />
+      <xs:element ref="Switch" />
+      <xs:element ref="Checkbox" />
+      <xs:element ref="Button" />
+      <xs:element ref="Arc" />
+      <xs:element ref="Dropdown" />
+      <xs:element ref="Roller" />
+      <xs:element ref="TextArea" />
+      <xs:element ref="Table" />
+    </xs:choice>
+  </xs:group>
+
+  <xs:complexType name="Widget">
+    <xs:sequence>
+      <xs:group ref="Controls" minOccurs="0" maxOccurs="unbounded" />
+    </xs:sequence>
+    <xs:attribute name="Name" type="xs:NCName" />
+    <xs:attribute name="Field" type="xs:boolean" />
+    <xs:attribute name="Text" type="xs:string" />
+    <xs:attribute name="Width" type="Dimension" />
+    <xs:attribute name="Height" type="Dimension" />
+    <xs:attribute name="Align" type="Alignment" />
+    <xs:attribute name="RelativeTo" type="xs:NCName" />
+    <xs:attribute name="RelativeAlign" type="Alignment" />
+    <xs:attribute name="OffsetX" type="xs:int" />
+    <xs:attribute name="OffsetY" type="xs:int" />
+    <xs:attribute name="PadAll" type="xs:int" />
+    <xs:attribute name="PadLeft" type="xs:int" />
+    <xs:attribute name="PadRight" type="xs:int" />
+    <xs:attribute name="PadTop" type="xs:int" />
+    <xs:attribute name="PadBottom" type="xs:int" />
+    <xs:attribute name="X" type="xs:int" />
+    <xs:attribute name="Y" type="xs:int" />
+    <xs:attribute name="ExtClickArea" type="xs:int" />
+    <xs:attribute name="ClearFlag" type="Flag" />
+    <xs:attribute name="AddFlag" type="Flag" />
+    <xs:attribute name="ClearState" type="State" />
+    <xs:attribute name="AddState" type="State" />
+    <xs:attribute name="UpdateLayout" type="xs:boolean" />
+    <xs:attribute name="RangeMin" type="xs:int" />
+    <xs:attribute name="RangeMax" type="xs:int" />
+    <xs:attribute name="Value" type="xs:int" />
+    <xs:attribute name="StartValue" type="xs:int" />
+    <xs:attribute name="LeftValue" type="xs:int" />
+    <xs:attribute name="Mode" type="Mode" />
+    <xs:attribute name="LongMode" type="xs:unsignedByte" />
+    <xs:attribute name="Recolor" type="xs:boolean" />
+    <xs:attribute name="StartAngle" type="xs:unsignedShort" />
+    <xs:attribute name="EndAngle" type="xs:unsignedShort" />
+    <xs:attribute name="BackgroundStartAngle" type="xs:unsignedShort" />
+    <xs:attribute name="BackgroundEndAngle" type="xs:unsignedShort" />
+    <xs:attribute name="Rotation" type="xs:unsignedShort" />
+    <xs:attribute name="Options" type="xs:string" />
+    <xs:attribute name="Selected" type="xs:unsignedShort" />
+    <xs:attribute name="Open" type="xs:boolean" />
+    <xs:attribute name="VisibleRowCount" type="xs:unsignedByte" />
+    <xs:attribute name="PlaceholderText" type="xs:string" />
+    <xs:attribute name="OneLine" type="xs:boolean" />
+    <xs:attribute name="PasswordMode" type="xs:boolean" />
+    <xs:attribute name="MaxLength" type="xs:unsignedInt" />
+    <xs:attribute name="CursorPosition" type="xs:int" />
+    <xs:attribute name="RowCount" type="xs:unsignedShort" />
+    <xs:attribute name="ColumnCount" type="xs:unsignedShort" />
+    <xs:attribute name="Checked" type="xs:boolean" />
+    <xs:attribute name="On" type="xs:NCName" />
+    <xs:attribute name="Filter" type="EventFilter" />
+    <xs:attribute name="EventData" type="xs:NCName" />
+  </xs:complexType>
+
+  <xs:element name="Object" type="Widget" />
+  <xs:element name="Label" type="Widget" />
+  <xs:element name="Slider" type="Widget" />
+  <xs:element name="Bar" type="Widget" />
+  <xs:element name="Switch" type="Widget" />
+  <xs:element name="Checkbox" type="Widget" />
+  <xs:element name="Button" type="Widget" />
+  <xs:element name="Arc" type="Widget" />
+  <xs:element name="Dropdown" type="Widget" />
+  <xs:element name="Roller" type="Widget" />
+  <xs:element name="TextArea" type="Widget" />
+
+  <xs:element name="Column">
+    <xs:complexType>
+      <xs:attribute name="Index" type="xs:unsignedShort" use="required" />
+      <xs:attribute name="Width" type="xs:int" use="required" />
+    </xs:complexType>
+  </xs:element>
+  <xs:element name="Cell">
+    <xs:complexType>
+      <xs:attribute name="Row" type="xs:unsignedShort" use="required" />
+      <xs:attribute name="Column" type="xs:unsignedShort" use="required" />
+      <xs:attribute name="Text" type="xs:string" use="required" />
+    </xs:complexType>
+  </xs:element>
+  <xs:complexType name="TableWidget">
+    <xs:complexContent>
+      <xs:extension base="Widget">
+        <xs:sequence>
+          <xs:choice minOccurs="0" maxOccurs="unbounded">
+            <xs:element ref="Column" />
+            <xs:element ref="Cell" />
+          </xs:choice>
+        </xs:sequence>
+      </xs:extension>
+    </xs:complexContent>
+  </xs:complexType>
+  <xs:element name="Table" type="TableWidget" />
+
+  <xs:element name="Screen">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:group ref="Controls" minOccurs="0" maxOccurs="unbounded" />
+      </xs:sequence>
+      <xs:attribute name="Class" type="xs:NCName" use="required" />
+      <xs:attribute name="Method" type="xs:NCName" use="required" />
+    </xs:complexType>
+  </xs:element>
+</xs:schema>

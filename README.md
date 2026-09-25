@@ -8,7 +8,7 @@ IL2LLVM translates a managed assembly built with this repository's CoreLib into 
 <img alt="image (3)" src="https://github.com/user-attachments/assets/4031dbc3-0b7b-470e-8807-6ff9aa4ca4fa" />  
 <img alt="IMG_4850" src="https://github.com/user-attachments/assets/a108db9b-2dad-4887-b563-c14c790dc711" />  
 
-> Running on Mac OS, Linux, Windows, ESP32-S3  
+> Running on Mac OS, Linux, Windows, ESP32-S3(WAVESHARE ESP32-S3-Touch-LCD-2)  
 
 ## Project purpose
 
@@ -275,6 +275,30 @@ controls and device information. Tap **About** or **Brightness** at the bottom
 to switch between them; the brightness setting remains unchanged when switching.
 Regenerate `ESP32S3LVGLExample/ESP32S3LVGLExample.S` with the
 `Build ESP32S3LVGLExample(Xtensa)` launch profile before building the Arduino sketch.
+
+The two layouts live in `ESP32S3LVGLExample/BrightnessPage.xaml` and
+`ESP32S3LVGLExample/AboutPage.xaml`. The example includes `*.xaml` as
+`AdditionalFiles` for `ESP32XamlGenerator`, a Roslyn incremental source
+generator. The compiler generates and compiles a `.xaml.g.cs` for each page;
+new pages need no per-page project edits. Generated sources appear under the
+analyzer's generated files in Visual Studio, rather than beside the XAML.
+This is a small LVGL-specific XAML subset, not WPF XAML: `<Screen>` declares
+`Class` and `Method` and contains `Object`, `Label`, `Button`, `Checkbox`,
+`Switch`, `Bar`, `Slider`, `Arc`, `Dropdown`, `Roller`, `TextArea`, or `Table`.
+`Table` also supports `Column` and `Cell` child elements. Nesting sets the LVGL parent;
+`Name` gives a widget a name for `RelativeTo`/`EventData`, and
+`Field="true"` exposes it as a static field in the partial class.
+Sizes, alignment, padding, text, ranges, values, flags, and callbacks use
+the attributes shown in the example pages. The generated method takes
+`(LVObject screen, LVObject navigationTarget)`; `On` names an existing
+`[UnmanagedCallersOnly]` static callback, `Filter` names a supported LVGL event,
+and `EventData` passes a named widget's handle or `navigationTarget.Handle`.
+Unsupported controls or attributes fail generation instead of being ignored.
+The pages specify the local `ESP32XamlGenerator/LvglPage.xsd` directly with
+`xsi:noNamespaceSchemaLocation`; no LVGL XML namespace or IDE-specific schema
+selection is needed. The `xmlns:xsi` value is an XML identifier, not a network
+request. Open `.xaml` with Visual Studio's XML editor rather than its WPF
+designer for XSD completions.
 
 ## Scope and limitations
 

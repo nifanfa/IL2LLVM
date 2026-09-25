@@ -1,0 +1,20 @@
+<Screen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:noNamespaceSchemaLocation="../ESP32XamlGenerator/LvglPage.xsd"
+        Class="BrightnessUI" Method="BuildAboutScreen">
+	
+  <Object Width="90%" Height="76%" Align="TopMid" OffsetY="8">
+    <Label Name="title" Text="About this demo" Align="TopMid" OffsetY="12" />
+
+    <Label Name="platform" Text="IL2LLVM + LVGL" RelativeTo="title" RelativeAlign="OutBottomMid" OffsetY="32" />
+
+    <Label Name="device" Text="ESP32-S3 touch display" RelativeTo="platform" RelativeAlign="OutBottomMid" OffsetY="24" />
+
+    <Label Text="Brightness on page 1" RelativeTo="device" RelativeAlign="OutBottomMid" OffsetY="24" />
+  </Object>
+
+  <Button Width="110" Height="36" PadTop="8" Align="BottomMid" OffsetY="-8"
+          On="SwitchScreen" Filter="Clicked" EventData="navigationTarget">
+    <Label Text="Brightness" Align="Center" />
+  </Button>
+	
+</Screen>
