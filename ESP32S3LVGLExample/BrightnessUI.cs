@@ -1,6 +1,7 @@
 using System;
 using System.Runtime;
 using System.Runtime.InteropServices;
+using static LVGL;
 
 internal static unsafe partial class BrightnessUI
 {
@@ -8,7 +9,7 @@ internal static unsafe partial class BrightnessUI
     private static void Initialize(IntPtr parentHandle)
     {
         LVObject brightnessScreen = new LVObject(parentHandle);
-        LVObject aboutScreen = LVGL.CreateScreen();
+        LVObject aboutScreen = CreateScreen();
         BuildBrightnessScreen(brightnessScreen, aboutScreen);
         BuildAboutScreen(aboutScreen, brightnessScreen);
     }
@@ -17,15 +18,15 @@ internal static unsafe partial class BrightnessUI
     private static void SwitchScreen(IntPtr eventHandle)
     {
         LVEvent evt = new LVEvent(eventHandle);
-        if (evt.Code == LVGL.LV_EVENT_CLICKED)
-            LVGL.LoadScreen(new LVObject(evt.UserData));
+        if (evt.Code == LV_EVENT_CLICKED)
+            LoadScreen(new LVObject(evt.UserData));
     }
 
     [UnmanagedCallersOnly]
     private static void BrightnessSliderChanged(IntPtr eventHandle)
     {
         LVEvent evt = new LVEvent(eventHandle);
-        if (evt.Code != LVGL.LV_EVENT_VALUE_CHANGED && evt.Code != LVGL.LV_EVENT_PRESSING)
+        if (evt.Code != LV_EVENT_VALUE_CHANGED && evt.Code != LV_EVENT_PRESSING)
             return;
 
         LVSlider slider = new LVSlider(evt.Target.Handle);
@@ -41,7 +42,7 @@ internal static unsafe partial class BrightnessUI
     private static void ResetBrightness(IntPtr eventHandle)
     {
         LVEvent evt = new LVEvent(eventHandle);
-        if (evt.Code != LVGL.LV_EVENT_CLICKED)
+        if (evt.Code != LV_EVENT_CLICKED)
             return;
 
         brightnessSlider.SetValue(80);

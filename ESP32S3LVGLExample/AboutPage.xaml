@@ -12,7 +12,7 @@
     <Label Text="Brightness on page 1" RelativeTo="device" RelativeAlign="OutBottomMid" OffsetY="24" />
   </Object>
 
-  <Button Width="110" Height="36" PadTop="8" Align="BottomMid" OffsetY="-8"
+  <Button Width="90%" Height="36" PadTop="8" Align="BottomMid" OffsetY="-8"
           On="SwitchScreen" Filter="Clicked" EventData="navigationTarget">
     <Label Text="Brightness" Align="Center" />
   </Button>

@@ -30,7 +30,7 @@
     </Button>
   </Object>
 
-  <Button Width="110" Height="36" PadTop="8" Align="BottomMid" OffsetY="-8"
+  <Button Width="90%" Height="36" PadTop="8" Align="BottomMid" OffsetY="-8"
           On="SwitchScreen" Filter="Clicked" EventData="navigationTarget">
     <Label Text="About" Align="Center" />
   </Button>
