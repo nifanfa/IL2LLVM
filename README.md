@@ -8,7 +8,7 @@ Best practice: https://github.com/nifanfa/BootTo.NET
 
 <img alt="QQ_1789867398271" src="https://github.com/user-attachments/assets/541d775a-f146-4a9f-a00a-24d826574926" />  
 <img alt="image (3)" src="https://github.com/user-attachments/assets/4031dbc3-0b7b-470e-8807-6ff9aa4ca4fa" />  
-<img alt="新建项目" src="https://github.com/user-attachments/assets/79fcbf6f-8310-4cbc-927c-9045caa576ff" />  
+<img alt="新建项目 (1)" src="https://github.com/user-attachments/assets/9a7ef0d9-71d6-4f4d-974b-a7d843b53bda" />  
 
 > Running on Mac OS, Linux, Windows, ESP32-S3(WAVESHARE ESP32-S3-Touch-LCD-2, Screen: 320x240 LT7789, Touch: CST816)  
 
