@@ -6,9 +6,8 @@ using static LVGL;
 internal static unsafe partial class BrightnessUI
 {
     [RuntimeExport("lvgl_brightness_ui_init")]
-    private static void Initialize(IntPtr parentHandle)
+    private static void Initialize(LVObject brightnessScreen)
     {
-        LVObject brightnessScreen = new LVObject(parentHandle);
         LVObject aboutScreen = CreateScreen();
         BuildBrightnessScreen(brightnessScreen, aboutScreen);
         BuildAboutScreen(aboutScreen, brightnessScreen);
