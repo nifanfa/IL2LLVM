@@ -138,7 +138,6 @@ sealed class Compilation : TranslationComponent
             var exceptionPointerType = LLVMTypeRef.CreatePointer(int8Type, 0);
             var gcPushMethod = coreLib.GCPushMethod;
             var gcPopMethod = coreLib.GCPopMethod;
-            var threadYieldMethod = coreLib.ThreadYieldMethod;
             stringConstructor = coreLib.StringCharArrayConstructor;
             void EnsureExceptionThrow()
             {
@@ -997,13 +996,6 @@ sealed class Compilation : TranslationComponent
                         bool CanFallThrough(Instruction instruction) => instruction.OpCode.Code is not
                             (Code.Br or Code.Br_S or Code.Leave or Code.Leave_S or Code.Ret or Code.Throw or Code.Rethrow or Code.Endfinally or Code.Endfilter or Code.Switch);
 
-                        static bool IsBackwardBranch(Instruction instruction) => instruction.Operand switch
-                        {
-                            Instruction target => target.Offset <= instruction.Offset,
-                            Instruction[] targets => targets.Any(target => target.Offset <= instruction.Offset),
-                            _ => false
-                        };
-
                         if (methodDefinition?.HasBody == true)
                         {
                             for (int i = 0; i < methodDefinition.Body.Variables.Count; i++)
@@ -1361,12 +1353,6 @@ sealed class Compilation : TranslationComponent
                         if (cctorGuard is not null)
                             builder.BuildCall2(LLVMTypeRef.CreateFunction(voidType, []), cctorGuard.Value.Function, []);
 
-                        var insertGeneratedYields = !SameTypeDefinition(method.Value.Item3.DeclaringType, coreLib.Thread) &&
-                            !SameTypeDefinition(method.Value.Item3.DeclaringType, coreLib.GCHeap);
-                        var generatedThreadYield = insertGeneratedYields
-                            ? EnsureMethodRegistered(threadYieldMethod)
-                            : null;
-
                         var emittedExceptionSetups = new HashSet<ExceptionRegion>();
                         var methodContext = new MethodContext
                         {
@@ -1420,12 +1406,6 @@ sealed class Compilation : TranslationComponent
                             {
                                 previousInstruction = instr;
                                 continue;
-                            }
-                            if (generatedThreadYield is not null && IsBackwardBranch(instr))
-                            {
-                                SynchronizeEvaluationStackRoots();
-                                builder.BuildCall2(generatedThreadYield.Item2, generatedThreadYield.Item1,
-                                    [LLVMValueRef.CreateConstInt(GetCallType(coreLib.Boolean), 1, false)]);
                             }
                             if (constants.TryTranslateConstantInstruction(builder, instr, stack) ||
                                 arguments.TryTranslateArgumentInstruction(builder, method.Value.Item1, method.Value.Item3, instr, stack, TrackType) ||

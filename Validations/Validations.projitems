@@ -12,6 +12,5 @@
     <Compile Include="$(MSBuildThisFileDirectory)DateTimeValidation.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)GarbageCollectionValidation.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)LanguageFeatureValidation.cs" />
-    <Compile Include="$(MSBuildThisFileDirectory)ThreadValidation.cs" />
   </ItemGroup>
 </Project>

@@ -49,7 +49,6 @@ sealed class CoreLibMetadata
     public TypeDefinition GCFrame => GetType("System.Runtime.GCFrame");
     public TypeDefinition GCRoot => GetType("System.Runtime.GCRoot");
     public TypeDefinition GCStaticRoot => GetType("System.Runtime.GCStaticRoot");
-    public TypeDefinition Thread => GetType("System.Threading.Thread");
 
     public FieldDefinition ObjectTypeField => GetInstanceField(Object, "m_pType");
     public FieldDefinition StringLengthField => GetInstanceField(String, "Length");
@@ -111,7 +110,6 @@ sealed class CoreLibMetadata
         new PointerType(GCFrame), new PointerType(GCRoot), Int32);
     public MethodDefinition GCPopMethod => GetRequiredMethod(GCHeap, "Pop", false, Void,
         new PointerType(GCFrame));
-    public MethodDefinition ThreadYieldMethod => GetRequiredMethod(Thread, "Yield", false, Boolean, Boolean);
 
     public bool IsObject(TypeReference type) => IsType(type, Object);
     public bool IsValueType(TypeReference type) => IsType(type, ValueType);

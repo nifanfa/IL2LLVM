@@ -9,7 +9,6 @@
 
   <ItemGroup>
     <Compile Include="..\ESP32S3Example\Arduino.cs" Link="Arduino.cs" />
-    <Compile Include="..\ESP32S3Example\Thread.cs" Link="Thread.cs" />
     <Compile Remove="*.xaml.g.cs" />
     <AdditionalFiles Include="*.xaml" />
     <ProjectReference Include="..\LVGLXAMLGenerator\LVGLXAMLGenerator.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
