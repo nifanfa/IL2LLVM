@@ -1,6 +1,6 @@
-using System;
 using System.Runtime;
 using System.Runtime.InteropServices;
+using System.Text;
 using static LVGL;
 
 internal static unsafe partial class BrightnessUI
@@ -57,36 +57,16 @@ internal static unsafe partial class BrightnessUI
 
     private static void SetBrightnessText(LVLabel label, int value)
     {
-        byte* text = stackalloc byte[5];
-        int index = 0;
-
-        if (value >= 100)
-            text[index++] = (byte)('0' + value / 100);
-        if (value >= 10)
-            text[index++] = (byte)('0' + value / 10 % 10);
-        text[index++] = (byte)('0' + value % 10);
-        text[index++] = (byte)'%';
-        text[index] = 0;
-        label.SetText(text);
+        fixed (byte* ptr = Encoding.UTF8.GetBytes($"{value}%"))
+            label.SetText(ptr);
     }
 
     [UnmanagedCallersOnly]
     private static void TemperatureChanged(LVEvent evt)
     {
         int value = new LVArc(evt.Target).Value;
-        byte* text = stackalloc byte[8];
-        int index = 0;
-        if (value >= 100)
-            text[index++] = (byte)('0' + value / 100);
-        if (value >= 10)
-            text[index++] = (byte)('0' + value / 10 % 10);
-        text[index++] = (byte)('0' + value % 10);
-        text[index++] = (byte)' ';
-        text[index++] = 0xC2;
-        text[index++] = 0xB0;
-        text[index++] = (byte)'C';
-        text[index] = 0;
-        temperatureLabel.SetText(text);
+        fixed (byte* ptr = Encoding.UTF8.GetBytes($"{value}℃"))
+            temperatureLabel.SetText(ptr);
     }
 
     [UnmanagedCallersOnly]
