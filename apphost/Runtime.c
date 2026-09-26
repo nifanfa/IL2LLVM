@@ -5,7 +5,6 @@
 
 #ifdef _WIN32
 #include <windows.h>
-#include <wchar.h>
 #endif
 
 long long GetCurrentTimeMilliseconds(void)
@@ -23,16 +22,6 @@ long long GetCurrentTimeMilliseconds(void)
 #endif
 }
 
-void System_Console_Write_System_ByReference_System_Byte(const char* str) { if (str != NULL) printf("%s", str); }
-void System_Console_WriteLine_System_ByReference_System_Byte(const char* str) { printf("%s\n", str == NULL ? "" : str); }
-
-#ifdef _WIN32
-
-void System_Console_Write_System_ByReference_System_Char(const wchar_t* str) { if (str != NULL) wprintf(L"%ls", str); }
-void System_Console_WriteLine_System_ByReference_System_Char(const wchar_t* str) { wprintf(L"%ls\n", str == NULL ? L"" : str); }
-
-#else
-
 static void WriteUtf8(uint32_t value)
 {
     unsigned char bytes[4];
@@ -48,42 +37,56 @@ static void WriteUtf8(uint32_t value)
     fwrite(bytes, 1, length, stdout);
 }
 
-void System_Console_Write_System_ByReference_System_Char(const uint16_t* str)
+static void WriteCodePoint(uint32_t value)
 {
-    if (str == NULL)
-        return;
-
-    while (*str != 0)
+#ifdef _WIN32
+    static int consoleChecked;
+    static HANDLE consoleHandle;
+    if (!consoleChecked)
     {
-        uint32_t value = *str++;
-        if (value >= 0xd800 && value <= 0xdbff)
-        {
-            uint32_t low = *str;
-            if (low >= 0xdc00 && low <= 0xdfff)
-            {
-                str++;
-                value = 0x10000 + ((value - 0xd800) << 10) + (low - 0xdc00);
-            }
-            else
-            {
-                value = 0xfffd;
-            }
-        }
-        else if (value >= 0xdc00 && value <= 0xdfff)
-        {
-            value = 0xfffd;
-        }
-        WriteUtf8(value);
+        DWORD mode;
+        HANDLE handle = GetStdHandle(STD_OUTPUT_HANDLE);
+        if (GetConsoleMode(handle, &mode))
+            consoleHandle = handle;
+        consoleChecked = 1;
     }
-}
-
-void System_Console_WriteLine_System_ByReference_System_Char(const uint16_t* str)
-{
-    System_Console_Write_System_ByReference_System_Char(str);
-    fputc('\n', stdout);
-}
-
+    if (consoleHandle)
+    {
+        wchar_t characters[2];
+        DWORD length = 1;
+        if (value > 0xffff)
+        {
+            value -= 0x10000;
+            characters[0] = (wchar_t)(0xd800 | (value >> 10));
+            characters[1] = (wchar_t)(0xdc00 | (value & 0x3ff));
+            length = 2;
+        }
+        else
+            characters[0] = (wchar_t)value;
+        WriteConsoleW(consoleHandle, characters, length, NULL, NULL);
+        return;
+    }
 #endif
+    WriteUtf8(value);
+}
 
-void System_Console_WriteLine_Int32(int value) { printf("%d\n", value); }
-void System_Console_WriteLine_IntPtr(size_t value) { printf("%zu\n", value); }
+void System_Console_Write_Char(uint16_t value)
+{
+    static uint16_t pendingHighSurrogate;
+
+    if (pendingHighSurrogate)
+    {
+        if (value >= 0xdc00 && value <= 0xdfff)
+        {
+            WriteCodePoint(0x10000 + ((pendingHighSurrogate - 0xd800) << 10) + (value - 0xdc00));
+            pendingHighSurrogate = 0;
+            return;
+        }
+        WriteCodePoint(0xfffd);
+        pendingHighSurrogate = 0;
+    }
+    if (value >= 0xd800 && value <= 0xdbff)
+        pendingHighSurrogate = value;
+    else
+        WriteCodePoint(value >= 0xdc00 && value <= 0xdfff ? 0xfffd : value);
+}

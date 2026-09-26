@@ -23,8 +23,7 @@ The managed runtime is deliberately small. A user-mode host only needs a small I
 - `memcpy`
 - `memset`
 - `abort`
-- `printf` or an equivalent text output function
-- `wprintf` or an equivalent UTF-16 output function when character output is used
+- a character output facility for the host's `System_Console_Write_Char` implementation
 
 The following symbols are the runtime boundary implemented by the host. They are not platform APIs and can be implemented for the target processor and environment:
 
@@ -32,7 +31,7 @@ The following symbols are the runtime boundary implemented by the host. They are
 - `longjmp`
 - `GetCurrentTimeMilliseconds`
 
-The current `setjmp` entry has an additional stack-pointer argument so the generated exception machinery can restore the managed stack state. It therefore requires a target-specific implementation even though `setjmp` and `longjmp` have standard C counterparts. Console output symbols such as `System_Console_WriteLine_Int32` are optional host conveniences, not requirements of the translator.
+The current `setjmp` entry has an additional stack-pointer argument so the generated exception machinery can restore the managed stack state. It therefore requires a target-specific implementation even though `setjmp` and `longjmp` have standard C counterparts. CoreLib implements Console strings, UTF-8 byte spans, numbers, and newlines in managed code; hosts only implement `System_Console_Write_Char(uint16_t)` for one UTF-16 code unit at a time. A host must combine surrogate pairs across calls when it outputs UTF-8.
 
 Projects below the repository root build without the framework class library. `Directory.Build.targets` imports `CoreLib/CoreLib.cs` as a shared source file, so the compiled input assembly contains the runtime types used by the translator.
 
@@ -120,6 +119,7 @@ The Visual Studio launch profiles in `IL2LLVM/Properties/launchSettings.json` pr
 ## Custom runtime boundary
 
 `CoreLib` is source compiled into each managed program. It provides the managed definitions used by generated code, including object layout, arrays, strings, exceptions, collections, delegates, tasks, and GC metadata.
+`System.Text.Encoding.UTF8` supports encoding managed strings and decoding UTF-8 byte arrays or `ReadOnlySpan<byte>` values (including `u8` literals), replacing invalid sequences with U+FFFD. `GetBytes` returns only encoded bytes; append a zero byte explicitly when passing a C-style string to native code.
 
 Platform-specific operations remain external. Methods marked with `[DllImport("*")]` are native symbols. The final host must provide every imported symbol that the managed program reaches. Examples include allocation, deallocation, block memory operations, non-local exception transfer, abort, console output, and wall-clock time. GC and exception frame tracking are implemented in `CoreLib`.
 

@@ -4,6 +4,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Threading.Tasks;
 
 public static class LanguageFeatureValidation
@@ -548,6 +549,7 @@ public static class LanguageFeatureValidation
         VerifyInstructionCoverage(values);
         VerifyConversionsAndUnsignedArithmetic();
         VerifyStrings();
+        VerifyUtf8Encoding();
         VerifyObjectAndGenericFeatures(values);
         VerifyInheritanceAndInterfaces();
         VerifyGenericFeatures();
@@ -1264,6 +1266,37 @@ public static class LanguageFeatureValidation
         if (RuntimeValue(-123).ToString() != "-123" || ((uint)RuntimeValue(456)).ToString() != "456" ||
             true.ToString() != "True" || 'Z'.ToString() != "Z")
             Fail("primitive formatting");
+    }
+
+    private static void VerifyUtf8Encoding()
+    {
+        Encoding utf8 = Encoding.UTF8;
+        if (utf8 is not UTF8Encoding || new UTF8Encoding().GetString("A"u8) != "A")
+            Fail("UTF-8 encoding type");
+        string text = "A\0é汉😀";
+        byte[] encoded = utf8.GetBytes(text);
+        byte[] expected = { 0x41, 0x00, 0xC3, 0xA9, 0xE6, 0xB1, 0x89, 0xF0, 0x9F, 0x98, 0x80 };
+
+        if (utf8.GetByteCount(text) != expected.Length || encoded.Length != expected.Length ||
+            utf8.GetCharCount(encoded) != text.Length || utf8.GetString(encoded) != text ||
+            utf8.GetString(encoded, 2, expected.Length - 2) != "é汉😀" ||
+            utf8.GetString(new ReadOnlySpan<byte>(encoded, 2, expected.Length - 2)) != "é汉😀" ||
+            utf8.GetString("é汉😀"u8) != "é汉😀")
+            Fail("UTF-8 round trip");
+
+        for (int index = 0; index < expected.Length; index++)
+            if (encoded[index] != expected[index])
+                Fail("UTF-8 encoded bytes");
+
+        byte[] incomplete = { 0xE2, 0x82 };
+        byte[] invalid = { 0xE2, 0x28, 0xA1 };
+        byte[] replacement = utf8.GetBytes(new string(new[] { (char)0xD800 }));
+        if (utf8.GetString(incomplete) != "\uFFFD" || utf8.GetCharCount(incomplete) != 1 ||
+            utf8.GetString(invalid) != "\uFFFD(\uFFFD" ||
+            replacement.Length != 3 || replacement[0] != 0xEF ||
+            replacement[1] != 0xBF || replacement[2] != 0xBD ||
+            utf8.GetString(new byte[0]) != "" || utf8.GetBytes("").Length != 0)
+            Fail("UTF-8 invalid input");
     }
 
     private static void VerifyObjectAndGenericFeatures(int[] values)

@@ -16,18 +16,6 @@ int64_t GetCurrentTimeMilliseconds(void)
     return (int64_t)millis();
 }
 
-void System_Console_Write_System_ByReference_System_Byte(const char* value)
-{
-    if (value != nullptr)
-        fputs(value, stdout);
-}
-
-void System_Console_WriteLine_System_ByReference_System_Byte(const char* value)
-{
-    System_Console_Write_System_ByReference_System_Byte(value);
-    fputc('\n', stdout);
-}
-
 static void WriteUtf8(uint32_t value)
 {
     unsigned char bytes[4];
@@ -63,40 +51,24 @@ static void WriteUtf8(uint32_t value)
     fwrite(bytes, 1, length, stdout);
 }
 
-void System_Console_Write_System_ByReference_System_Char(const uint16_t* value)
+void System_Console_Write_Char(uint16_t value)
 {
-    if (value == nullptr)
-        return;
-
-    while (*value != 0)
+    static uint16_t pendingHighSurrogate;
+    if (pendingHighSurrogate)
     {
-        uint32_t codePoint = *value++;
-        if (codePoint >= 0xd800 && codePoint <= 0xdbff)
+        if (value >= 0xdc00 && value <= 0xdfff)
         {
-            uint32_t low = *value;
-            if (low >= 0xdc00 && low <= 0xdfff)
-            {
-                ++value;
-                codePoint = 0x10000 + ((codePoint - 0xd800) << 10) + (low - 0xdc00);
-            }
-            else
-            {
-                codePoint = 0xfffd;
-            }
+            WriteUtf8(0x10000 + ((pendingHighSurrogate - 0xd800) << 10) + (value - 0xdc00));
+            pendingHighSurrogate = 0;
+            return;
         }
-        else if (codePoint >= 0xdc00 && codePoint <= 0xdfff)
-        {
-            codePoint = 0xfffd;
-        }
-
-        WriteUtf8(codePoint);
+        WriteUtf8(0xfffd);
+        pendingHighSurrogate = 0;
     }
-}
-
-void System_Console_WriteLine_System_ByReference_System_Char(const uint16_t* value)
-{
-    System_Console_Write_System_ByReference_System_Char(value);
-    fputc('\n', stdout);
+    if (value >= 0xd800 && value <= 0xdbff)
+        pendingHighSurrogate = value;
+    else
+        WriteUtf8(value >= 0xdc00 && value <= 0xdfff ? 0xfffd : value);
 }
 
 }
