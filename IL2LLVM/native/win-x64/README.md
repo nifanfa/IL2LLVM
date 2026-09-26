@@ -25,9 +25,11 @@ The native build has four integration changes:
 - `llvm/lib/Target/Xtensa/MCTargetDesc/XtensaTargetStreamer.cpp` switches the
   object streamer to the aligned literal section before emitting constant-pool
   entries. For assembly output, it switches to the function's text section
-  before `.literal_position`; together with GNU assembler's
-  `--text-section-literals`, this keeps `L32R` literals before and within range
-  of their uses.
+  and emits aligned constant-pool labels followed by `.long` values directly
+  before the function. This keeps `L32R` literals before and within range of
+  their uses without relying on `.literal`, `.literal_position`, or GNU
+  assembler's `--text-section-literals`. Arduino's platform configuration
+  does not need modification.
 - `llvm/lib/Target/Xtensa/MCTargetDesc/XtensaMCAsmInfo.cpp` disables Dwarf CFI
   directives because the ESP32 Xtensa GNU assembler rejects them for this
   target.

@@ -259,15 +259,14 @@ This example is not portable to another architecture without a matching native h
 `ESP32S3Example` contains an Arduino sketch and its native runtime boundary.
 The `Build ESP32S3Example(Xtensa)` launch profile emits
 `ESP32S3Example/ESP32S3Example.S`. Arduino can compile the assembly source when
-the Xtensa assembler is configured with `-Wa,--text-section-literals`.
+it is placed beside the sketch, without additional assembler flags.
 Other output paths continue to produce one relocatable object; IL2LLVM does not
 create archives.
 
-Run `ESP32S3Example/ConfigureArduinoXtensa.bat` once to locate the installed
-ESP32 Arduino core and create or update its `platform.local.txt` with
-`-Wa,--text-section-literals`. The script preserves the core's existing
-assembly flags and does not modify `platform.txt`. Restart Arduino IDE after
-running the script so it reloads the platform configuration.
+The bundled LLVM writes aligned constant-pool labels and `.long` values directly
+before each Xtensa function. Generated assembly does not depend on
+`--text-section-literals`, so no configuration script or `platform.local.txt`
+change is required.
 
 The launch profile enables LLVM's `+windowed` Xtensa feature so generated code
 uses the same windowed ABI as the ESP32 Arduino toolchain.
