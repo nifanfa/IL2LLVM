@@ -10,7 +10,9 @@ Best practice: https://github.com/nifanfa/BootTo.NET
 <img alt="image (3)" src="https://github.com/user-attachments/assets/4031dbc3-0b7b-470e-8807-6ff9aa4ca4fa" />  
 <img alt="新建项目 (1)" src="https://github.com/user-attachments/assets/9a7ef0d9-71d6-4f4d-974b-a7d843b53bda" />  
 
-> Running on Mac OS, Linux, Windows, ESP32-S3(WAVESHARE ESP32-S3-Touch-LCD-2, Screen: 320x240 LT7789, Touch: CST816)  
+> Running on Mac OS, Linux, Windows, ESP32-S3(WAVESHARE ESP32-S3-Touch-LCD-2, Screen: 320x240 LT7789, Touch: CST816)
+  
+> PLEASE NOTE: The LVGL example uses around 60KB of Heap memory in total.
 
 ## Project purpose
 
