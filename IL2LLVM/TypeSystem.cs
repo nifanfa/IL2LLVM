@@ -10,7 +10,7 @@ sealed class TypeSystem(Translator translator) : TranslationComponent(translator
                      .OrderByDescending(GetTypeDepth))
         {
             if (contractType.Resolve()?.IsInterface == true &&
-                !GetImplementedInterfaces(runtimeType).Any(@interface => SameType(@interface, contractType)))
+                !GetImplementedInterfaces(runtimeType).Any(implementedInterface => SameType(implementedInterface, contractType)))
                 continue;
             var implementation = FindMethodImplementation(runtimeType, targetMethod);
             if (implementation is null || FindLocalMethod(implementation, localMethods)?.HasBody != true ||

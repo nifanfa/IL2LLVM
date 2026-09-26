@@ -14,6 +14,8 @@ internal static unsafe class DateTimeValidation
         Ensure(value.TimeOfDay.Ticks == 23L * TimeSpan.TicksPerHour + 58L * TimeSpan.TicksPerMinute +
             57L * TimeSpan.TicksPerSecond + 123L * TimeSpan.TicksPerMillisecond, "time of day");
         Ensure($"{value}" == value.ToString(), "interpolated formatting");
+        object boxedDate = value;
+        Ensure(boxedDate.ToString() == value.ToString(), "boxed DateTime virtual formatting");
         Ensure(new DateTime(value.Ticks, DateTimeKind.Utc).Kind == DateTimeKind.Utc, "utc kind");
         Ensure(DateTime.SpecifyKind(value, DateTimeKind.Utc).Kind == DateTimeKind.Utc, "specify kind");
         Ensure(DateTime.Compare(value, value.AddTicks(1)) < 0, "date comparison");
@@ -22,6 +24,8 @@ internal static unsafe class DateTimeValidation
             "date limits");
         Ensure(value.Ticks == 638448479371230000L, "CLR ticks");
         TimeSpan delta = new TimeSpan(877 * TimeSpan.TicksPerMillisecond);
+        object boxedDelta = delta;
+        Ensure(boxedDelta.ToString() == delta.ToString(), "boxed TimeSpan virtual formatting");
         Ensure(delta.TotalMilliseconds == 877 && delta.Milliseconds == 877, "time span milliseconds");
         Ensure(TimeSpan.FromSeconds(2).TotalMilliseconds == 2000, "time span totals");
         Ensure(TimeSpan.Zero.Ticks == 0 && TimeSpan.MinValue.Ticks == long.MinValue &&

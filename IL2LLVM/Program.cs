@@ -18,4 +18,8 @@ Console.WriteLine("Translates assemblies built with the custom CoreLib into nati
 if (args.Length != 3)
     throw new ArgumentException("Expected an input file, output file, and target triple.");
 
-new Translator().Translate(args);
+using var assembly = AssemblyDefinition.ReadAssembly(args[0]);
+var trimmed = AssemblyTrimmer.Trim(assembly);
+Console.WriteLine("Trimmed assembly in memory " +
+    $"({trimmed.Definitions} method definitions removed, {trimmed.Bodies} with IL bodies, {trimmed.IlBytes} IL bytes).");
+new Translator().Translate(args, assembly);

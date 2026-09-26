@@ -24,7 +24,7 @@ sealed class Exceptions(Translator translator) : TranslationComponent(translator
         switch (instruction.OpCode.Code)
         {
             case Code.Throw:
-                ValidateRuntimeCall(exceptionThrowType, exceptionThrowFunction, "ExceptionRuntime.Throw");
+                ValidateRuntimeCall(exceptionThrowType, exceptionThrowFunction, coreLib.ExceptionThrowMethod.FullName);
                 builder.BuildCall2(exceptionThrowType, exceptionThrowFunction,
                     [stack.Count == 0 ? LLVMValueRef.CreateConstNull(pointerType) : ConvertValue(builder, stack.Pop(), pointerType)]);
                 builder.BuildUnreachable();
@@ -32,8 +32,8 @@ sealed class Exceptions(Translator translator) : TranslationComponent(translator
                 return true;
             case Code.Rethrow:
                 {
-                    ValidateRuntimeCall(exceptionThrowType, exceptionThrowFunction, "ExceptionRuntime.Throw");
-                    ValidateRuntimeCall(exceptionCurrentType, exceptionCurrentFunction, "ExceptionRuntime.GetCurrent");
+                    ValidateRuntimeCall(exceptionThrowType, exceptionThrowFunction, coreLib.ExceptionThrowMethod.FullName);
+                    ValidateRuntimeCall(exceptionCurrentType, exceptionCurrentFunction, coreLib.ExceptionGetCurrentMethod.FullName);
                     var activeCatch = method?.Body.ExceptionHandlers
                         .Where(handler => handler.HandlerType is ExceptionHandlerType.Catch or ExceptionHandlerType.Filter &&
                             handler.HandlerStart.Offset <= instruction.Offset &&
@@ -98,7 +98,7 @@ sealed class Exceptions(Translator translator) : TranslationComponent(translator
                         .ToList();
                     foreach (var region in exitedRegions)
                     {
-                        ValidateRuntimeCall(exceptionPopType, exceptionPopFunction, "ExceptionRuntime.Pop");
+                        ValidateRuntimeCall(exceptionPopType, exceptionPopFunction, coreLib.ExceptionPopMethod.FullName);
                         builder.BuildCall2(exceptionPopType, exceptionPopFunction, [region.Frame]);
                     }
                     var handlers = method?.Body.ExceptionHandlers.Where(handler =>

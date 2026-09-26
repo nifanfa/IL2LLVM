@@ -35,7 +35,7 @@ sealed class Compilation : TranslationComponent
         variables = new(translator);
     }
 
-    internal void TranslateModule(string[] args)
+    internal void TranslateModule(string[] args, AssemblyDefinition assembly)
     {
         if (args.Length != 3)
             throw new ArgumentException("Expected an input file, output file, and target triple.");
@@ -76,6 +76,7 @@ sealed class Compilation : TranslationComponent
         localTypes = new(StringComparer.Ordinal);
         runtimeTypeIds = new(StringComparer.Ordinal);
         runtimeTypes = new(StringComparer.Ordinal);
+        runtimeTypeFactoriesNeeded = false;
         runtimeTypeObjects = new(StringComparer.Ordinal);
         runtimeTypeFactories = new(StringComparer.Ordinal);
         staticStrings = new(StringComparer.Ordinal);
@@ -120,7 +121,6 @@ sealed class Compilation : TranslationComponent
         LLVMValueRef gcPopFunction = default;
 
         {
-            var assembly = AssemblyDefinition.ReadAssembly(fileName);
             entryPoint = assembly.EntryPoint;
             localMethods = GetAllTypes(assembly.MainModule.Types)
                 .SelectMany(t => t.Methods)
@@ -128,6 +128,10 @@ sealed class Compilation : TranslationComponent
             localTypes = GetAllTypes(assembly.MainModule.Types)
                 .ToDictionary(t => t.FullName, StringComparer.Ordinal);
             coreLib = new CoreLibMetadata(localTypes);
+            var factoryFieldName = coreLib.TypeFactoryField.FullName;
+            runtimeTypeFactoriesNeeded = localMethods.Values.Any(method => method.HasBody &&
+                method.Body.Instructions.Any(instruction =>
+                    instruction.Operand is FieldReference field && field.FullName == factoryFieldName));
             var exceptionPushMethod = coreLib.ExceptionPushMethod;
             var exceptionPopMethod = coreLib.ExceptionPopMethod;
             var exceptionBufferMethod = coreLib.ExceptionGetBufferMethod;
@@ -226,7 +230,7 @@ sealed class Compilation : TranslationComponent
 
                 foreach (MethodDefinition method in type.Methods)
                 {
-                    if (!method.HasBody) continue;
+                    if (!method.HasBody || method.HasGenericParameters || type.HasGenericParameters) continue;
                     RegisterMethodFunction(module, method, method.Body.Instructions);
 
                     foreach (var instr in method.Body.Instructions)
@@ -1541,7 +1545,6 @@ sealed class Compilation : TranslationComponent
             var passOptions = LLVMPassBuilderOptionsRef.Create();
             try
             {
-                // Remove unreachable globals without changing method bodies.
                 module.RunPasses("globaldce", machine, passOptions);
             }
             finally

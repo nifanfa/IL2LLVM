@@ -201,6 +201,33 @@ public static class LanguageFeatureValidation
         public void RaiseChanged() => Changed?.Invoke();
     }
 
+    private sealed class MetadataOnlyAttribute : Attribute
+    {
+        public MetadataOnlyAttribute() => throw new InvalidOperationException("Metadata attribute was constructed.");
+    }
+
+    private sealed class CalledAttribute : Attribute
+    {
+        public CalledAttribute(int value) => Value = value;
+
+        public int Value { get; }
+    }
+
+    private class NonVirtualBase
+    {
+        public int Read() => RuntimeValue(7);
+    }
+
+    private class NonVirtualDerived : NonVirtualBase
+    {
+        public new virtual int Read() => RuntimeValue(99);
+    }
+
+    private sealed class FactoryOnlyFeature
+    {
+        public int Value => RuntimeValue(13);
+    }
+
     private sealed class ObjectPointerHolder
     {
         public object Value;
@@ -543,6 +570,7 @@ public static class LanguageFeatureValidation
         List<int> list = new List<int>();
         for (int index = 0; index < values.Length; index++)
             list.Add(values[index]);
+        VerifyConservativeMethodRoots();
         VerifyTypes(values, list);
         VerifyEnums();
         VerifyNumericOperators();
@@ -571,6 +599,17 @@ public static class LanguageFeatureValidation
         VerifyComprehensiveNativeValues();
         VerifyAllPrimitiveNullableValues();
         Console.WriteLine("Language feature validation passed.");
+    }
+
+    [MetadataOnly]
+    private static void VerifyConservativeMethodRoots()
+    {
+        NonVirtualBase instance = new NonVirtualDerived();
+        var attribute = new CalledAttribute(RuntimeValue(11));
+        var factoryInstance = Activator.CreateInstance<FactoryOnlyFeature>();
+        if (instance.Read() != RuntimeValue(7) || attribute.Value != RuntimeValue(11) ||
+            factoryInstance.Value != RuntimeValue(13))
+            Fail("non-virtual call, attribute constructor, or type factory");
     }
 
     private static unsafe void VerifyStaticFields()
@@ -922,6 +961,9 @@ public static class LanguageFeatureValidation
 
         if (FeatureKind.Value.ToString() != "Value")
             Fail("named enum ToString");
+        object boxedFeatureKind = FeatureKind.Value;
+        if (boxedFeatureKind.ToString() != "Value")
+            Fail("boxed enum virtual ToString");
         if (((FeatureKind)RuntimeValue(7)).ToString() != "7")
             Fail("unnamed enum ToString");
         if (FeatureFlags.Read.ToString() != "Read")
@@ -2863,6 +2905,30 @@ public static class LanguageFeatureValidation
         public int Value = 17;
     }
 
+    private sealed class GenericFactory<T> where T : new()
+    {
+        public T Create() => new T();
+    }
+
+    private interface IBaseGenericFeature
+    {
+        int Evaluate();
+    }
+
+    private interface IDerivedGenericFeature : IBaseGenericFeature { }
+
+    private sealed class GenericInterfaceFeature<T> : IDerivedGenericFeature
+    {
+        int IBaseGenericFeature.Evaluate() => 29;
+    }
+
+    private class GenericMethodBase<T>
+    {
+        public int Evaluate() => 31;
+    }
+
+    private sealed class InheritedGenericInterfaceFeature<T> : GenericMethodBase<T>, IBaseGenericFeature { }
+
     private class GenericMethodFeature
     {
         public T Identity<T>(T value) => value;
@@ -3504,6 +3570,14 @@ public static class LanguageFeatureValidation
             Fail("generic methods or constraints");
         if (CreateWithNewConstraint<NewConstraintFeature>().Value != RuntimeValue(17))
             Fail("generic methods or constraints");
+        if (new GenericFactory<NewConstraintFeature>().Create().Value != RuntimeValue(17))
+            Fail("generic type constructor constraint");
+        IBaseGenericFeature inheritedInterface = new GenericInterfaceFeature<int>();
+        if (inheritedInterface.Evaluate() != RuntimeValue(29))
+            Fail("inherited generic interface implementation");
+        IBaseGenericFeature inheritedMethod = new InheritedGenericInterfaceFeature<int>();
+        if (inheritedMethod.Evaluate() != RuntimeValue(31))
+            Fail("inherited generic interface method");
         if (ReadStructConstraint(featureValue) != RuntimeValue(12))
             Fail("generic methods or constraints");
         if (ReadClassConstraint(variant.GetValue()) != RuntimeValue(5))

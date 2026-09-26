@@ -465,10 +465,10 @@ sealed class Methods(Translator translator) : TranslationComponent(translator)
         {
             foreach (var method in current.Methods.Where(method => method.IsStatic == targetIsStatic))
             {
-                if (!method.Overrides.Any(@override =>
-                    SameMethodDefinition(@override, targetMethod) ||
-                    (GetRuntimeTypeKey(@override.DeclaringType) == GetRuntimeTypeKey(targetMethod.DeclaringType) &&
-                     SameMethodSignature(@override, targetMethod))))
+                if (!method.Overrides.Any(overrideMethod =>
+                    SameMethodDefinition(overrideMethod, targetMethod) ||
+                    (GetRuntimeTypeKey(overrideMethod.DeclaringType) == GetRuntimeTypeKey(targetMethod.DeclaringType) &&
+                     SameMethodSignature(overrideMethod, targetMethod))))
                     continue;
                 return BindMethodToDeclaringType(method, currentType, targetMethod);
             }

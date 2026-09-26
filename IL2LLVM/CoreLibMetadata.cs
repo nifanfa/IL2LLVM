@@ -67,6 +67,9 @@ sealed class CoreLibMetadata
     public FieldDefinition TypeIsFlagsEnumField => GetInstanceField(Type, "IsFlagsEnum");
     public FieldDefinition TypeIsSignedEnumField => GetInstanceField(Type, "IsSignedEnum");
     public FieldDefinition TypeFactoryField => GetInstanceField(Type, "Factory");
+    public MethodDefinition ActivatorCreateInstanceMethod => Activator.Methods.Single(method =>
+        method.Name == "CreateInstance" && method.IsStatic && method.GenericParameters.Count == 1 &&
+        method.Parameters.Count == 0);
     public FieldDefinition EnumValueField => GetInstanceField(Enum, "m_value");
     public FieldDefinition ArrayLengthField => GetInstanceField(Array, "_length");
     public FieldDefinition ArrayLengthsField => GetInstanceField(Array, "_lengths");
@@ -110,6 +113,23 @@ sealed class CoreLibMetadata
         new PointerType(GCFrame), new PointerType(GCRoot), Int32);
     public MethodDefinition GCPopMethod => GetRequiredMethod(GCHeap, "Pop", false, Void,
         new PointerType(GCFrame));
+
+    public IEnumerable<MethodDefinition> RuntimeRoots =>
+    [
+        StringCharArrayConstructor,
+        ExceptionPushMethod,
+        ExceptionPopMethod,
+        ExceptionGetBufferMethod,
+        ExceptionGetTopMethod,
+        ExceptionGetCurrentMethod,
+        ExceptionSetJumpMethod,
+        ExceptionLongJumpMethod,
+        ExceptionAbortMethod,
+        ExceptionThrowMethod,
+        GCAllocateMethod,
+        GCPushMethod,
+        GCPopMethod
+    ];
 
     public bool IsObject(TypeReference type) => IsType(type, Object);
     public bool IsValueType(TypeReference type) => IsType(type, ValueType);

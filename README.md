@@ -99,8 +99,17 @@ IL2LLVM\bin\Debug\net10.0\IL2LLVM.exe `
   "x86_64-unknown-linux-gnu;kernel"
 ```
 
-The second argument is the native object-file output path. IL2LLVM always asks
-LLVM to emit one relocatable object; archive creation and final native linking
+The second argument is the native output path. IL2LLVM removes unreachable
+method definitions in memory before translation without writing a trimmed assembly. Entry points,
+`[RuntimeExport]` methods, CoreLib runtime hooks, required attribute constructors, and
+potential virtual/interface implementations are preserved. This is a conservative
+method trim, not type or field removal. Mark methods called only by native code
+with `[RuntimeExport]`. Dynamically chosen reflection targets and generic
+instantiations cannot always be discovered from IL; make them statically reachable
+if they must be preserved. The removed-method count describes IL definitions, not
+the number of native functions emitted; runtime-generated helpers and metadata
+also contribute to the output. LLVM emits a
+relocatable object (or assembly for `.S` output); archive creation and final native linking
 are separate build steps. The output uses static relocation. Globals created by
 the translator for managed static fields, GC descriptors, field data, and
 compiler-generated helpers use internal linkage. Managed entry points and

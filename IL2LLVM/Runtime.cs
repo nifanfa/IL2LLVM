@@ -430,7 +430,7 @@ sealed class Runtime(Translator translator) : TranslationComponent(translator)
                 value = LLVMValueRef.CreateConstInt(GetLLVMTypeRef(field.FieldType), isSigned ? 1ul : 0ul, false);
             else if (ReferenceEquals(field, coreLib.TypeFactoryField))
             {
-                var factory = GetRuntimeTypeFactory(type);
+                var factory = runtimeTypeFactoriesNeeded ? GetRuntimeTypeFactory(type) : default;
                 value = factory == default
                     ? LLVMValueRef.CreateConstNull(pointerType)
                     : LLVMValueRef.CreateConstPointerCast(factory, pointerType);

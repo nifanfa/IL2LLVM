@@ -35,6 +35,7 @@ abstract class TranslationComponent(Translator translator)
     protected CoreLibMetadata coreLib { get => Translator.coreLib; set => Translator.coreLib = value; }
     protected Dictionary<string, int> runtimeTypeIds { get => Translator.runtimeTypeIds; set => Translator.runtimeTypeIds = value; }
     protected Dictionary<string, TypeReference> runtimeTypes { get => Translator.runtimeTypes; set => Translator.runtimeTypes = value; }
+    protected bool runtimeTypeFactoriesNeeded { get => Translator.runtimeTypeFactoriesNeeded; set => Translator.runtimeTypeFactoriesNeeded = value; }
     protected Dictionary<string, TypeReference> runtimeBaseTypes { get => Translator.runtimeBaseTypes; set => Translator.runtimeBaseTypes = value; }
     protected Dictionary<string, LLVMValueRef> runtimeTypeObjects { get => Translator.runtimeTypeObjects; set => Translator.runtimeTypeObjects = value; }
     protected Dictionary<string, LLVMValueRef> runtimeTypeFactories { get => Translator.runtimeTypeFactories; set => Translator.runtimeTypeFactories = value; }

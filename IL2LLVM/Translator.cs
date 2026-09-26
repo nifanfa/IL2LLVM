@@ -36,6 +36,7 @@ sealed class Translator
     internal CoreLibMetadata coreLib = null!;
     internal Dictionary<string, int> runtimeTypeIds = new(StringComparer.Ordinal);
     internal Dictionary<string, TypeReference> runtimeTypes = new(StringComparer.Ordinal);
+    internal bool runtimeTypeFactoriesNeeded;
     internal Dictionary<string, TypeReference> runtimeBaseTypes = new(StringComparer.Ordinal);
     internal Dictionary<string, LLVMValueRef> runtimeTypeObjects = new(StringComparer.Ordinal);
     internal Dictionary<string, LLVMValueRef> runtimeTypeFactories = new(StringComparer.Ordinal);
@@ -72,12 +73,12 @@ sealed class Translator
         compilation = new(this);
     }
 
-    public void Translate(string[] args)
+    public void Translate(string[] args, AssemblyDefinition assembly)
     {
         if (args.Length != 3)
             throw new ArgumentException("Expected an input file, output file, and target triple.");
 
         Target.InitializeLLVM();
-        compilation.TranslateModule(args);
+        compilation.TranslateModule(args, assembly);
     }
 }
