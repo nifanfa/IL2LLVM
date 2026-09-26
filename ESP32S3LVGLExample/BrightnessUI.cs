@@ -65,7 +65,7 @@ internal static unsafe partial class BrightnessUI
     private static void TemperatureChanged(LVEvent evt)
     {
         int value = new LVArc(evt.Target).Value;
-        fixed (byte* ptr = Encoding.UTF8.GetBytes($"{value}℃"))
+        fixed (byte* ptr = Encoding.UTF8.GetBytes($"{value} °C"))
             temperatureLabel.SetText(ptr);
     }
 
