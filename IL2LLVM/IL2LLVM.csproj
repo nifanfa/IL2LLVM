@@ -14,16 +14,22 @@
   <ItemGroup>
     <AssemblyMetadata Include="BuildTimestamp" Value="$([System.DateTime]::Now.ToString())" />
     <Content Include="Logo.ico" />
-    <RuntimeHostConfigurationOption Include="LLVMSharp.Interop.DisableResolveLibraryHook" Value="true" />
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="LLVMSharp" Version="21.1.8.1" />
-    <PackageReference Include="Mono.Cecil" Version="0.11.6" />
+    <Reference Include="LLVMSharp">
+      <HintPath>lib\net10.0\LLVMSharp.dll</HintPath>
+    </Reference>
+    <Reference Include="LLVMSharp.Interop">
+      <HintPath>lib\net10.0\LLVMSharp.Interop.dll</HintPath>
+    </Reference>
+    <Reference Include="Mono.Cecil">
+      <HintPath>lib\netstandard2.0\Mono.Cecil.dll</HintPath>
+    </Reference>
   </ItemGroup>
 
   <Target Name="CopyLibLLVM" AfterTargets="Build">
-    <Copy SourceFiles="native\win-x64\libLLVM.dll" DestinationFiles="$(TargetDir)libLLVM.dll" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="lib\win-x64\libLLVM.dll" DestinationFiles="$(TargetDir)libLLVM.dll" SkipUnchangedFiles="true" />
   </Target>
 
 </Project>

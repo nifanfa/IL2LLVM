@@ -66,7 +66,7 @@ C# project + CoreLib
 ## Build requirements
 
 - .NET 10 SDK
-- Vendored NuGet packages under `packages/`; `nuget.config` restores them to `obj/packages`
+- Local LLVMSharp and Mono.Cecil assemblies under `IL2LLVM/lib/`; building IL2LLVM does not require their NuGet packages. The LVGL XAML generator still restores Roslyn from NuGet.
 - A native linker and host runtime appropriate for the output target
 - For `LinuxKernelModuleExample`: GCC, make, and Linux headers matching the kernel that will load the module
 
@@ -117,9 +117,11 @@ the translator for managed static fields, GC descriptors, field data, and
 compiler-generated helpers use internal linkage. Managed entry points and
 `[DllImport("*")]` imports remain external symbols for the host linker.
 
-The Windows build uses the repository's `IL2LLVM/native/win-x64/libLLVM.dll`.
-It is built from LLVM 21.1.8 with the experimental Xtensa backend enabled, in
-addition to the regular LLVM targets.
+The Windows build uses the repository's `IL2LLVM/lib/win-x64/libLLVM.dll`.
+It is built from [nifanfa/llvm-project](https://github.com/nifanfa/llvm-project),
+based on LLVM 21.1.8 with the experimental Xtensa backend enabled in addition
+to the regular LLVM targets. Build details and licensing are in
+`IL2LLVM/lib/win-x64/README.md`.
 
 ### Calling convention
 
